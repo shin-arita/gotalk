@@ -9,6 +9,9 @@ const LANG_CODES: Record<string, string> = {
   'ไทย': 'th-TH',
 }
 
+// Placeholder until translation API is wired up
+const DUMMY_TRANSLATED = 'วันนี้อากาศร้อนมาก'
+
 // Chrome uses webkit prefix; declare so TypeScript doesn't complain
 declare global {
   interface Window {
@@ -30,6 +33,7 @@ export default function InterpreterPage({ myLanguage, theirLanguage, onBack }: I
   const [status, setStatus] = useState<InterpreterStatus>('idle')
   const [speaker, setSpeaker] = useState<Speaker>('me')
   const [recognizedText, setRecognizedText] = useState('')
+  const [translatedText, setTranslatedText] = useState(DUMMY_TRANSLATED)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
 
@@ -42,6 +46,7 @@ export default function InterpreterPage({ myLanguage, theirLanguage, onBack }: I
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
       recognitionRef.current?.abort()
+      window.speechSynthesis?.cancel()
     }
   }, [])
 
@@ -110,24 +115,60 @@ export default function InterpreterPage({ myLanguage, theirLanguage, onBack }: I
     }
   }
 
-  // TTS hook point: replace body to trigger real speech synthesis
+  // iPhone Safari では onend / onerror が安定して発火しないため、
+  // フォールバックタイマーで必ず idle へ戻す
+  const TTS_FALLBACK_MS = 3000
+
+  const resetSpeakingToIdle = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+    setStatus('idle')
+  }
+
+  // TTS: Web Speech API speechSynthesis
   const handleSpeak = () => {
-    setStatus('speaking')
+    if (!window.speechSynthesis) {
+      setStatus('idle')
+      return
+    }
+
     if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => setStatus('idle'), 2000)
+
+    const u = new SpeechSynthesisUtterance('こんにちはこんにちはこんにちは')
+    u.lang = 'ja-JP'
+
+    u.onstart = () => console.log('[TTS] onstart')
+    u.onend = () => {
+      console.log('[TTS] onend')
+      resetSpeakingToIdle()
+    }
+    u.onerror = (e: SpeechSynthesisErrorEvent) => {
+      console.log(`[TTS] onerror error=${e.error}`)
+      resetSpeakingToIdle()
+    }
+
+    setStatus('speaking')
+    // onend / onerror が来なくても必ず idle へ戻すフォールバック
+    timerRef.current = setTimeout(resetSpeakingToIdle, TTS_FALLBACK_MS)
+    window.speechSynthesis.speak(u)
   }
 
   const handleRetry = () => {
     if (timerRef.current) clearTimeout(timerRef.current)
+    window.speechSynthesis?.cancel()
     startRecognition()
   }
 
   const handleSwitchSpeaker = () => {
     if (timerRef.current) clearTimeout(timerRef.current)
     recognitionRef.current?.abort()
+    window.speechSynthesis?.cancel()
     setSpeaker(prev => (prev === 'me' ? 'them' : 'me'))
     setStatus('idle')
     setRecognizedText('')
+    setTranslatedText(DUMMY_TRANSLATED)
   }
 
   return (
@@ -185,7 +226,7 @@ export default function InterpreterPage({ myLanguage, theirLanguage, onBack }: I
             <div className="result-divider" />
             <div className="result-row">
               <span className="result-row__label">{targetLang} — 翻訳</span>
-              <p className="result-row__text result-row__text--placeholder">未実装</p>
+              <p className="result-row__text result-row__text--translated">{translatedText}</p>
             </div>
             <div className="result-divider" />
             <div className="result-row">
