@@ -6,20 +6,30 @@ import './LanguageSelectPage.css'
 interface Props {
   selectedLanguages: Language[]
   onSelectionChange: (langs: Language[]) => void
-  onStart: (text: string) => void
+  onStart: (audioBlob: Blob) => void
+}
+
+function getSupportedMimeType(): string {
+  const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']
+  return types.find(t => MediaRecorder.isTypeSupported(t)) ?? ''
 }
 
 export default function LanguageSelectPage({ selectedLanguages, onSelectionChange, onStart }: Props) {
   const [isRecording, setIsRecording] = useState(false)
-  const recognitionRef = useRef<any>(null)
-  const recognizedTextRef = useRef('')
-  const accumulatedRef = useRef('')
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const streamRef = useRef<MediaStream | null>(null)
   const userStoppedRef = useRef(false)
 
   const canStart = selectedLanguages.length === 2
 
   useEffect(() => {
-    return () => recognitionRef.current?.abort()
+    return () => {
+      if (mediaRecorderRef.current?.state === 'recording') {
+        mediaRecorderRef.current.stop()
+      }
+      streamRef.current?.getTracks().forEach(t => t.stop())
+    }
   }, [])
 
   const handleCardTap = (lang: Language) => {
@@ -32,66 +42,44 @@ export default function LanguageSelectPage({ selectedLanguages, onSelectionChang
     }
   }
 
-  const startSTT = () => {
-    const Ctor = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition
-    if (!Ctor) return
+  const startRecording = async () => {
+    const mimeType = getSupportedMimeType()
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+      audioChunksRef.current = []
+      userStoppedRef.current = false
 
-    recognitionRef.current?.abort()
-    recognizedTextRef.current = ''
-    accumulatedRef.current = ''
-    userStoppedRef.current = false
-
-    const sttLang = selectedLanguages[0]?.speechCode ?? 'ja-JP'
-    const recognition = new Ctor()
-    recognition.lang = sttLang
-    recognition.continuous = true
-    recognition.interimResults = true
-    recognition.maxAlternatives = 1
-
-    recognition.onstart = () => setIsRecording(true)
-
-    recognition.onresult = (event: any) => {
-      let final = '', interim = ''
-      for (let i = 0; i < event.results.length; i++) {
-        if (event.results[i].isFinal) final += event.results[i][0].transcript
-        else interim += event.results[i][0].transcript
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data)
       }
-      const sessionText = final + interim
-      recognizedTextRef.current = accumulatedRef.current
-        ? accumulatedRef.current + ' ' + sessionText
-        : sessionText
-    }
+      recorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop())
+        streamRef.current = null
+        if (!userStoppedRef.current) return
+        const blob = new Blob(audioChunksRef.current, { type: mimeType || 'audio/webm' })
+        onStart(blob)
+      }
 
-    recognition.onerror = () => {
-      userStoppedRef.current = true
+      mediaRecorderRef.current = recorder
+      recorder.start()
+      setIsRecording(true)
+    } catch {
       setIsRecording(false)
     }
-
-    recognition.onend = () => {
-      if (userStoppedRef.current) {
-        setIsRecording(false)
-        const text = recognizedTextRef.current.trim()
-        if (text) onStart(text)
-        return
-      }
-      // Safari の自動停止対策：auto-restart
-      accumulatedRef.current = recognizedTextRef.current
-      try { recognition.start() } catch { setIsRecording(false) }
-    }
-
-    recognitionRef.current = recognition
-    recognition.start()
   }
 
-  const stopSTT = () => {
+  const stopRecording = () => {
     userStoppedRef.current = true
-    recognitionRef.current?.stop()
+    mediaRecorderRef.current?.stop()
+    setIsRecording(false)
   }
 
   const handleMicPress = () => {
     if (!canStart) return
-    if (!isRecording) startSTT()
-    else stopSTT()
+    if (!isRecording) startRecording()
+    else stopRecording()
   }
 
   return (

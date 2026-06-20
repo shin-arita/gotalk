@@ -392,6 +392,7 @@
   text-align: center;
   padding: 12px var(--spacing);
   line-height: 1.5;
+  white-space: pre-line;
 }
 
 /* ── STTデバッグログ ── */

@@ -11,8 +11,8 @@
 /* ── Header ── */
 
 .page-header {
-  padding-top: 52px;
-  padding-bottom: 40px;
+  padding-top: 14px;
+  padding-bottom: 14px;
   text-align: center;
 }
 
@@ -30,8 +30,6 @@
   grid-template-columns: repeat(2, 148px);
   justify-content: center;
   gap: var(--spacing);
-  flex: 1;
-  align-content: center;
 }
 
 /* Flag icon — fills the card, clipped by card's border-radius */
@@ -87,8 +85,9 @@
 .page-footer {
   display: flex;
   justify-content: center;
-  padding-top: 40px;
-  padding-bottom: calc(52px + env(safe-area-inset-bottom));
+  margin-top: auto;
+  padding-top: 20px;
+  padding-bottom: calc(20px + env(safe-area-inset-bottom));
 }
 
 .mic-start-button {

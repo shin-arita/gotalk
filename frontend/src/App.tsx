@@ -11,15 +11,15 @@ export default function App() {
 
   const [page, setPage] = useState<Page>('language-select')
   const [selectedLanguages, setSelectedLanguages] = useState<Language[]>([])
-  const [pendingText, setPendingText] = useState('')
+  const [pendingAudio, setPendingAudio] = useState<Blob | null>(null)
 
-  const handleStart = (text: string) => {
-    setPendingText(text)
+  const handleStart = (audioBlob: Blob) => {
+    setPendingAudio(audioBlob)
     setPage('interpreter')
   }
 
   const handleBack = () => {
-    setPendingText('')
+    setPendingAudio(null)
     setPage('language-select')
   }
 
@@ -28,7 +28,7 @@ export default function App() {
       <InterpreterPage
         selectedLanguages={selectedLanguages}
         onBack={handleBack}
-        pendingText={pendingText}
+        pendingAudio={pendingAudio ?? undefined}
       />
     )
   }
