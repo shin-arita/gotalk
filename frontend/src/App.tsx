@@ -1,37 +1,43 @@
 import { useState } from 'react'
+import type { Language } from './languages'
 import LanguageSelectPage from './pages/LanguageSelectPage'
 import InterpreterPage from './pages/InterpreterPage'
+import TtsTestPage from './pages/TtsTestPage'
 
 type Page = 'language-select' | 'interpreter'
 
-interface AppState {
-  page: Page
-  myLanguage: string
-  theirLanguage: string
-}
-
 export default function App() {
-  const [state, setState] = useState<AppState>({
-    page: 'language-select',
-    myLanguage: '日本語',
-    theirLanguage: 'ไทย',
-  })
+  if (window.location.hash === '#tts-test') return <TtsTestPage />
 
-  if (state.page === 'interpreter') {
+  const [page, setPage] = useState<Page>('language-select')
+  const [selectedLanguages, setSelectedLanguages] = useState<Language[]>([])
+  const [pendingText, setPendingText] = useState('')
+
+  const handleStart = (text: string) => {
+    setPendingText(text)
+    setPage('interpreter')
+  }
+
+  const handleBack = () => {
+    setPendingText('')
+    setPage('language-select')
+  }
+
+  if (page === 'interpreter') {
     return (
       <InterpreterPage
-        myLanguage={state.myLanguage}
-        theirLanguage={state.theirLanguage}
-        onBack={() => setState(s => ({ ...s, page: 'language-select' }))}
+        selectedLanguages={selectedLanguages}
+        onBack={handleBack}
+        pendingText={pendingText}
       />
     )
   }
 
   return (
     <LanguageSelectPage
-      onStart={(myLanguage, theirLanguage) =>
-        setState({ page: 'interpreter', myLanguage, theirLanguage })
-      }
+      selectedLanguages={selectedLanguages}
+      onSelectionChange={setSelectedLanguages}
+      onStart={handleStart}
     />
   )
 }

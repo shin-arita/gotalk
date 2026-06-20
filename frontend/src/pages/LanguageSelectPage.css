@@ -1,143 +1,146 @@
 .language-select-page {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
-  padding: var(--spacing);
+  min-height: 100dvh;
   max-width: 480px;
   margin: 0 auto;
   width: 100%;
+  padding: 0 var(--spacing);
 }
 
+/* ── Header ── */
+
 .page-header {
-  padding-top: 48px;
+  padding-top: 52px;
   padding-bottom: 40px;
   text-align: center;
 }
 
 .app-title {
-  font-size: 32px;
+  font-size: 34px;
   font-weight: 800;
   color: var(--color-primary);
   letter-spacing: -0.5px;
-  line-height: 1.1;
 }
 
-.app-subtitle {
-  margin-top: 10px;
-  font-size: 15px;
-  color: var(--color-text-secondary);
-  line-height: 1.5;
-}
+/* ── 2×3 language card grid ── */
 
-.language-section {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  flex: 1;
-}
-
-.language-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.language-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
-  letter-spacing: 0.02em;
-  padding-left: 4px;
-}
-
-.language-card {
-  width: 100%;
-  min-height: 48px;
-  padding: 0 16px;
-  background-color: var(--color-surface);
-  border: 1.5px solid var(--color-border);
-  border-radius: var(--radius);
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--color-text);
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 0.15s, background-color 0.15s;
-  font-family: inherit;
-}
-
-.language-card:active {
-  background-color: var(--color-primary-light);
-  border-color: var(--color-primary);
-}
-
-.swap-row {
-  display: flex;
+.language-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 148px);
   justify-content: center;
-  padding: 16px 0;
+  gap: var(--spacing);
+  flex: 1;
+  align-content: center;
 }
 
-.swap-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 20px;
-  background-color: transparent;
-  border: 1.5px solid var(--color-border);
-  border-radius: 100px;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s, background-color 0.15s;
-  font-family: inherit;
-}
-
-.swap-button:active {
-  background-color: var(--color-primary-light);
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-}
-
-.page-footer {
-  padding-top: 32px;
-  padding-bottom: 32px;
-}
-
-.start-button {
+/* Flag icon — fills the card, clipped by card's border-radius */
+.flagIcon {
   width: 100%;
-  min-height: 56px;
-  padding: 0 24px;
-  background-color: var(--color-primary);
-  border: none;
-  border-radius: var(--radius);
-  font-size: 17px;
-  font-weight: 700;
-  color: #ffffff;
-  cursor: pointer;
-  letter-spacing: 0.01em;
-  transition: background-color 0.15s, transform 0.1s;
-  font-family: inherit;
+  height: 100%;
+  border-radius: 0;
+  object-fit: cover;
+  display: block;
+  background-color: #ffffff;
 }
 
-.start-button:active {
-  background-color: var(--color-primary-dark);
-  transform: scale(0.98);
+/* Card base */
+.flagCard {
+  width: 148px;
+  height: 148px;
+  border-radius: 26px;
+  display: grid;
+  place-items: center;
+  border: none;
+  cursor: pointer;
+  overflow: hidden;
+  transition: box-shadow 0.18s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Unselected state */
+.flagCard.unselected {
+  box-shadow: none;
+}
+
+/* Selected state — 青いリングで選択中を表現 */
+.flagCard.selected {
+  box-shadow: 0 0 0 3px var(--color-primary), 0 2px 12px rgba(0, 0, 0, 0.12);
+}
+
+.flagCard.unselected:active {
+  box-shadow: 0 0 0 2px var(--color-border);
+}
+
+.flagCard.selected:active {
+  box-shadow: 0 0 0 3px var(--color-primary-dark);
 }
 
 @media (hover: hover) {
-  .language-card:hover {
-    border-color: var(--color-primary);
-    background-color: var(--color-primary-light);
+  .flagCard.unselected:hover {
+    box-shadow: 0 0 0 2px var(--color-border);
+  }
+}
+
+/* ── Footer mic button ── */
+
+.page-footer {
+  display: flex;
+  justify-content: center;
+  padding-top: 40px;
+  padding-bottom: calc(52px + env(safe-area-inset-bottom));
+}
+
+.mic-start-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  border: none;
+  background-color: #c8cad0;
+  color: #ffffff;
+  cursor: default;
+  transition: background-color 0.2s, box-shadow 0.2s, transform 0.12s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mic-start-button--active {
+  background-color: var(--color-primary);
+  box-shadow: 0 4px 20px rgba(37, 99, 235, 0.4);
+  cursor: pointer;
+}
+
+.mic-start-button--active:active {
+  transform: scale(0.94);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+}
+
+.mic-start-button--recording {
+  background-color: #dc2626;
+  box-shadow: 0 4px 16px rgba(220, 38, 38, 0.4);
+  cursor: pointer;
+  animation: pulse-red 1.4s ease-in-out infinite;
+}
+
+.mic-start-button--recording:active {
+  transform: scale(0.94);
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.25);
+}
+
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 4px 16px rgba(220, 38, 38, 0.4); }
+  50%       { box-shadow: 0 4px 32px rgba(220, 38, 38, 0.7); }
+}
+
+@media (hover: hover) {
+  .lang-card:not(.lang-card--selected):hover {
+    background-color: #e8eaed;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   }
 
-  .swap-button:hover {
-    border-color: var(--color-primary);
-    color: var(--color-primary);
-    background-color: var(--color-primary-light);
-  }
-
-  .start-button:hover {
+  .mic-start-button--active:hover {
     background-color: var(--color-primary-dark);
   }
 }
