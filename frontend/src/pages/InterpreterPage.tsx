@@ -308,7 +308,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
             />
           ) : (
             <p className={`source-card__text${!recognizedText ? ' source-card__text--placeholder' : ''}`}>
-              {recognizedText || (status === 'recording' ? '録音中...' : 'ここに話した言葉が表示されます')}
+              {recognizedText}
             </p>
           )}
           <button
@@ -326,9 +326,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
           <div className="translation-card__body">
             <div className="translation-card__main">
               <p className={`translation-card__text${!translatedText ? ' translation-card__text--placeholder' : ''}`}>
-                {status === 'processing'
-                  ? '翻訳中...'
-                  : translatedText || '翻訳文がここに表示されます'}
+                {translatedText}
               </p>
               <div className="back-translation-section">
                 <div className="back-translation-header">
