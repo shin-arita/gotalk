@@ -7,11 +7,11 @@ import TtsTestPage from './pages/TtsTestPage'
 type Page = 'language-select' | 'interpreter'
 
 export default function App() {
-  if (window.location.hash === '#tts-test') return <TtsTestPage />
-
   const [page, setPage] = useState<Page>('language-select')
   const [selectedLanguages, setSelectedLanguages] = useState<Language[]>([])
   const [pendingAudio, setPendingAudio] = useState<Blob | null>(null)
+
+  if (window.location.hash === '#tts-test') return <TtsTestPage />
 
   const handleStart = (audioBlob: Blob) => {
     setPendingAudio(audioBlob)
