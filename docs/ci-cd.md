@@ -1,5 +1,31 @@
 # CI/CD
 
+## 開発フロー
+
+GoTalk は、Pull Request を中心に CI とレビューを行い、main へ merge された変更を main push として CD に流す運用です。現在の CD workflow は CI 完了イベントではなく、`main` ブランチへの push をトリガーに起動します。
+
+```mermaid
+flowchart LR
+  Feature[feature branch] --> PR[Pull Request]
+  PR --> CI[GitHub Actions CI<br/>pull_request]
+  CI --> Review[Codex Review]
+  Review --> Merge[merge to main]
+  Merge --> MainPush[main push]
+  MainPush --> CD[GitHub Actions CD<br/>push to main]
+  CD --> VPS[VPS deploy]
+```
+
+この図は「PR で CI を確認してから main に merge する」運用を表しています。workflow として CD が CI の成功を直接待つ構成ではありません。
+
+### 役割分担
+
+| 役割 | 担当 | 内容 |
+| --- | --- | --- |
+| 実装 | Claude Code | 機能追加、修正、テスト追加 |
+| 自動検証 | GitHub Actions CI | lint、test、coverage、build |
+| レビュー | Codex | 差分確認、品質リスクの指摘、改善提案 |
+| デプロイ | GitHub Actions CD | main push を契機に VPS へ SSH デプロイ |
+
 ## CI 構成
 
 CI は `.github/workflows/ci.yml` で定義しています。
@@ -41,7 +67,7 @@ CD は `.github/workflows/cd.yml` で定義しています。
 
 - `push` to `main`
 
-main に push されると、GitHub Actions から VPS へ SSH 接続し、VPS 上で Docker Compose を使ってアプリケーションを更新します。
+main に push されると、GitHub Actions から VPS へ SSH 接続し、VPS 上で Docker Compose を使ってアプリケーションを更新します。現状の workflow は `workflow_run` ではなく `push` to `main` で起動します。
 
 ## デプロイ手順
 

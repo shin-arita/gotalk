@@ -3,11 +3,9 @@
 ## 前提
 
 - Docker / Docker Compose
-- Node.js 22
-- Go 1.22
 - OpenAI API キー
 
-Docker Compose で起動する場合、ホスト側に Node.js と Go がなくてもコンテナ上でアプリケーションを実行できます。個別に lint、test、build を実行する場合は Node.js と Go が必要です。
+基本の開発手順は Docker Compose での起動です。ホスト上で frontend/backend を個別に lint、test、build、run する場合は、Node.js 22 と Go 1.22 が必要です。
 
 ## 環境変数
 
@@ -56,6 +54,8 @@ docker compose down
 
 ## Frontend を個別に起動
 
+ホスト上で frontend を直接起動する場合は Node.js 22 が必要です。
+
 ```bash
 cd frontend
 npm ci
@@ -64,36 +64,11 @@ npm run dev
 
 ## Backend を個別に起動
 
+ホスト上で backend を直接起動する場合は Go 1.22 が必要です。
+
 ```bash
 cd backend
 go run .
 ```
 
 Backend は `:8080` で起動します。
-
-## GitHub 運用フロー
-
-このリポジトリでは、AI コーディングツールを役割分担して使う前提で運用します。
-
-- Claude Code: 実装担当
-- Codex: レビュー担当
-- GitHub Pull Request: 変更内容、CI 結果、レビュー指摘を集約する場
-
-基本フロー:
-
-1. Issue または作業メモで実装対象を明確化する
-2. feature ブランチを作成する
-3. Claude Code が実装する
-4. Pull Request を作成する
-5. GitHub Actions CI で lint / test / build を確認する
-6. Codex が差分レビューを行う
-7. 指摘対応後、main へマージする
-8. main push をトリガーに VPS へ自動デプロイする
-
-推奨ブランチ命名:
-
-```text
-feature/<topic>
-fix/<topic>
-docs/<topic>
-```
