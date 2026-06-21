@@ -31,15 +31,118 @@ OpenAI API など外部サービスへ実際に接続するテストは前提に
 - 3 言語目を追加しない制御
 - 録音開始、停止、`onStart` callback の呼び出し
 
+## 完了済み（続き）
+
+### Backend Unit Test 第二段階
+
+`http.DefaultClient.Transport` をテスト用 `mockTransport` で差し替えることで、外部 API への実通信なしに以下を検証しています。
+
+**translateHandler**
+
+- GET → 405
+- `OPENAI_API_KEY` 未設定 → 500
+- invalid JSON → 400
+- `text` 空（空白のみ）→ 400
+- `languages` 1件 → 400
+- `callOpenAI` transport error → 502
+- OpenAI レスポンスが非 JSON → 502
+- `sourceLanguage == "unknown"` → 422
+- `sourceLanguage` がいずれの言語とも不一致 → 422
+- 正常系 → 200、レスポンス内容を検証
+
+**interpretHandler**
+
+- GET → 405
+- `OPENAI_API_KEY` 未設定 → 500
+- Content-Type が multipart でない → 400
+- `audio` フィールド未指定 → 400
+- `myLanguage` が不正 JSON → 400
+- `myLanguage.id` が空 → 400
+- `theirLanguage` が不正 JSON → 400
+- `theirLanguage.id` が空 → 400
+- Step 1（言語判定 Whisper）transport error → 502
+- Step 1 が空 `language` を返す → 502
+- Step 2 で言語不一致（`language_mismatch`）→ 422
+- Step 3（文字起こし Whisper）transport error → 502
+- Step 4（OpenAI 翻訳）transport error → 502
+- OpenAI レスポンスが非 JSON → 502
+- 正常系 myLang 一致 → 200
+- 正常系 theirLang 一致（src/tgt 逆転）→ 200
+
+**callOpenAI**
+
+- transport error → error
+- 非 200 ステータス → error
+- 非 JSON レスポンス → error
+- `output` 空配列 → error
+- `content` 空配列 → error
+- 正常系 → TrimSpace 済み文字列を返す
+
+**callWhisper**
+
+- transport error → error
+- 非 200 ステータス → error（レスポンスボディ付き）
+- 非 JSON レスポンス → error
+- `whisper-1` モデル → `response_format=verbose_json`、language を返す
+- `gpt-4o-transcribe` モデル → `response_format=json`
+
+---
+
+## coverage 結果（Backend Test 第二段階完了時点）
+
+```
+gotalk/main.go:52:   corsMiddleware      100.0%
+gotalk/main.go:65:   writeError          100.0%
+gotalk/main.go:71:   healthHandler       100.0%
+gotalk/main.go:77:   callOpenAI           91.7%
+gotalk/main.go:128:  extractJSON         100.0%
+gotalk/main.go:142:  callWhisper          83.9%
+gotalk/main.go:197:  whisperLangMatches  100.0%
+gotalk/main.go:225:  interpretHandler     97.1%
+gotalk/main.go:353:  translateHandler    100.0%
+gotalk/main.go:448:  main                 0.0%
+total:                                   92.2%
+```
+
+## 実装変更なしで coverage 100% に届かない理由
+
+### 未到達のブロックと理由
+
+| 関数 | 未到達ブロック | 理由 |
+| --- | --- | --- |
+| `callOpenAI` | `json.Marshal` の error 分岐 | 対象 struct がすべて string フィールドのため Marshal は絶対に失敗しない |
+| `callOpenAI` | `http.NewRequest` の error 分岐 | `openAIResponsesURL` は有効な const URL のため NewRequest は失敗しない |
+| `callWhisper` | `mw.CreateFormFile` の error 分岐 | `bytes.Buffer` への書き込みは失敗しない |
+| `callWhisper` | `part.Write` の error 分岐 | 同上 |
+| `callWhisper` | `mw.WriteField("model")` の error 分岐 | 同上 |
+| `callWhisper` | `mw.WriteField("response_format")` の error 分岐 | 同上 |
+| `callWhisper` | `http.NewRequest` の error 分岐 | `whisperURL` は有効な const URL のため失敗しない |
+| `interpretHandler` | `io.ReadAll(file)` の error 分岐 | multipart ファイルはメモリ上にあるため ReadAll は失敗しない |
+| `main` | 関数全体 | `http.ListenAndServe` がブロックするため、テストから呼び出せない |
+
+### 構造的な原因
+
+- 外部 API の URL が `const` で固定されており、テストから差し替えられない
+- handler が `callOpenAI` / `callWhisper` を直接呼ぶ（dependency injection なし）
+- `http.DefaultClient.Transport` の差し替えは有効だが、NewRequest/Marshal の内部エラーパスには届かない
+
+### 将来 100% を目指す場合の方針
+
+実装変更が許容される場合は以下を検討:
+
+1. **OpenAI クライアントを interface 化する**  
+   `type OpenAIClient interface { Do(*http.Request) (*http.Response, error) }` を定義し、handler に注入する。テストでは失敗する実装を渡せる。
+
+2. **URL を変数化する**  
+   `openAIResponsesURL` と `whisperURL` を const から var にすると、テストで書き換えてエラーを誘発できる。ただし本番仕様への影響を要評価。
+
+3. **`http.NewRequest` を wrapper 関数経由にする**  
+   エラーを注入できる関数ポインタを持つことで、到達不能だった error return を通過させられる。
+
+4. **`main()` の起動ロジックを分離する**  
+   `run()` 関数に切り出してテストから呼び出せるようにする（goroutine + listener ready チャネルを使うパターン）。
+
 ## 今後予定
-
-### Backend Test 第二段階
-
-- `/api/interpret` handler の validation
-- `/api/translate` handler の validation
-- `language_mismatch` のレスポンス
-- OpenAI API 呼び出し部分を mock した翻訳レスポンス処理
-- multipart audio request の異常系
 
 ### Frontend Test 拡張
 
