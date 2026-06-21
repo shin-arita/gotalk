@@ -16,8 +16,6 @@ export default defineConfig({
         'src/App.tsx',
         // 開発用デバッグページ: 本番機能なし
         'src/pages/TtsTestPage.tsx',
-        // MediaRecorder + SpeechSynthesis + fetch が密結合、E2E 向き
-        'src/pages/InterpreterPage.tsx',
       ],
     },
   },
