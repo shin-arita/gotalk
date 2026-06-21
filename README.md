@@ -126,8 +126,15 @@ CD は CI 成功後に無条件で本番反映される構成ではなく、GitH
 - HTTPS での公開
 - Uptime Kuma による公開環境の監視
 - Discord Webhook による障害通知
+- 本番 VPS 設定の毎日バックアップ
 
 インフラ構成の詳細は [docs/infrastructure.md](docs/infrastructure.md) を参照してください。
+
+### Backup
+
+GoTalk は本番 VPS 設定を毎日バックアップしています。バックアップはローカルに 14 世代保持し、Google Drive にも退避しています。
+
+詳細は [docs/backup.md](docs/backup.md) を参照してください。
 
 ## Monitoring
 
@@ -160,6 +167,7 @@ GoTalk では、公開環境の死活監視と障害通知のために Uptime Ku
 - [テスト](docs/testing.md)
 - [CI/CD](docs/ci-cd.md)
 - [インフラ構成](docs/infrastructure.md)
+- [バックアップ](docs/backup.md)
 
 ## ローカル起動
 
@@ -186,5 +194,4 @@ docker compose up -d --build
 | http://localhost:8080 | Backend API |
 
 詳しい開発手順は [docs/development.md](docs/development.md) を参照してください。
-
 
