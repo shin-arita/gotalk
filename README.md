@@ -4,73 +4,126 @@
 
 GoTalk は、異なる言語を話す 2 人がブラウザ上で会話するための音声通訳 Web アプリケーションです。話者が 2 つの言語を選択し、マイクで話した内容を文字起こし、翻訳、読み上げまで行います。
 
-このプロジェクトは、アプリケーション実装だけでなく、CI/CD、Docker、VPS 運用まで含めたポートフォリオです。実装、テスト、自動デプロイ、運用環境を 1 つのプロダクトとして成立させることを重視しています。
+翻訳文に加えてバックトランスレーションも表示することで、「相手にどう伝わるか」を確認しながら会話できる体験を目指しています。
 
-## 解決する課題
+このプロジェクトは、AI を使ったユーザー体験を実装するだけでなく、テスト、レビュー、デプロイ、承認付き本番反映、VPS 運用まで含めて 1 つのサービスとして成立させることを目的にしています。実際に使える音声通訳アプリを題材に、機能実装と運用品質の両方を設計・構築できることを示すためのポートフォリオです。
 
-海外旅行、接客、日常会話など、相手の言語を十分に話せない場面では、翻訳結果が正しいか確認しづらいことがあります。
-
-GoTalk は翻訳文に加えてバックトランスレーションも表示することで、「相手にどう伝わるか」を確認しながら会話できる体験を目指しています。
-
-## このプロジェクトで示すこと
-
-- React / TypeScript による音声入力を含むフロントエンド実装
-- Go によるシンプルな API サーバー設計
-- OpenAI API を用途別に使い分ける AI 連携設計
-- Docker Compose によるローカル開発環境と VPS 実行環境の統一
-- GitHub Actions による lint、test、coverage、build、deploy の自動化
-- main push を契機にした VPS への SSH デプロイ
-- Claude Code を実装担当、Codex をレビュー担当とする AI 活用開発フロー
-
-## 実装済みの主な機能
+## 主な機能
 
 - 2 言語を選択して音声通訳を開始
 - マイク入力による音声録音
-- `whisper-1` による音声の言語判定
-- `gpt-4o-transcribe` による文字起こし
-- Responses API による翻訳とバックトランスレーション
+- OpenAI Audio API による言語判定と文字起こし
+- OpenAI Responses API による翻訳とバックトランスレーション
 - 認識テキストの編集と再翻訳
 - Web Speech API による翻訳文の読み上げ
 - 画面内の会話履歴表示
 
-## 今後の改善候補
+## 技術スタック
 
-- 会話履歴の永続化
-- 翻訳・音声処理まわりのテスト拡張
-- デプロイ後ヘルスチェックの自動化
-- CI 成功後のみ CD を実行する workflow 構成
-- HTTPS、監視、バックアップなどの本番運用強化
+- Frontend: React, TypeScript, Vite
+- Backend: Go, net/http
+- AI: OpenAI Audio API, OpenAI Responses API
+- Infrastructure: Docker Compose, VPS, HTTPS
+- CI/CD: GitHub Actions
+- Quality: Unit Test, Coverage, Codex Review
 
-## システム構成図
+## スクリーンショット
+
+### 言語選択
+
+![Language Select](docs/images/language-select.png)
+
+### 通訳画面（録音中）
+
+![Interpreter Recording](docs/images/interpreter-recording.png)
+
+### 翻訳結果表示
+
+![Translation Result](docs/images/translation-result.png)
+
+## システム構成
 
 ```mermaid
 flowchart LR
-  User[User Browser] --> Frontend[React / Vite]
-  Frontend -->|audio / text| Backend[Go API]
-  Backend -->|language detection / transcription| Audio[OpenAI Audio API]
-  Backend -->|translation / back translation| Responses[OpenAI Responses API]
+  subgraph App[Application]
+    User[User Browser] --> Frontend[React / Vite]
+    Frontend -->|audio / text| Backend[Go API]
+    Backend -->|language detection / transcription| Audio[OpenAI Audio API]
+    Backend -->|translation / back translation| Responses[OpenAI Responses API]
+  end
 
-  GitHub[GitHub] -->|CI / CD| Actions[GitHub Actions]
-  Actions -->|SSH deploy| VPS[VPS]
-  VPS --> Docker[Docker Compose]
+  subgraph Release[Release Management]
+    Feature[Feature Branch] --> PR[Pull Request]
+    PR --> CI[GitHub Actions CI]
+    CI --> Review[Codex Review]
+    Review --> Main[Merge to main]
+    Main --> CD[GitHub Actions CD]
+    CD --> Approval[Production Approval Gate]
+    Approval -->|SSH deploy| VPS[VPS]
+    VPS --> Docker[Docker Compose]
+  end
 ```
 
-## 技術スタック
+詳細な設計は [docs/architecture.md](docs/architecture.md) にまとめています。
 
-| 領域 | 技術 |
-| --- | --- |
-| Frontend | React, TypeScript, Vite |
-| Backend | Go, net/http |
-| AI | OpenAI Responses API, OpenAI Audio API |
-| Test | Vitest, Testing Library, Go test |
-| Runtime | Docker, Docker Compose |
-| CI/CD | GitHub Actions |
-| Infrastructure | VPS, SSH deploy |
+## 品質保証
 
-## ドキュメント一覧
+- GitHub Actions CI による lint、test、coverage、build の自動検証
+- Backend Unit Test による handler、OpenAI 連携まわりのエラーハンドリング、補助ロジックの検証
+- Backend Unit Test Coverage 92.2%（`translateHandler`: 100%、`interpretHandler`: 97.1%）
+- Frontend Unit Test による主要画面、ユーザー操作、UI ロジックの検証
+- Codex Review による差分レビューと品質リスクの確認
+
+テスト方針と現在の coverage は [docs/testing.md](docs/testing.md) を参照してください。CI/CD の詳細は [docs/ci-cd.md](docs/ci-cd.md) にまとめています。
+
+## リリース管理
+
+- Pull Request Workflow による main 取り込み前の確認
+- Branch Protection による main ブランチ保護
+- GitHub Actions CD による main push 起点のデプロイ workflow
+- `production` Environment の Required reviewers による Production Approval Gate
+- 承認後、GitHub Actions から SSH で VPS に接続し、Docker Compose で更新
+
+CD は CI 成功後に無条件で本番反映される構成ではなく、GitHub の `production` Environment 承認を通過してからデプロイされます。
+
+## インフラ / 運用
+
+- Docker Compose による frontend/backend の実行
+- VPS 上でのアプリケーション運用
+- HTTPS での公開
+
+インフラ構成の詳細は [docs/infrastructure.md](docs/infrastructure.md) を参照してください。
+
+## ドキュメント
 
 - [アーキテクチャ](docs/architecture.md)
 - [ローカル開発](docs/development.md)
 - [テスト](docs/testing.md)
 - [CI/CD](docs/ci-cd.md)
 - [インフラ構成](docs/infrastructure.md)
+
+## ローカル起動
+
+`.env.example` をコピーして `.env` を作成し、OpenAI API キーを設定します。
+
+```bash
+cp .env.example .env
+```
+
+```env
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+```
+
+Docker Compose で frontend/backend を起動します。
+
+```bash
+docker compose up -d --build
+```
+
+| URL | 用途 |
+| --- | --- |
+| http://localhost:5173 | Frontend |
+| http://localhost:8080/health | Backend health check |
+
+詳しい開発手順は [docs/development.md](docs/development.md) を参照してください。
