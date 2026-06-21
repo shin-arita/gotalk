@@ -78,6 +78,8 @@ jobs:
           # NG: unambiguous keywords
           if printf '%s' "$BODY" | grep -qi "blocking issue" || \
              printf '%s' "$BODY" | grep -qi "must fix" || \
+             printf '%s' "$BODY" | grep -qi "review suggestions" || \
+             printf '%s' "$BODY" | grep -qi "automated review suggestions" || \
              printf '%s' "$BODY" | grep -q "修正が必要" || \
              printf '%s' "$BODY" | grep -q "問題があります"; then
             is_ng=true

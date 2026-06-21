@@ -101,11 +101,13 @@ flowchart LR
 | 種別 | キーワード |
 | --- | --- |
 | OK（merge-ready） | `LGTM` / `No issues found` / `looks good` / `問題ありません` / `指摘事項はありません` |
-| NG（merge-blocked） | `issues found`\* / `blocking issue` / `must fix` / `修正が必要` / `問題があります` / `指摘事項`\* |
+| NG（merge-blocked） | `review suggestions` / `automated review suggestions` / `issues found`\* / `blocking issue` / `must fix` / `修正が必要` / `問題があります` / `指摘事項`\* |
 
 \* `issues found` は `No issues found` を含まない場合のみ NG。`指摘事項` は `指摘事項はありません` を含まない場合のみ NG。NG / OK 両方マッチする場合は NG が優先。
 
 **Bot 判定:** `github.event.comment.user.type == 'Bot'` を確認します。GitHub App（Copilot / Codex 等）は Bot として分類されます。ラベル 3 種は workflow 内で未存在の場合に自動作成されます。
+
+**merge-ready の制限:** Codex がコメントで OK 文言を返した場合は workflow が `merge-ready` を自動付与します。Codex が 👍 リアクションのみで完了した場合は、現時点では workflow で自動検知しません。その場合は内容を確認のうえ `merge-ready` ラベルを手動付与してください。
 
 ## リリース管理
 
