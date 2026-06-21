@@ -1,0 +1,184 @@
+name: Codex Review Request
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  handle-review-request:
+    name: "@codex review → review-pending"
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request.url != '' &&
+      contains(github.event.comment.body, '@codex review')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ensure labels exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/labels \
+            -X POST -f name="review-pending" -f color="F9D0C4" \
+            -f description="Codex review requested" 2>/dev/null || true
+          gh api repos/${{ github.repository }}/labels \
+            -X POST -f name="merge-ready" -f color="0E8A16" \
+            -f description="Ready to merge" 2>/dev/null || true
+          gh api repos/${{ github.repository }}/labels \
+            -X POST -f name="merge-blocked" -f color="D93F0B" \
+            -f description="Blocked from merging" 2>/dev/null || true
+
+      - name: Add review-pending, remove merge-ready and merge-blocked
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --add-label "review-pending" --repo "${{ github.repository }}"
+          gh pr edit "$PR_NUMBER" --remove-label "merge-ready" \
+            --repo "${{ github.repository }}" 2>/dev/null || true
+          gh pr edit "$PR_NUMBER" --remove-label "merge-blocked" \
+            --repo "${{ github.repository }}" 2>/dev/null || true
+
+      - name: Post confirmation comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh pr comment "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --body "Codex review request accepted. Status: review-pending"
+
+  handle-review-result:
+    # Fires only on Bot comments (github.event.comment.user.type == 'Bot').
+    # Keyword detection runs in bash; NG takes priority over OK when both match.
+    # Overlapping patterns ("issues found" ⊂ "No issues found",
+    # "指摘事項" ⊂ "指摘事項はありません") are resolved by exclusion logic.
+    name: "Codex bot result → merge-ready or merge-blocked"
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request.url != '' &&
+      github.event.comment.user.type == 'Bot'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Determine review outcome
+        id: outcome
+        env:
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          is_ng=false
+          is_ok=false
+
+          # NG: unambiguous keywords
+          if printf '%s' "$BODY" | grep -qi "blocking issue" || \
+             printf '%s' "$BODY" | grep -qi "must fix" || \
+             printf '%s' "$BODY" | grep -qi "review suggestions" || \
+             printf '%s' "$BODY" | grep -qi "automated review suggestions" || \
+             printf '%s' "$BODY" | grep -q "修正が必要" || \
+             printf '%s' "$BODY" | grep -q "問題があります"; then
+            is_ng=true
+          fi
+          # NG: "issues found" only when NOT preceded by "no"
+          if printf '%s' "$BODY" | grep -qi "issues found" && \
+             ! printf '%s' "$BODY" | grep -qi "no issues found"; then
+            is_ng=true
+          fi
+          # NG: "指摘事項" only when NOT "指摘事項はありません"
+          if printf '%s' "$BODY" | grep -q "指摘事項" && \
+             ! printf '%s' "$BODY" | grep -q "指摘事項はありません"; then
+            is_ng=true
+          fi
+
+          # OK keywords
+          if printf '%s' "$BODY" | grep -qi "lgtm" || \
+             printf '%s' "$BODY" | grep -qi "no issues found" || \
+             printf '%s' "$BODY" | grep -qi "looks good" || \
+             printf '%s' "$BODY" | grep -q "問題ありません" || \
+             printf '%s' "$BODY" | grep -q "指摘事項はありません"; then
+            is_ok=true
+          fi
+
+          # NG takes priority over OK
+          if $is_ng; then
+            echo "result=blocked" >> "$GITHUB_OUTPUT"
+          elif $is_ok; then
+            echo "result=ready" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=none" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ensure labels exist
+        if: steps.outcome.outputs.result != 'none'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/labels \
+            -X POST -f name="review-pending" -f color="F9D0C4" \
+            -f description="Codex review requested" 2>/dev/null || true
+          gh api repos/${{ github.repository }}/labels \
+            -X POST -f name="merge-ready" -f color="0E8A16" \
+            -f description="Ready to merge" 2>/dev/null || true
+          gh api repos/${{ github.repository }}/labels \
+            -X POST -f name="merge-blocked" -f color="D93F0B" \
+            -f description="Blocked from merging" 2>/dev/null || true
+
+      - name: Apply merge-ready
+        if: steps.outcome.outputs.result == 'ready'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --add-label "merge-ready" --repo "${{ github.repository }}"
+          gh pr edit "$PR_NUMBER" --remove-label "review-pending" \
+            --repo "${{ github.repository }}" 2>/dev/null || true
+          gh pr edit "$PR_NUMBER" --remove-label "merge-blocked" \
+            --repo "${{ github.repository }}" 2>/dev/null || true
+
+      - name: Apply merge-blocked
+        if: steps.outcome.outputs.result == 'blocked'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --add-label "merge-blocked" --repo "${{ github.repository }}"
+          gh pr edit "$PR_NUMBER" --remove-label "review-pending" \
+            --repo "${{ github.repository }}" 2>/dev/null || true
+          gh pr edit "$PR_NUMBER" --remove-label "merge-ready" \
+            --repo "${{ github.repository }}" 2>/dev/null || true
+
+  reset-on-push:
+    # merge-blocked is intentionally NOT removed on synchronize.
+    # A blocking issue must remain visible until a human re-reviews.
+    name: "synchronize → remove merge-ready, add review-pending"
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ensure labels exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/labels \
+            -X POST -f name="review-pending" -f color="F9D0C4" \
+            -f description="Codex review requested" 2>/dev/null || true
+          gh api repos/${{ github.repository }}/labels \
+            -X POST -f name="merge-ready" -f color="0E8A16" \
+            -f description="Ready to merge" 2>/dev/null || true
+          gh api repos/${{ github.repository }}/labels \
+            -X POST -f name="merge-blocked" -f color="D93F0B" \
+            -f description="Blocked from merging" 2>/dev/null || true
+
+      - name: Remove merge-ready, add review-pending
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --add-label "review-pending" --repo "${{ github.repository }}"
+          gh pr edit "$PR_NUMBER" --remove-label "merge-ready" \
+            --repo "${{ github.repository }}" 2>/dev/null || true
