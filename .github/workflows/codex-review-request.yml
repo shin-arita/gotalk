@@ -16,6 +16,7 @@ jobs:
     if: >-
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request.url != '' &&
+      github.event.comment.user.type != 'Bot' &&
       contains(github.event.comment.body, '@codex review')
     runs-on: ubuntu-latest
 
@@ -98,6 +99,7 @@ jobs:
           # OK keywords
           if printf '%s' "$BODY" | grep -qi "lgtm" || \
              printf '%s' "$BODY" | grep -qi "no issues found" || \
+             printf '%s' "$BODY" | grep -qi "didn't find any major issues" || \
              printf '%s' "$BODY" | grep -qi "looks good" || \
              printf '%s' "$BODY" | grep -q "問題ありません" || \
              printf '%s' "$BODY" | grep -q "指摘事項はありません"; then
