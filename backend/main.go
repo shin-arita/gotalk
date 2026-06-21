@@ -196,7 +196,11 @@ func callWhisper(apiKey, model string, audioData []byte, filename string) (text,
 // ISO 639-1 codes ("en", "ja") from gpt-4o-transcribe.
 func whisperLangMatches(whisperLang, appLangID string) bool {
 	wl := strings.ToLower(strings.TrimSpace(whisperLang))
-	id := strings.ToLower(appLangID)
+	id := strings.ToLower(strings.TrimSpace(appLangID))
+
+	if wl == "" || id == "" {
+		return false
+	}
 
 	// ISO code: exact match or prefix match for zh-CN / zh-TW
 	if wl == id || strings.HasPrefix(id, wl+"-") {
