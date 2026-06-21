@@ -77,6 +77,36 @@ flowchart LR
 
 テスト方針と現在の coverage は [docs/testing.md](docs/testing.md) を参照してください。CI/CD の詳細は [docs/ci-cd.md](docs/ci-cd.md) にまとめています。
 
+### Codex Review ラベル運用
+
+`.github/workflows/codex-review-request.yml` が PR コメントを監視し、ラベルで状態を自動管理します。
+
+| ラベル | 意味 |
+| --- | --- |
+| `review-pending` | レビュー依頼済み / レビュー待ち |
+| `merge-ready` | Codex レビューが問題なしと判定した状態 |
+| `merge-blocked` | Codex レビューに修正が必要な指摘がある状態 |
+
+**トリガーと動作:**
+
+| 条件 | 動作 |
+| --- | --- |
+| PR コメントに `@codex review` を含む（投稿者不問） | `review-pending` 付与、`merge-ready` / `merge-blocked` 削除、確認コメント投稿 |
+| Bot コメントに OK キーワードを含む | `merge-ready` 付与、`review-pending` / `merge-blocked` 削除 |
+| Bot コメントに NG キーワードを含む（OK より優先） | `merge-blocked` 付与、`review-pending` / `merge-ready` 削除 |
+| PR に新しいコミットが push された場合 | `merge-ready` 削除、`review-pending` 付与（`merge-blocked` は残す） |
+
+**キーワード一覧:**
+
+| 種別 | キーワード |
+| --- | --- |
+| OK（merge-ready） | `LGTM` / `No issues found` / `looks good` / `問題ありません` / `指摘事項はありません` |
+| NG（merge-blocked） | `issues found`\* / `blocking issue` / `must fix` / `修正が必要` / `問題があります` / `指摘事項`\* |
+
+\* `issues found` は `No issues found` を含まない場合のみ NG。`指摘事項` は `指摘事項はありません` を含まない場合のみ NG。NG / OK 両方マッチする場合は NG が優先。
+
+**Bot 判定:** `github.event.comment.user.type == 'Bot'` を確認します。GitHub App（Copilot / Codex 等）は Bot として分類されます。ラベル 3 種は workflow 内で未存在の場合に自動作成されます。
+
 ## リリース管理
 
 - Pull Request Workflow による main 取り込み前の確認
