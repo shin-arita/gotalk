@@ -77,7 +77,7 @@ Responses API は、文字起こし済みのテキストを入力として、翻
 7. Responses API で翻訳とバックトランスレーションを行う
 8. フロントエンドに認識テキスト、翻訳文、バックトランスレーションを表示する
 
-## ディレクトリ構成
+## 関連ディレクトリ構成
 
 ```text
 .
@@ -86,11 +86,13 @@ Responses API は、文字起こし済みのテキストを入力として、翻
 │   ├── main_test.go      # backend unit tests
 │   └── Dockerfile
 ├── frontend/             # React / Vite app
-│   ├── src/
+│   ├── src/              # React application
+│   ├── vite.config.ts    # /api proxy configuration
 │   ├── package.json
 │   └── Dockerfile
 ├── docker-compose.yml
 ├── .env.example
+├── docs/
 └── README.md
 ```
 

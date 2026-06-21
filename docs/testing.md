@@ -1,21 +1,53 @@
 # Testing
 
-## テスト戦略
+## 現在の位置づけ
 
-GoTalk のテストは、フロントエンドとバックエンドを分けて検証し、Pull Request と main push のたびに GitHub Actions CI で自動実行します。
+GoTalk のテストは、現時点ではテスト基盤整備段階です。Backend Unit Test の第一段階と、Frontend Unit Test 基盤を CI に組み込んでいます。
 
-主な目的は以下です。
+OpenAI API など外部サービスへ実際に接続するテストは前提にしていません。CI 上で安定して実行できる範囲として、アプリケーション側で制御できるロジックと UI の基本動作を中心に検証しています。
 
-- 回帰防止: 言語定義、言語選択、録音開始、API 補助ロジックなど、現在テストしている既存機能が変更で壊れていないことを確認する
-- CI 連携: ローカルだけでなく GitHub Actions 上でも同じ検証を実行し、レビュー前に機械的な問題を検出する
-- 品質保証: lint、unit test、coverage、build を組み合わせ、実装品質とビルド可能性を確認する
-- レビュー支援: Codex のレビュー時に、差分だけでなく CI 結果も判断材料にできる状態を作る
+## 完了済み
 
-## テスト対象の考え方
+### Backend Unit Test 第一段階
 
-Frontend では、現在は言語定義、言語選択画面、録音開始から停止までの基本的なイベントを検証しています。UI の見た目そのものではなく、選択状態、ボタン状態、イベントハンドラ呼び出しなど、コンポーネントの振る舞いを対象にしています。
+現在の backend test では、以下を検証しています。
 
-Backend では、OpenAI API 呼び出しそのものではなく、ヘルスチェック、CORS、エラーレスポンス、JSON 抽出、言語判定補助ロジックなど、アプリケーション側で制御できるロジックを中心に検証しています。外部 API への依存を直接テストに含めないことで、CI 上でも安定して実行できる構成にしています。
+- `whisperLangMatches` の言語タグ照合
+- `extractJSON` の JSON 抽出
+- `/health` handler のレスポンス
+- `writeError` の JSON error response
+- CORS middleware の通常リクエスト処理
+- CORS middleware の OPTIONS 処理
+
+### Frontend Unit Test 基盤
+
+現在の frontend test では、以下を検証しています。
+
+- 言語定義 `LANGUAGES` の件数、必須項目、ID 一意性、主要言語データ
+- 言語選択画面の表示
+- 2 言語未満のとき開始ボタンが無効になること
+- 2 言語選択時に開始ボタンが有効になること
+- 言語カード選択と解除
+- 3 言語目を追加しない制御
+- 録音開始、停止、`onStart` callback の呼び出し
+
+## 今後予定
+
+### Backend Test 第二段階
+
+- `/api/interpret` handler の validation
+- `/api/translate` handler の validation
+- `language_mismatch` のレスポンス
+- OpenAI API 呼び出し部分を mock した翻訳レスポンス処理
+- multipart audio request の異常系
+
+### Frontend Test 拡張
+
+- Interpreter page の翻訳レスポンス表示
+- 認識テキスト編集後の再翻訳 flow
+- language mismatch 表示
+- history 表示と展開
+- speech synthesis 呼び出し部分の UI 挙動
 
 ## Frontend
 
@@ -34,7 +66,7 @@ npm run build
 | --- | --- |
 | `npm run lint` | ESLint による静的解析 |
 | `npm run test` | Vitest の単体テスト |
-| `npm run test:coverage` | coverage 付きテスト |
+| `npm run test:coverage` | coverage 付きテスト実行 |
 | `npm run build` | TypeScript build と Vite build |
 
 ## Backend
@@ -56,6 +88,8 @@ go build -o /tmp/gotalk-backend .
 
 ## Docker 起動確認
 
+必要に応じて、Docker Compose で起動状態を確認します。
+
 ```bash
 docker compose up -d --build
 docker compose ps
@@ -68,10 +102,10 @@ curl http://localhost:8080/health
 
 Pull Request と main push では GitHub Actions により以下が自動実行されます。
 
-- Frontend lint
-- Frontend test
-- Frontend coverage
-- Frontend build
-- Backend vet
-- Backend test
-- Backend build
+- Frontend lint: `npm run lint`
+- Frontend test: `npm run test`
+- Frontend coverage: `npm run test:coverage`
+- Frontend build: `npm run build`
+- Backend vet: `go vet ./...`
+- Backend test: `go test ./...`
+- Backend build: `go build -o /tmp/gotalk-backend .`

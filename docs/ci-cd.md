@@ -1,8 +1,10 @@
 # CI/CD
 
-## 開発フロー
+## 現在の開発フロー
 
-GoTalk は、Pull Request を中心に CI とレビューを行い、main へ merge された変更を main push として CD に流す運用です。現在の CD workflow は CI 完了イベントではなく、`main` ブランチへの push をトリガーに起動します。
+GoTalk は、Pull Request で CI とレビューを行い、main へ merge された変更を main push として CD に流す運用です。
+
+現在の CD workflow は `workflow_run` ではありません。CI 成功イベントを待って CD を起動する構成ではなく、`push` to `main` をトリガーに VPS へデプロイします。
 
 ```mermaid
 flowchart LR
@@ -15,9 +17,9 @@ flowchart LR
   CD --> VPS[VPS deploy]
 ```
 
-この図は「PR で CI を確認してから main に merge する」運用を表しています。workflow として CD が CI の成功を直接待つ構成ではありません。
+この図は運用上の流れを表しています。workflow 定義として「CI 成功後のみ CD を実行する」制御は未実装です。
 
-### 役割分担
+## 役割分担
 
 | 役割 | 担当 | 内容 |
 | --- | --- | --- |
@@ -37,6 +39,8 @@ CI は `.github/workflows/ci.yml` で定義しています。
 
 ### Frontend job
 
+working directory: `frontend`
+
 - Node.js 22 をセットアップ
 - npm cache を有効化
 - `npm ci`
@@ -47,6 +51,8 @@ CI は `.github/workflows/ci.yml` で定義しています。
 
 ### Backend job
 
+working directory: `backend`
+
 - Go 1.22 をセットアップ
 - Go module cache を有効化
 - `go vet ./...`
@@ -55,8 +61,8 @@ CI は `.github/workflows/ci.yml` で定義しています。
 
 ## CI の目的
 
-- PR 時点で静的解析、単体テスト、ビルドを自動検証する
-- main へ取り込む前にフロントエンドとバックエンドの基本品質を担保する
+- PR 時点で静的解析、単体テスト、カバレッジ計測、ビルドを自動検証する
+- main へ取り込む前にフロントエンドとバックエンドの基本品質を確認する
 - レビュー担当の Codex が、CI 結果と差分を合わせて確認できる状態にする
 
 ## CD 構成
@@ -67,13 +73,14 @@ CD は `.github/workflows/cd.yml` で定義しています。
 
 - `push` to `main`
 
-main に push されると、GitHub Actions から VPS へ SSH 接続し、VPS 上で Docker Compose を使ってアプリケーションを更新します。現状の workflow は `workflow_run` ではなく `push` to `main` で起動します。
+CD workflow は GitHub Actions から VPS へ SSH 接続し、VPS 上で Docker Compose を使ってアプリケーションを更新します。
 
 ## デプロイ手順
 
-CD workflow では以下を実行します。
+CD workflow では `appleboy/ssh-action@v1.2.2` を使い、VPS 上で以下を実行します。
 
 ```bash
+set -e
 cd ~/gotalk
 git pull --ff-only
 docker compose up -d --build
@@ -88,9 +95,15 @@ docker compose ps
 | `VPS_USER` | SSH ユーザー |
 | `VPS_SSH_KEY` | SSH 秘密鍵 |
 
+## 現在未実装の改善項目
+
+- CI 成功後のみ CD を実行する workflow 制御
+- Branch Protection による必須 CI チェック
+- デプロイ後ヘルスチェックの自動化
+- デプロイ失敗時の通知
+
 ## 運用上の注意
 
-- main push で自動デプロイされるため、main へ入れる前に PR で CI を通す
-- VPS 側の `~/gotalk` は GitHub の main と同期できる状態にしておく
+- main push で CD が起動するため、main へ入れる前に PR で CI を通す
+- VPS 側の `~/gotalk` は GitHub の main と `git pull --ff-only` できる状態にしておく
 - VPS 側の `.env` に `OPENAI_API_KEY` を設定しておく
-- デプロイ後のヘルスチェック自動化は今後の改善項目
