@@ -9,7 +9,7 @@ COPY . .
 
 RUN go build -o server .
 
-FROM alpine:latest
+FROM alpine:3.22
 
 WORKDIR /app
 
