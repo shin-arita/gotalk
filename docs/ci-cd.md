@@ -1,6 +1,6 @@
 # CI/CD
 
-## 現在の開発フロー
+## 開発フロー
 
 GoTalk は、Pull Request で CI とレビューを行い、main へ merge された変更を main push として CD に流す運用です。
 
@@ -18,13 +18,13 @@ flowchart LR
   Approval --> VPS[VPS deploy]
 ```
 
-承認者（Required reviewers）は GitHub リポジトリの Settings → Environments → production で設定します。
+承認者（Required reviewers）は GitHub リポジトリの Settings → Environments → production で管理します。
 
 ## 役割分担
 
 | 役割 | 担当 | 内容 |
 | --- | --- | --- |
-| 実装 | Claude Code | 機能追加、修正、テスト追加 |
+| 実装 | Claude Code | コード変更、修正、テスト追加 |
 | 自動検証 | GitHub Actions CI | lint、test、coverage、build |
 | レビュー | Codex | 差分確認、品質リスクの指摘、改善提案 |
 | デプロイ | GitHub Actions CD | main push を契機に VPS へ SSH デプロイ |
@@ -60,11 +60,11 @@ working directory: `backend`
 - `go test ./...`
 - `go build -o /tmp/gotalk-backend .`
 
-## CI の目的
+## CI で検証する内容
 
 - PR 時点で静的解析、単体テスト、カバレッジ計測、ビルドを自動検証する
 - main へ取り込む前にフロントエンドとバックエンドの基本品質を確認する
-- レビュー担当の Codex が、CI 結果と差分を合わせて確認できる状態にする
+- レビュー担当の Codex が、CI 結果と差分を合わせて確認する
 
 ## CD 構成
 
@@ -98,20 +98,17 @@ docker compose ps
 
 ## GitHub Environment 設定
 
-production Environment の承認ゲートを有効にするには、GitHub リポジトリで以下を設定します。
+production Environment は以下の設定で運用します。
 
-1. Settings → Environments → New environment で `production` を作成
-2. Required reviewers に承認者（`shin-arita`）を追加
-3. Save protection rules
-
-## 今後の改善項目
-
-- デプロイ後ヘルスチェックの自動化
-- デプロイ失敗時の通知
+| 項目 | 設定 |
+| --- | --- |
+| Environment | `production` |
+| Required reviewers | `shin-arita` |
+| Protection rules | 有効 |
 
 ## 運用上の注意
 
 - main push で CD が起動し、production Environment の承認待ちになる
 - 承認者が GitHub Actions の画面から approve するとデプロイが実行される
-- VPS 側の `~/gotalk` は GitHub の main と `git pull --ff-only` できる状態にしておく
-- VPS 側の `.env` に `OPENAI_API_KEY` を設定しておく
+- VPS 側の `~/gotalk` は GitHub の main と `git pull --ff-only` で同期できる
+- VPS 側の `.env` に `OPENAI_API_KEY` を設定している

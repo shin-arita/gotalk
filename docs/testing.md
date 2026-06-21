@@ -1,16 +1,14 @@
 # Testing
 
-## 現在の位置づけ
+## テスト方針
 
-GoTalk のテストは、現時点ではテスト基盤整備段階です。Backend Unit Test の第一段階と、Frontend Unit Test 基盤を CI に組み込んでいます。
+GoTalk のテストは、外部 API への実通信を避けながら backend handler、OpenAI 連携まわりのエラーハンドリング、frontend の主要画面と UI ロジックを CI で検証します。
 
-OpenAI API など外部サービスへ実際に接続するテストは前提にしていません。CI 上で安定して実行できる範囲として、アプリケーション側で制御できるロジックと UI の基本動作を中心に検証しています。
+OpenAI API など外部サービスへ実際に接続するテストは実行しません。CI 上で安定して実行できる範囲として、アプリケーション側で制御できるロジックと UI の基本動作を中心に検証しています。
 
-## 完了済み
+## Backend Unit Test
 
-### Backend Unit Test 第一段階
-
-現在の backend test では、以下を検証しています。
+backend test では、以下を検証しています。
 
 - `whisperLangMatches` の言語タグ照合
 - `extractJSON` の JSON 抽出
@@ -19,9 +17,9 @@ OpenAI API など外部サービスへ実際に接続するテストは前提に
 - CORS middleware の通常リクエスト処理
 - CORS middleware の OPTIONS 処理
 
-### Frontend Unit Test 基盤
+## Frontend Unit Test
 
-現在の frontend test では、以下を検証しています。
+frontend test では、以下を検証しています。
 
 - 言語定義 `LANGUAGES` の件数、必須項目、ID 一意性、主要言語データ
 - 言語選択画面の表示
@@ -30,10 +28,19 @@ OpenAI API など外部サービスへ実際に接続するテストは前提に
 - 言語カード選択と解除
 - 3 言語目を追加しない制御
 - 録音開始、停止、`onStart` callback の呼び出し
+- 録音中のカード操作抑止
+- 録音失敗時の復帰
+- MediaRecorder の mime type 選択
+- unmount 時の録音停止
+- Interpreter page の翻訳レスポンス表示
+- 認識テキスト、翻訳文、バックトランスレーションの表示
+- language mismatch 表示
+- HTTP 500 エラー時の UI 復帰
+- history 表示と展開
+- speech synthesis 呼び出しとボタン状態
+- マイク権限拒否時のエラー表示
 
-## 完了済み（続き）
-
-### Backend Unit Test 第二段階
+## OpenAI API 呼び出しまわり
 
 `http.DefaultClient.Transport` をテスト用 `mockTransport` で差し替えることで、外部 API への実通信なしに以下を検証しています。
 
@@ -88,7 +95,7 @@ OpenAI API など外部サービスへ実際に接続するテストは前提に
 
 ---
 
-## coverage 結果（Backend Test 第二段階完了時点）
+## coverage 結果
 
 ```
 gotalk/main.go:52:   corsMiddleware      100.0%
@@ -104,53 +111,21 @@ gotalk/main.go:448:  main                 0.0%
 total:                                   92.2%
 ```
 
-## 実装変更なしで coverage 100% に届かない理由
+## coverage の読み方
 
-### 未到達のブロックと理由
+Backend coverage は handler と OpenAI 連携まわりの分岐を中心に確認しています。以下のブロックは、実装構造上の到達不能パスまたはサーバー起動エントリポイントのため、単体テストの対象外です。
 
-| 関数 | 未到達ブロック | 理由 |
+| 関数 | 対象外ブロック | 理由 |
 | --- | --- | --- |
-| `callOpenAI` | `json.Marshal` の error 分岐 | 対象 struct がすべて string フィールドのため Marshal は絶対に失敗しない |
-| `callOpenAI` | `http.NewRequest` の error 分岐 | `openAIResponsesURL` は有効な const URL のため NewRequest は失敗しない |
-| `callWhisper` | `mw.CreateFormFile` の error 分岐 | `bytes.Buffer` への書き込みは失敗しない |
-| `callWhisper` | `part.Write` の error 分岐 | 同上 |
-| `callWhisper` | `mw.WriteField("model")` の error 分岐 | 同上 |
-| `callWhisper` | `mw.WriteField("response_format")` の error 分岐 | 同上 |
-| `callWhisper` | `http.NewRequest` の error 分岐 | `whisperURL` は有効な const URL のため失敗しない |
-| `interpretHandler` | `io.ReadAll(file)` の error 分岐 | multipart ファイルはメモリ上にあるため ReadAll は失敗しない |
-| `main` | 関数全体 | `http.ListenAndServe` がブロックするため、テストから呼び出せない |
-
-### 構造的な原因
-
-- 外部 API の URL が `const` で固定されており、テストから差し替えられない
-- handler が `callOpenAI` / `callWhisper` を直接呼ぶ（dependency injection なし）
-- `http.DefaultClient.Transport` の差し替えは有効だが、NewRequest/Marshal の内部エラーパスには届かない
-
-### 将来 100% を目指す場合の方針
-
-実装変更が許容される場合は以下を検討:
-
-1. **OpenAI クライアントを interface 化する**  
-   `type OpenAIClient interface { Do(*http.Request) (*http.Response, error) }` を定義し、handler に注入する。テストでは失敗する実装を渡せる。
-
-2. **URL を変数化する**  
-   `openAIResponsesURL` と `whisperURL` を const から var にすると、テストで書き換えてエラーを誘発できる。ただし本番仕様への影響を要評価。
-
-3. **`http.NewRequest` を wrapper 関数経由にする**  
-   エラーを注入できる関数ポインタを持つことで、到達不能だった error return を通過させられる。
-
-4. **`main()` の起動ロジックを分離する**  
-   `run()` 関数に切り出してテストから呼び出せるようにする（goroutine + listener ready チャネルを使うパターン）。
-
-## 今後予定
-
-### Frontend Test 拡張
-
-- Interpreter page の翻訳レスポンス表示
-- 認識テキスト編集後の再翻訳 flow
-- language mismatch 表示
-- history 表示と展開
-- speech synthesis 呼び出し部分の UI 挙動
+| `callOpenAI` | `json.Marshal` の error 分岐 | 対象 struct が string フィールドのみで、Marshal 失敗を通常入力から発生させられない |
+| `callOpenAI` | `http.NewRequest` の error 分岐 | `openAIResponsesURL` は固定の有効な URL |
+| `callWhisper` | `mw.CreateFormFile` の error 分岐 | multipart writer の出力先がメモリ上の `bytes.Buffer` |
+| `callWhisper` | `part.Write` の error 分岐 | multipart writer の出力先がメモリ上の `bytes.Buffer` |
+| `callWhisper` | `mw.WriteField("model")` の error 分岐 | multipart writer の出力先がメモリ上の `bytes.Buffer` |
+| `callWhisper` | `mw.WriteField("response_format")` の error 分岐 | multipart writer の出力先がメモリ上の `bytes.Buffer` |
+| `callWhisper` | `http.NewRequest` の error 分岐 | `whisperURL` は固定の有効な URL |
+| `interpretHandler` | `io.ReadAll(file)` の error 分岐 | handler test の multipart ファイルはメモリ上で生成している |
+| `main` | 関数全体 | `http.ListenAndServe` を呼び出すサーバー起動エントリポイント |
 
 ## Frontend
 
@@ -191,7 +166,7 @@ go build -o /tmp/gotalk-backend .
 
 ## Docker 起動確認
 
-必要に応じて、Docker Compose で起動状態を確認します。
+Docker Compose 起動確認は、CI の単体テストとは別に frontend/backend のコンテナ起動と `/health` 応答を確認する手順です。
 
 ```bash
 docker compose up -d --build
