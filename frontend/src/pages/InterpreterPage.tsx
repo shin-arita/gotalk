@@ -43,7 +43,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
   const [recognizedText, setRecognizedText] = useState('')
   const [translatedText, setTranslatedText] = useState('')
   const [backTranslation, setBackTranslation] = useState('')
-  const [sourceLangId, setSourceLangId] = useState('')
   const [targetLangId, setTargetLangId] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
   const [isEditing, setIsEditing] = useState(false)
@@ -123,7 +122,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
       setRecognizedText(data.text)
       setTranslatedText(data.translatedText)
       setBackTranslation(data.backTranslation)
-      setSourceLangId(data.sourceLanguage)
       setTargetLangId(data.targetLanguage)
       setStatus('ready')
       addHistoryEntry(data.text, data.translatedText, data.backTranslation, data.sourceLanguage, data.targetLanguage)
@@ -153,7 +151,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
       const data = await res.json()
       setTranslatedText(data.translatedText)
       setBackTranslation(data.backTranslation)
-      setSourceLangId(data.sourceLanguage)
       setTargetLangId(data.targetLanguage)
       setStatus('ready')
       addHistoryEntry(text, data.translatedText, data.backTranslation, data.sourceLanguage, data.targetLanguage)
@@ -175,6 +172,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
 
   useEffect(() => {
     if (!pendingAudio) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     callInterpretApi(pendingAudio)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
