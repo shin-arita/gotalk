@@ -4,7 +4,7 @@
 
 GoTalk は、Pull Request で CI とレビューを行い、main へ merge された変更を main push として CD に流す運用です。
 
-現在の CD workflow は `workflow_run` ではありません。CI 成功イベントを待って CD を起動する構成ではなく、`push` to `main` をトリガーに VPS へデプロイします。
+CD workflow は `push` to `main` をトリガーに起動しますが、`production` Environment の承認ゲートを通過してから VPS へデプロイします。
 
 ```mermaid
 flowchart LR
@@ -14,10 +14,11 @@ flowchart LR
   Review --> Merge[merge to main]
   Merge --> MainPush[main push]
   MainPush --> CD[GitHub Actions CD<br/>push to main]
-  CD --> VPS[VPS deploy]
+  CD --> Approval[Waiting for approval<br/>production environment]
+  Approval --> VPS[VPS deploy]
 ```
 
-この図は運用上の流れを表しています。workflow 定義として「CI 成功後のみ CD を実行する」制御は未実装です。
+承認者（Required reviewers）は GitHub リポジトリの Settings → Environments → production で設定します。
 
 ## 役割分担
 
@@ -73,7 +74,7 @@ CD は `.github/workflows/cd.yml` で定義しています。
 
 - `push` to `main`
 
-CD workflow は GitHub Actions から VPS へ SSH 接続し、VPS 上で Docker Compose を使ってアプリケーションを更新します。
+deploy job に `environment: production` を設定しており、GitHub の production Environment に設定された Required reviewers が承認するまでデプロイは保留されます。承認後、GitHub Actions から VPS へ SSH 接続し、VPS 上で Docker Compose を使ってアプリケーションを更新します。
 
 ## デプロイ手順
 
@@ -95,15 +96,22 @@ docker compose ps
 | `VPS_USER` | SSH ユーザー |
 | `VPS_SSH_KEY` | SSH 秘密鍵 |
 
-## 現在未実装の改善項目
+## GitHub Environment 設定
 
-- CI 成功後のみ CD を実行する workflow 制御
-- Branch Protection による必須 CI チェック
+production Environment の承認ゲートを有効にするには、GitHub リポジトリで以下を設定します。
+
+1. Settings → Environments → New environment で `production` を作成
+2. Required reviewers に承認者（`shin-arita`）を追加
+3. Save protection rules
+
+## 今後の改善項目
+
 - デプロイ後ヘルスチェックの自動化
 - デプロイ失敗時の通知
 
 ## 運用上の注意
 
-- main push で CD が起動するため、main へ入れる前に PR で CI を通す
+- main push で CD が起動し、production Environment の承認待ちになる
+- 承認者が GitHub Actions の画面から approve するとデプロイが実行される
 - VPS 側の `~/gotalk` は GitHub の main と `git pull --ff-only` できる状態にしておく
 - VPS 側の `.env` に `OPENAI_API_KEY` を設定しておく
