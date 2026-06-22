@@ -42,7 +42,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
   const [recognizedText, setRecognizedText] = useState('')
   const [translatedText, setTranslatedText] = useState('')
   const [backTranslation, setBackTranslation] = useState('')
-  const [targetLangId, setTargetLangId] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState('')
@@ -118,7 +117,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
       setRecognizedText(data.text)
       setTranslatedText(data.translatedText)
       setBackTranslation(data.backTranslation)
-      setTargetLangId(data.targetLanguage)
       setStatus('ready')
       addHistoryEntry(data.text, data.translatedText, data.backTranslation, data.sourceLanguage, data.targetLanguage)
     } catch (e) {
@@ -147,7 +145,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
       const data = await res.json()
       setTranslatedText(data.translatedText)
       setBackTranslation(data.backTranslation)
-      setTargetLangId(data.targetLanguage)
       setStatus('ready')
       addHistoryEntry(text, data.translatedText, data.backTranslation, data.sourceLanguage, data.targetLanguage)
     } catch (e) {

@@ -87,8 +87,8 @@ function setupAudioMock() {
     writable: true,
     configurable: true,
   })
-  global.URL.createObjectURL = vi.fn().mockReturnValue('blob:fake')
-  global.URL.revokeObjectURL = vi.fn()
+  globalThis.URL.createObjectURL = vi.fn().mockReturnValue('blob:fake')
+  globalThis.URL.revokeObjectURL = vi.fn()
   return instance
 }
 
