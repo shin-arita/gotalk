@@ -63,38 +63,41 @@ function make500Response(): Response {
   } as unknown as Response
 }
 
-// --- SpeechSynthesis mock ---
+// --- Audio / TTS mock ---
 
-class MockUtterance {
-  lang = ''
-  text: string
-  onstart: (() => void) | null = null
-  onend: (() => void) | null = null
-  onerror: ((e: Partial<SpeechSynthesisErrorEvent>) => void) | null = null
-  constructor(text: string) { this.text = text }
+interface MockAudioInstance {
+  play: ReturnType<typeof vi.fn>
+  pause: ReturnType<typeof vi.fn>
+  onended: (() => void) | null
+  onerror: (() => void) | null
 }
 
-let lastUtterance: MockUtterance | null = null
+let mockAudioInstance: MockAudioInstance | null = null
 
-const speechSynthMock = {
-  speak: vi.fn((u: MockUtterance) => { lastUtterance = u }),
-  cancel: vi.fn(),
-}
-
-function setupSpeechSynthesis() {
-  lastUtterance = null
-  speechSynthMock.speak.mockClear()
-  speechSynthMock.cancel.mockClear()
-  Object.defineProperty(window, 'speechSynthesis', {
-    value: speechSynthMock,
+function setupAudioMock() {
+  mockAudioInstance = null
+  const instance: MockAudioInstance = {
+    play: vi.fn().mockResolvedValue(undefined),
+    pause: vi.fn(),
+    onended: null,
+    onerror: null,
+  }
+  Object.defineProperty(globalThis, 'Audio', {
+    value: vi.fn(function () { mockAudioInstance = instance; return instance }),
     writable: true,
     configurable: true,
   })
-  Object.defineProperty(window, 'SpeechSynthesisUtterance', {
-    value: MockUtterance,
-    writable: true,
-    configurable: true,
-  })
+  globalThis.URL.createObjectURL = vi.fn().mockReturnValue('blob:fake')
+  globalThis.URL.revokeObjectURL = vi.fn()
+  return instance
+}
+
+function makeAudioOkResponse(): Response {
+  return {
+    ok: true,
+    status: 200,
+    blob: () => Promise.resolve(new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/mpeg' })),
+  } as unknown as Response
 }
 
 // --- Lifecycle ---
@@ -201,7 +204,6 @@ describe('InterpreterPage translation response', () => {
   })
 
   it('shows speak button after successful translation', async () => {
-    setupSpeechSynthesis()
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       makeOkResponse(makeInterpretResponse()),
     )
@@ -310,12 +312,12 @@ describe('InterpreterPage history', () => {
 })
 
 // ============================================================
-// Speech Synthesis UI
+// TTS (OpenAI)
 // ============================================================
 
-describe('InterpreterPage speech synthesis UI', () => {
+describe('InterpreterPage TTS (OpenAI)', () => {
   beforeEach(() => {
-    setupSpeechSynthesis()
+    setupAudioMock()
   })
 
   it('speak button is absent before any translation', () => {
@@ -333,98 +335,75 @@ describe('InterpreterPage speech synthesis UI', () => {
     )
   })
 
-  it('clicking speak calls speechSynthesis.speak with correct text and lang', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      makeOkResponse(makeInterpretResponse({ translatedText: 'こんにちは', targetLanguage: 'ja' })),
-    )
+  it('clicking speak POSTs to /api/tts with correct body', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse({ translatedText: 'こんにちは' })))
+    fetchMock.mockResolvedValueOnce(makeAudioOkResponse())
+
     renderPage([ja, en], vi.fn(), new Blob(['audio']))
     await waitFor(() =>
       expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument(),
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '発声する' }))
-
-    expect(speechSynthMock.speak).toHaveBeenCalledOnce()
-    expect(lastUtterance?.text).toBe('こんにちは')
-    expect(lastUtterance?.lang).toBe('ja-JP')
-  })
-
-  it('speak button is disabled while speaking', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      makeOkResponse(makeInterpretResponse()),
-    )
-    renderPage([ja, en], vi.fn(), new Blob(['audio']))
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument(),
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: '発声する' }))
-    expect(screen.getByRole('button', { name: '発声する' })).toBeDisabled()
-  })
-
-  it('speak button re-enables after TTS onend', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      makeOkResponse(makeInterpretResponse()),
-    )
-    renderPage([ja, en], vi.fn(), new Blob(['audio']))
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument(),
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: '発声する' }))
-    act(() => { lastUtterance!.onend?.() })
-    expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
-  })
-
-  it('speak button re-enables after TTS onerror', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      makeOkResponse(makeInterpretResponse()),
-    )
-    renderPage([ja, en], vi.fn(), new Blob(['audio']))
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument(),
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: '発声する' }))
-    act(() => { lastUtterance!.onerror?.({ error: 'network' } as Partial<SpeechSynthesisErrorEvent>) })
-    expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
-  })
-
-  it('fallback timer resets status to ready after TTS_FALLBACK_MS (3000 ms)', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      makeOkResponse(makeInterpretResponse()),
-    )
-    renderPage([ja, en], vi.fn(), new Blob(['audio']))
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument(),
-    )
-
-    vi.useFakeTimers()
-    fireEvent.click(screen.getByRole('button', { name: '発声する' }))
-    expect(screen.getByRole('button', { name: '発声する' })).toBeDisabled()
-
-    act(() => { vi.advanceTimersByTime(3000) })
-    expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
-
-    vi.useRealTimers()
-  })
-
-  it('does not call speechSynthesis when it is unavailable', async () => {
-    Object.defineProperty(window, 'speechSynthesis', {
-      value: undefined,
-      writable: true,
-      configurable: true,
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '発声する' }))
     })
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      makeOkResponse(makeInterpretResponse()),
-    )
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'こんにちは' }),
+    })
+  })
+
+  it('speak button is disabled while TTS fetch is in progress', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+    fetchMock.mockReturnValueOnce(new Promise(() => {}))
+
     renderPage([ja, en], vi.fn(), new Blob(['audio']))
     await waitFor(() =>
       expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument(),
     )
 
     fireEvent.click(screen.getByRole('button', { name: '発声する' }))
-    expect(speechSynthMock.speak).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: '発声する' })).toBeDisabled()
+  })
+
+  it('speak button re-enables after audio onended', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+    fetchMock.mockResolvedValueOnce(makeAudioOkResponse())
+
+    renderPage([ja, en], vi.fn(), new Blob(['audio']))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '発声する' }))
+
+    await waitFor(() => expect(mockAudioInstance).not.toBeNull())
+    act(() => { mockAudioInstance!.onended?.() })
+    expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
+  })
+
+  it('speak button re-enables after TTS fetch error', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+    fetchMock.mockResolvedValueOnce(make500Response())
+
+    renderPage([ja, en], vi.fn(), new Blob(['audio']))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument(),
+    )
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '発声する' }))
+    })
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled(),
+    )
   })
 })
 

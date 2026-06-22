@@ -15,8 +15,11 @@ import (
 const (
 	defaultModel        = "gpt-4o-mini"
 	defaultWhisperModel = "gpt-4o-transcribe"
+	defaultTTSModel     = "gpt-4o-mini-tts"
+	defaultTTSVoice     = "marin"
 	langDetectionModel  = "whisper-1"
 	openAIResponsesURL  = "https://api.openai.com/v1/responses"
+	openAITTSURL        = "https://api.openai.com/v1/audio/speech"
 	whisperURL          = "https://api.openai.com/v1/audio/transcriptions"
 )
 
@@ -49,6 +52,10 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
+type TTSRequest struct {
+	Text string `json:"text"`
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -71,6 +78,82 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// callOpenAITTS calls the OpenAI Speech API and returns raw audio bytes (audio/mpeg).
+func callOpenAITTS(apiKey, model, voice, text string) ([]byte, error) {
+	type reqBody struct {
+		Model string `json:"model"`
+		Input string `json:"input"`
+		Voice string `json:"voice"`
+	}
+	payload, err := json.Marshal(reqBody{Model: model, Input: text, Voice: voice})
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, openAITTSURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("OpenAI TTS API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+func ttsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		writeError(w, http.StatusInternalServerError, "service unavailable")
+		return
+	}
+
+	model := os.Getenv("OPENAI_TTS_MODEL")
+	if model == "" {
+		model = defaultTTSModel
+	}
+	voice := os.Getenv("OPENAI_TTS_VOICE")
+	if voice == "" {
+		voice = defaultTTSVoice
+	}
+
+	var req TTSRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if strings.TrimSpace(req.Text) == "" {
+		writeError(w, http.StatusBadRequest, "text is required")
+		return
+	}
+
+	audio, err := callOpenAITTS(apiKey, model, voice, req.Text)
+	if err != nil {
+		log.Printf("TTS error: %v", err)
+		writeError(w, http.StatusBadGateway, "tts failed")
+		return
+	}
+
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Write(audio)
 }
 
 // callOpenAI sends a single prompt to the OpenAI Responses API and returns the text output.
@@ -448,6 +531,7 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/api/tts", ttsHandler)
 	mux.HandleFunc("/api/interpret", interpretHandler)
 	mux.HandleFunc("/api/translate", translateHandler)
 
