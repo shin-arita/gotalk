@@ -11,9 +11,11 @@ flowchart LR
   User[User Browser] --> Frontend[React / Vite Frontend]
   Frontend -->|POST /api/interpret<br/>multipart audio| Backend[Go Backend]
   Frontend -->|POST /api/translate<br/>JSON| Backend
+  Frontend -->|POST /api/tts<br/>JSON| Backend
   Backend -->|language detection| Whisper[OpenAI Audio API<br/>whisper-1]
   Backend -->|transcription| Transcribe[OpenAI Audio API<br/>gpt-4o-transcribe]
   Backend -->|translation / back translation| Responses[OpenAI Responses API]
+  Backend -->|text to speech| TTS[OpenAI TTS API<br/>gpt-4o-mini-tts]
 
   subgraph Application
     Frontend
@@ -29,6 +31,7 @@ flowchart LR
 | Backend | API 受付、OpenAI API 呼び出し、レスポンス整形 |
 | OpenAI Audio API | 音声の言語判定と文字起こし |
 | OpenAI Responses API | 翻訳とバックトランスレーション |
+| OpenAI TTS API | 翻訳文の音声合成 |
 
 ## API
 
@@ -37,6 +40,7 @@ flowchart LR
 | `GET` | `/health` | ヘルスチェック |
 | `POST` | `/api/interpret` | 音声ファイルを受け取り、言語判定、文字起こし、翻訳、バックトランスレーションを行う |
 | `POST` | `/api/translate` | 編集済みテキストを再翻訳する |
+| `POST` | `/api/tts` | 翻訳テキストを音声合成し `audio/mpeg` を返す |
 
 ## 音声処理設計
 
@@ -76,6 +80,9 @@ Responses API は、文字起こし済みのテキストを入力として、翻
 6. 言語が一致した場合、`gpt-4o-transcribe` で音声を文字起こしする
 7. Responses API で翻訳とバックトランスレーションを行う
 8. フロントエンドに認識テキスト、翻訳文、バックトランスレーションを表示する
+9. ユーザーが発声ボタンを押すと、フロントエンドが `/api/tts` へ翻訳テキストを送信する
+10. バックエンドが OpenAI TTS API を呼び出し、`audio/mpeg` を返す
+11. フロントエンドが `HTMLAudioElement` で音声を再生する
 
 ## 関連ディレクトリ構成
 

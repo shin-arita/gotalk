@@ -73,6 +73,137 @@ func buildInterpretRequest(audioData []byte, includeAudio bool, myLang, theirLan
 	return req, nil
 }
 
+// ─── ttsHandler ──────────────────────────────────────────────────────────────
+
+func TestTTSHandler_MethodNotAllowed(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/tts", nil)
+	rec := httptest.NewRecorder()
+	ttsHandler(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status=%d want=%d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestTTSHandler_NoAPIKey(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	req := httptest.NewRequest(http.MethodPost, "/api/tts", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	ttsHandler(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want=%d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestTTSHandler_InvalidJSON(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	req := httptest.NewRequest(http.MethodPost, "/api/tts", strings.NewReader(`not json`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	ttsHandler(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want=%d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestTTSHandler_EmptyText(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	req := httptest.NewRequest(http.MethodPost, "/api/tts", strings.NewReader(`{"text":"  "}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	ttsHandler(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want=%d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestTTSHandler_OpenAIError(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("network error")
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/tts", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	ttsHandler(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want=%d", rec.Code, http.StatusBadGateway)
+	}
+}
+
+func TestTTSHandler_OpenAINonOKStatus(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return fakeHTTPResponse(http.StatusUnauthorized, `{"error":"unauthorized"}`), nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/tts", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	ttsHandler(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want=%d", rec.Code, http.StatusBadGateway)
+	}
+}
+
+func TestTTSHandler_Success(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	audioBytes := []byte("fake mp3 audio data")
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		resp := fakeHTTPResponse(http.StatusOK, string(audioBytes))
+		resp.Header.Set("Content-Type", "audio/mpeg")
+		return resp, nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/tts", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	ttsHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "audio/mpeg" {
+		t.Fatalf("Content-Type=%q want=%q", ct, "audio/mpeg")
+	}
+	if !bytes.Equal(rec.Body.Bytes(), audioBytes) {
+		t.Fatal("unexpected audio body")
+	}
+}
+
+// ─── callOpenAITTS ───────────────────────────────────────────────────────────
+
+func TestCallOpenAITTS_Success(t *testing.T) {
+	audioBytes := []byte("fake audio data")
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return fakeHTTPResponse(http.StatusOK, string(audioBytes)), nil
+	})
+	got, err := callOpenAITTS("test-key", "gpt-4o-mini-tts", "marin", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, audioBytes) {
+		t.Fatal("unexpected audio data")
+	}
+}
+
+func TestCallOpenAITTS_TransportError(t *testing.T) {
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("network error")
+	})
+	_, err := callOpenAITTS("test-key", "gpt-4o-mini-tts", "marin", "hello")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestCallOpenAITTS_NonOKStatus(t *testing.T) {
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return fakeHTTPResponse(http.StatusUnauthorized, `{"error":"unauthorized"}`), nil
+	})
+	_, err := callOpenAITTS("test-key", "gpt-4o-mini-tts", "marin", "hello")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
 // ─── translateHandler ────────────────────────────────────────────────────────
 
 func TestTranslateHandler_MethodNotAllowed(t *testing.T) {

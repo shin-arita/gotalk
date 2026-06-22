@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import type { Language } from '../languages'
-import { LANGUAGES } from '../languages'
 import './InterpreterPage.css'
 
 type InterpreterStatus = 'idle' | 'recording' | 'processing' | 'ready' | 'speaking'
@@ -50,16 +49,13 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [historyExpanded, setHistoryExpanded] = useState(false)
 
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const speakingRef = useRef(false)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const streamRef = useRef<MediaStream | null>(null)
   const userStoppedRef = useRef(false)
   const isInterpretingRef = useRef(false)
   const editRef = useRef<HTMLTextAreaElement>(null)
-
-  const targetLang = LANGUAGES.find(l => l.id === targetLangId)
 
   useEffect(() => {
     if (!isEditing || !editRef.current) return
@@ -162,11 +158,9 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
 
   useEffect(() => {
     return () => {
-      speakingRef.current = false
-      if (timerRef.current) clearTimeout(timerRef.current)
       if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop()
       streamRef.current?.getTracks().forEach(t => t.stop())
-      window.speechSynthesis?.cancel()
+      audioRef.current?.pause()
     }
   }, [])
 
@@ -224,34 +218,30 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
     }
   }
 
-  const TTS_FALLBACK_MS = 3000
-
-  const handleSpeak = () => {
-    if (!window.speechSynthesis) {
-      setStatus('idle')
-      return
-    }
-
-    if (timerRef.current) clearTimeout(timerRef.current)
-    speakingRef.current = true
-
-    const resetToIdle = () => {
-      if (!speakingRef.current) return
-      speakingRef.current = false
-      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
+  const handleSpeak = async () => {
+    setStatus('speaking')
+    try {
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: translatedText }),
+      })
+      if (!res.ok) throw new Error(`TTS HTTP ${res.status}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audioRef.current = audio
+      const cleanup = () => {
+        URL.revokeObjectURL(url)
+        audioRef.current = null
+        setStatus('ready')
+      }
+      audio.onended = cleanup
+      audio.onerror = cleanup
+      await audio.play()
+    } catch {
       setStatus('ready')
     }
-
-    const ttsLang = targetLang?.speechCode ?? 'ja-JP'
-    const u = new SpeechSynthesisUtterance(translatedText)
-    u.lang = ttsLang
-    u.onstart = () => console.log('[TTS] onstart')
-    u.onend = () => { console.log('[TTS] onend'); resetToIdle() }
-    u.onerror = (e: SpeechSynthesisErrorEvent) => { console.log(`[TTS] onerror error=${e.error}`); resetToIdle() }
-
-    window.speechSynthesis.speak(u)
-    setStatus('speaking')
-    timerRef.current = setTimeout(resetToIdle, TTS_FALLBACK_MS)
   }
 
   const handleEditStart = () => {
