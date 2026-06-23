@@ -292,11 +292,12 @@ func whisperLangMatches(whisperLang, appLangID string) bool {
 
 	// Full language name → ISO code (whisper-1 style)
 	fullToISO := map[string]string{
-		"japanese": "ja",
-		"english":  "en",
-		"chinese":  "zh",
-		"korean":   "ko",
-		"thai":     "th",
+		"japanese":   "ja",
+		"english":    "en",
+		"chinese":    "zh",
+		"korean":     "ko",
+		"thai":       "th",
+		"vietnamese": "vi",
 	}
 	if iso, ok := fullToISO[wl]; ok {
 		return iso == id || strings.HasPrefix(id, iso+"-")

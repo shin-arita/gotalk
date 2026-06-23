@@ -105,10 +105,10 @@ afterEach(() => {
 // ============================================================
 
 describe('LanguageSelectPage rendering', () => {
-  it('renders all 6 language cards', () => {
+  it('renders all 7 language cards', () => {
     renderPage()
-    const buttons = screen.getAllByRole('button', { name: /Japanese|English|Chinese|Korean|Thai/ })
-    expect(buttons).toHaveLength(6)
+    const buttons = screen.getAllByRole('button', { name: /Japanese|English|Chinese|Korean|Thai|Tiếng Việt/ })
+    expect(buttons).toHaveLength(7)
   })
 
   it('renders the app title', () => {
