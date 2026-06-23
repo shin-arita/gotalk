@@ -3,8 +3,8 @@ import { LANGUAGES } from './languages'
 import type { Language } from './languages'
 
 describe('LANGUAGES', () => {
-  it('has exactly 6 entries', () => {
-    expect(LANGUAGES).toHaveLength(6)
+  it('has exactly 7 entries', () => {
+    expect(LANGUAGES).toHaveLength(7)
   })
 
   it('each entry has required fields', () => {
@@ -48,5 +48,10 @@ describe('LANGUAGES', () => {
   it('contains Thai with correct speechCode', () => {
     const th = LANGUAGES.find(l => l.id === 'th')
     expect(th).toEqual<Language>({ id: 'th', speechCode: 'th-TH', label: 'Thai' })
+  })
+
+  it('contains Vietnamese with correct speechCode', () => {
+    const vi = LANGUAGES.find(l => l.id === 'vi')
+    expect(vi).toEqual<Language>({ id: 'vi', speechCode: 'vi-VN', label: 'Tiếng Việt' })
   })
 })

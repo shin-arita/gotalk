@@ -11,4 +11,5 @@ export const LANGUAGES: Language[] = [
   { id: 'zh-TW', speechCode: 'zh-TW', label: 'Chinese Traditional' },
   { id: 'ko',    speechCode: 'ko-KR', label: 'Korean' },
   { id: 'th',    speechCode: 'th-TH', label: 'Thai' },
+  { id: 'vi',    speechCode: 'vi-VN', label: 'Tiếng Việt' },
 ]

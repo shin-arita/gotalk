@@ -19,6 +19,8 @@ func TestWhisperLangMatches(t *testing.T) {
 		{"thai name", "thai", "th", true},
 		{"zh tw", "zh", "zh-TW", true},
 		{"zh cn", "zh", "zh-CN", true},
+		{"vietnamese name", "vietnamese", "vi", true},
+		{"vi exact", "vi", "vi", true},
 		{"english mismatch", "en", "ja", false},
 		{"empty whisper", "", "ja", false},
 		{"empty app", "ja", "", false},
