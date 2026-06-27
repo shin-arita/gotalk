@@ -21,6 +21,16 @@ interface HistoryEntry {
   targetLangId: string
 }
 
+const FLAG_GUIDE_MESSAGES: Record<string, string> = {
+  'ja':    '国旗をタップして話してください。\n話し終わったらもう一度国旗をタップして終了してください。',
+  'en':    'Tap the flag to speak.\nTap the flag again when you are finished.',
+  'zh-CN': '点击国旗开始说话。\n说完后再次点击国旗结束。',
+  'zh-TW': '點擊國旗開始說話。\n說完後再次點擊國旗結束。',
+  'ko':    '국기를 탭하여 말씀해 주세요.\n말이 끝나면 국기를 다시 탭하여 종료하세요.',
+  'th':    'แตะธงเพื่อพูด\nเมื่อพูดเสร็จแล้ว แตะธงอีกครั้งเพื่อสิ้นสุด',
+  'vi':    'Nhấn vào cờ để nói.\nKhi nói xong, nhấn vào cờ một lần nữa để kết thúc.',
+}
+
 const LANGUAGE_UNCLEAR_MESSAGES: Record<string, string> = {
   'ja':    '言語不明、もう一度お話ください',
   'en':    'Language unclear. Please speak again.',
@@ -28,25 +38,33 @@ const LANGUAGE_UNCLEAR_MESSAGES: Record<string, string> = {
   'zh-TW': '語言不明，請再說一次',
   'ko':    '언어를 알 수 없습니다. 다시 말씀해 주세요.',
   'th':    'ไม่ทราบภาษา กรุณาพูดอีกครั้ง',
+  'vi':    'Không rõ ngôn ngữ. Vui lòng nói lại.',
 }
-
-const HISTORY_COLLAPSED_COUNT = 5
 
 function getSupportedMimeType(): string {
   const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']
   return types.find(t => MediaRecorder.isTypeSupported(t)) ?? ''
 }
 
+type SpeechRecognitionCtor = new () => SpeechRecognition
+
+function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
+  const w = window as Window & { SpeechRecognition?: SpeechRecognitionCtor; webkitSpeechRecognition?: SpeechRecognitionCtor }
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null
+}
+
 export default function InterpreterPage({ selectedLanguages, onBack, pendingAudio }: InterpreterPageProps) {
   const [status, setStatus] = useState<InterpreterStatus>('idle')
+  const [recordingFlagIndex, setRecordingFlagIndex] = useState<0 | 1 | null>(null)
   const [recognizedText, setRecognizedText] = useState('')
+  const [liveTranslatedText, setLiveTranslatedText] = useState('')
   const [translatedText, setTranslatedText] = useState('')
+  const [ttsText, setTtsText] = useState('')
   const [backTranslation, setBackTranslation] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState('')
   const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [historyExpanded, setHistoryExpanded] = useState(false)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
@@ -55,6 +73,10 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
   const userStoppedRef = useRef(false)
   const isInterpretingRef = useRef(false)
   const editRef = useRef<HTMLTextAreaElement>(null)
+  const recordingLangRef = useRef<Language | null>(null)
+  const speechRecognitionRef = useRef<SpeechRecognition | null>(null)
+  const hasLiveTranscriptRef = useRef(false)
+  const recognizedTextRef = useRef('')
 
   useEffect(() => {
     if (!isEditing || !editRef.current) return
@@ -98,14 +120,23 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
     const mimeType = audioBlob.type || 'audio/webm'
     const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm'
 
+    const speakerLang = recordingLangRef.current ?? selectedLanguages[0]
+    const otherLang = speakerLang.id === selectedLanguages[0].id ? selectedLanguages[1] : selectedLanguages[0]
+
     const formData = new FormData()
     formData.append('audio', audioBlob, `recording.${ext}`)
-    formData.append('myLanguage', JSON.stringify({ id: selectedLanguages[0].id, label: selectedLanguages[0].label }))
-    formData.append('theirLanguage', JSON.stringify({ id: selectedLanguages[1].id, label: selectedLanguages[1].label }))
-    formData.append('speaker', '')
+    formData.append('myLanguage', JSON.stringify({ id: speakerLang.id, label: speakerLang.label }))
+    formData.append('theirLanguage', JSON.stringify({ id: otherLang.id, label: otherLang.label }))
+    formData.append('speaker', speakerLang.id)
+    // Web Speech API のテキストがあれば送信 → バックエンドが Whisper 再文字起こしをスキップして翻訳に使用
+    if (hasLiveTranscriptRef.current && recognizedTextRef.current) {
+      formData.append('transcript', recognizedTextRef.current)
+    }
 
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 60_000)
     try {
-      const res = await fetch('/api/interpret', { method: 'POST', body: formData })
+      const res = await fetch('/api/interpret', { method: 'POST', body: formData, signal: controller.signal })
 
       if (res.status === 422) {
         const data = await res.json()
@@ -114,15 +145,21 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
       const data = await res.json()
-      setRecognizedText(data.text)
+      if (!hasLiveTranscriptRef.current) { recognizedTextRef.current = data.text; setRecognizedText(data.text) }
+      hasLiveTranscriptRef.current = false
       setTranslatedText(data.translatedText)
+      setTtsText(data.ttsText ?? data.translatedText)
       setBackTranslation(data.backTranslation)
       setStatus('ready')
       addHistoryEntry(data.text, data.translatedText, data.backTranslation, data.sourceLanguage, data.targetLanguage)
     } catch (e) {
-      setErrorMessage(e instanceof Error ? e.message : '処理に失敗しました')
+      const msg = e instanceof DOMException && e.name === 'AbortError'
+        ? '通信がタイムアウトしました。もう一度お試しください。'
+        : e instanceof Error ? e.message : '処理に失敗しました'
+      setErrorMessage(msg)
       setStatus('idle')
     } finally {
+      clearTimeout(timer)
       isInterpretingRef.current = false
     }
   }
@@ -131,11 +168,14 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
   const callTranslateApi = async (text: string) => {
     setStatus('processing')
     setErrorMessage('')
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 30_000)
     try {
       const res = await fetch('/api/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, languages: selectedLanguages.map(l => ({ id: l.id, label: l.label })) }),
+        signal: controller.signal,
       })
       if (res.status === 422) {
         const data = await res.json()
@@ -144,20 +184,47 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       setTranslatedText(data.translatedText)
+      setTtsText(data.ttsText ?? data.translatedText)
       setBackTranslation(data.backTranslation)
       setStatus('ready')
       addHistoryEntry(text, data.translatedText, data.backTranslation, data.sourceLanguage, data.targetLanguage)
     } catch (e) {
-      setErrorMessage(e instanceof Error ? e.message : '翻訳に失敗しました')
+      const msg = e instanceof DOMException && e.name === 'AbortError'
+        ? '通信がタイムアウトしました。もう一度お試しください。'
+        : e instanceof Error ? e.message : '翻訳に失敗しました'
+      setErrorMessage(msg)
       setStatus('idle')
+    } finally {
+      clearTimeout(timer)
     }
   }
+
+  // 録音中のリアルタイム翻訳（800ms デバウンス）
+  useEffect(() => {
+    if (status !== 'recording' || !recognizedText) return
+    const controller = new AbortController()
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch('/api/translate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: recognizedText, languages: selectedLanguages.map(l => ({ id: l.id, label: l.label })) }),
+          signal: controller.signal,
+        })
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.translatedText && data.sourceLanguage !== 'unknown') setLiveTranslatedText(data.translatedText)
+      } catch { /* AbortError やネットワークエラーは無視 */ }
+    }, 800)
+    return () => { clearTimeout(timer); controller.abort() }
+  }, [recognizedText, status, selectedLanguages])
 
   useEffect(() => {
     return () => {
       if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop()
       streamRef.current?.getTracks().forEach(t => t.stop())
       audioRef.current?.pause()
+      speechRecognitionRef.current?.stop()
     }
   }, [])
 
@@ -168,7 +235,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const startRecording = async () => {
+  const startRecording = async (lang: Language, flagIndex: 0 | 1) => {
     const mimeType = getSupportedMimeType()
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -176,6 +243,8 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
       audioChunksRef.current = []
       userStoppedRef.current = false
       isInterpretingRef.current = false
+      hasLiveTranscriptRef.current = false
+      recordingLangRef.current = lang
 
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
       recorder.ondataavailable = (e) => {
@@ -191,28 +260,66 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
 
       mediaRecorderRef.current = recorder
       recorder.start()
+      setRecordingFlagIndex(flagIndex)
       setStatus('recording')
+
+      const RecognitionCtor = getSpeechRecognitionCtor()
+      if (RecognitionCtor) {
+        const recognition = new RecognitionCtor()
+        recognition.lang = lang.speechCode
+        recognition.interimResults = true
+        recognition.continuous = true
+        recognition.onresult = (event) => {
+          let transcript = ''
+          for (let i = 0; i < event.results.length; i++) {
+            transcript += event.results[i][0].transcript
+          }
+          hasLiveTranscriptRef.current = true
+          recognizedTextRef.current = transcript
+          setRecognizedText(transcript)
+        }
+        recognition.onerror = () => {}
+        recognition.onend = () => {
+          if (mediaRecorderRef.current?.state === 'recording') {
+            try { recognition.start() } catch { /* ignore */ }
+          }
+        }
+        try {
+          recognition.start()
+          speechRecognitionRef.current = recognition
+        } catch { /* SpeechRecognition unavailable, Whisper handles final result */ }
+      }
     } catch {
       setErrorMessage('マイクへのアクセスが許可されていません')
       setStatus('idle')
+      setRecordingFlagIndex(null)
     }
   }
 
   const stopRecording = () => {
     if (mediaRecorderRef.current?.state !== 'recording') return
     userStoppedRef.current = true
+    speechRecognitionRef.current?.stop()
+    speechRecognitionRef.current = null
+    setRecordingFlagIndex(null)
     setStatus('processing')
     mediaRecorderRef.current.stop()
   }
 
-  const handleMicPress = () => {
-    if (status === 'idle' || status === 'ready') {
-      setRecognizedText('')
-      setErrorMessage('')
-      startRecording()
-    } else if (status === 'recording') {
-      stopRecording()
+  const handleFlagTap = (flagIndex: 0 | 1) => {
+    if (status === 'recording') {
+      if (recordingFlagIndex === flagIndex) stopRecording()
+      return
     }
+    if (status !== 'idle' && status !== 'ready') return
+    recognizedTextRef.current = ''
+    setRecognizedText('')
+    setLiveTranslatedText('')
+    setTranslatedText('')
+    setTtsText('')
+    setBackTranslation('')
+    setErrorMessage('')
+    startRecording(selectedLanguages[flagIndex], flagIndex)
   }
 
   const handleSpeak = async () => {
@@ -221,7 +328,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
       const res = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: translatedText }),
+        body: JSON.stringify({ text: ttsText }),
       })
       if (!res.ok) throw new Error(`TTS HTTP ${res.status}`)
       const blob = await res.blob()
@@ -252,6 +359,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
     setIsEditing(false)
     const trimmed = editValue.trim()
     if (!trimmed || trimmed === recognizedText) return
+    recognizedTextRef.current = trimmed
     setRecognizedText(trimmed)
     callTranslateApi(trimmed)
   }
@@ -267,16 +375,56 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
     if (e.key === 'Escape') setIsEditing(false)
   }
 
-  const isMicActive = status === 'idle' || status === 'ready' || status === 'recording'
   const canEdit = !!recognizedText && !isEditing && status !== 'recording' && status !== 'processing'
-  const visibleHistory = historyExpanded ? history : history.slice(0, HISTORY_COLLAPSED_COUNT)
-  const hasMoreHistory = history.length > HISTORY_COLLAPSED_COUNT
+
+  const canTapFlag = (i: 0 | 1): boolean => {
+    if (status === 'processing' || status === 'speaking') return false
+    if (status === 'recording') return recordingFlagIndex === i
+    return true
+  }
 
   return (
     <main className="interpreter-page">
       <header className="interpreter-header">
         <h1 className="interpreter-title" onClick={onBack} role="button" aria-label="トップ画面へ戻る">GoTalk</h1>
       </header>
+
+      {selectedLanguages.length === 2 && (
+        <div className="lang-flags-bar">
+          <p className="lang-flags-bar__guide">
+            {FLAG_GUIDE_MESSAGES[selectedLanguages[0].id] ?? FLAG_GUIDE_MESSAGES['en']}
+          </p>
+          <div className="lang-flags-bar__flags">
+            {([0, 1] as const).map(i => {
+              const lang = selectedLanguages[i]
+              const isThisRecording = status === 'recording' && recordingFlagIndex === i
+              return (
+                <button
+                  key={lang.id}
+                  type="button"
+                  className={[
+                    'lang-flags-bar__btn',
+                    isThisRecording ? 'lang-flags-bar__btn--recording' : '',
+                  ].filter(Boolean).join(' ')}
+                  onClick={() => handleFlagTap(i)}
+                  disabled={!canTapFlag(i)}
+                  aria-pressed={isThisRecording}
+                  aria-label={isThisRecording ? `${lang.label}の録音を停止` : `${lang.label}で話す`}
+                >
+                  <img
+                    className="lang-flags-bar__flag"
+                    src={`/flags/${lang.id}.svg`}
+                    alt={lang.label}
+                  />
+                </button>
+              )
+            })}
+          </div>
+          <p className="lang-flags-bar__guide">
+            {FLAG_GUIDE_MESSAGES[selectedLanguages[1].id] ?? FLAG_GUIDE_MESSAGES['en']}
+          </p>
+        </div>
+      )}
 
       <div className="page-content">
         <div className="source-card">
@@ -307,40 +455,48 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
           </button>
         </div>
 
-        <div className="translation-card">
-          <div className="translation-card__body">
-            <div className="translation-card__main">
-              <p className={`translation-card__text${!translatedText ? ' translation-card__text--placeholder' : ''}`}>
-                {translatedText}
-              </p>
-              <div className="back-translation-section">
-                <div className="back-translation-header">
-                  <ChevronIcon />
-                  <span>AI逆翻訳</span>
-                </div>
-                {backTranslation && (
-                  <p className="back-translation-text">{backTranslation}</p>
-                )}
-              </div>
-            </div>
-
-            {translatedText && (
-              <button
-                type="button"
-                className={`speak-icon-button${status === 'speaking' ? ' speak-icon-button--speaking' : ''}`}
-                onClick={handleSpeak}
-                disabled={status === 'processing' || status === 'recording' || status === 'speaking'}
-                aria-label="発声する"
-              >
-                <SpeakerIcon />
-              </button>
-            )}
+        {status === 'recording' && liveTranslatedText && (
+          <div className="live-translation-card">
+            <p className="live-translation-card__text">{liveTranslatedText}</p>
           </div>
-        </div>
+        )}
+
+        {status !== 'recording' && (
+          <div className="translation-card">
+            <div className="translation-card__body">
+              <div className="translation-card__main">
+                <p className={`translation-card__text${!translatedText ? ' translation-card__text--placeholder' : ''}`}>
+                  {translatedText}
+                </p>
+                <div className="back-translation-section">
+                  <div className="back-translation-header">
+                    <ChevronIcon />
+                    <span>AI逆翻訳</span>
+                  </div>
+                  {backTranslation && (
+                    <p className="back-translation-text">{backTranslation}</p>
+                  )}
+                </div>
+              </div>
+
+              {translatedText && (
+                <button
+                  type="button"
+                  className={`speak-icon-button${status === 'speaking' ? ' speak-icon-button--speaking' : ''}`}
+                  onClick={handleSpeak}
+                  disabled={status === 'processing' || status === 'speaking'}
+                  aria-label="発声する"
+                >
+                  <SpeakerIcon />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {history.length > 0 && (
           <div className="history-section">
-            {visibleHistory.map(item => (
+            {history.map(item => (
               <div key={item.id} className="history-item">
                 <div className="history-item__meta">
                   <span className="history-item__date">{item.date}</span>
@@ -352,16 +508,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
                 </div>
               </div>
             ))}
-            {hasMoreHistory && (
-              <button
-                type="button"
-                className="history-expand-button"
-                onClick={() => setHistoryExpanded(prev => !prev)}
-                aria-label={historyExpanded ? '履歴を閉じる' : '履歴をすべて表示'}
-              >
-                {historyExpanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
-              </button>
-            )}
           </div>
         )}
 
@@ -370,27 +516,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
         )}
       </div>
 
-      <footer className="mic-footer">
-        {status === 'processing' ? (
-          <div className="mic-circle-button mic-circle-button--processing" role="status" aria-label="処理中">
-            <span className="spinner" aria-hidden="true" />
-          </div>
-        ) : (
-          <button
-            type="button"
-            className={[
-              'mic-circle-button',
-              status === 'recording' ? 'mic-circle-button--recording' : '',
-            ].filter(Boolean).join(' ')}
-            onClick={isMicActive ? handleMicPress : undefined}
-            disabled={!isMicActive}
-            aria-pressed={status === 'recording'}
-            aria-label={status === 'recording' ? '停止して翻訳' : '話す'}
-          >
-            {status === 'recording' ? <StopIcon /> : <MicIcon />}
-          </button>
-        )}
-      </footer>
     </main>
   )
 }
@@ -412,40 +537,6 @@ function ChevronIcon() {
   )
 }
 
-function ChevronDownIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-function ChevronUpIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M18 15l-6-6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-function StopIcon() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <rect x="4" y="4" width="16" height="16" rx="3" fill="currentColor" />
-    </svg>
-  )
-}
-
-function MicIcon() {
-  return (
-    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <rect x="9" y="2" width="6" height="11" rx="3" fill="currentColor" />
-      <path d="M5 10a7 7 0 0014 0" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-      <line x1="12" y1="17" x2="12" y2="21" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-      <line x1="9" y1="21" x2="15" y2="21" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-    </svg>
-  )
-}
 
 function SpeakerIcon() {
   return (

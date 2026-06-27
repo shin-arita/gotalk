@@ -33,6 +33,70 @@
   user-select: none;
 }
 
+/* ── 言語フラグバー ── */
+
+.lang-flags-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 12px var(--spacing);
+  background-color: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.lang-flags-bar__flags {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 56px;
+}
+
+.lang-flags-bar__guide {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  text-align: center;
+  line-height: 1.6;
+  margin: 0;
+  white-space: pre-line;
+}
+
+.lang-flags-bar__btn {
+  padding: 0;
+  border: none;
+  border-radius: 20px;
+  cursor: pointer;
+  overflow: hidden;
+  background: transparent;
+  transition: box-shadow 0.18s, opacity 0.18s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.lang-flags-bar__btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.lang-flags-bar__btn--recording {
+  box-shadow: 0 0 0 3px #dc2626, 0 4px 16px rgba(220, 38, 38, 0.4);
+  animation: pulse-flag-red 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse-flag-red {
+  0%, 100% { box-shadow: 0 0 0 3px #dc2626, 0 4px 16px rgba(220, 38, 38, 0.4); }
+  50%       { box-shadow: 0 0 0 3px #dc2626, 0 4px 32px rgba(220, 38, 38, 0.7); }
+}
+
+.lang-flags-bar__flag {
+  width: 111px;
+  height: 111px;
+  border-radius: 0;
+  object-fit: cover;
+  display: block;
+  background-color: #ffffff;
+}
+
 /* ── Scrollable Content ──*/
 
 .page-content {
@@ -110,6 +174,24 @@
   padding-right: 12px;
   display: block;
   min-height: 1.45em;
+}
+
+/* ── 逐次翻訳カード（録音中のリアルタイム翻訳） ── */
+
+.live-translation-card {
+  background-color: var(--color-surface);
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border);
+  opacity: 0.75;
+}
+
+.live-translation-card__text {
+  font-size: 20px;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin: 0;
+  word-break: break-word;
 }
 
 /* ── 翻訳カード ── */
