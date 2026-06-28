@@ -131,7 +131,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
   const [editValue, setEditValue] = useState('')
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [processingMsgIdx, setProcessingMsgIdx] = useState(0)
-  const processingLangsRef = useRef<[string, string] | null>(null)
+  const [processingLangs, setProcessingLangs] = useState<[string, string] | null>(null)
 
   const backTranslationLabel = selectedLanguages.length === 2
     ? `${BACK_TRANSLATION_LABELS[selectedLanguages[0].id] ?? '逆翻訳'} / ${BACK_TRANSLATION_LABELS[selectedLanguages[1].id] ?? '逆翻訳'}`
@@ -198,7 +198,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
 
     const speakerLang = recordingLangRef.current ?? selectedLanguages[0]
     const otherLang = speakerLang.id === selectedLanguages[0].id ? selectedLanguages[1] : selectedLanguages[0]
-    processingLangsRef.current = [speakerLang.id, otherLang.id]
+    setProcessingLangs([speakerLang.id, otherLang.id])
 
     const formData = new FormData()
     formData.append('audio', audioBlob, `recording.${ext}`)
@@ -247,7 +247,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
     setErrorMessage('')
     const srcLang = recordingLangRef.current ?? selectedLanguages[0]
     const tgtLang = srcLang.id === selectedLanguages[0].id ? selectedLanguages[1] : selectedLanguages[0]
-    processingLangsRef.current = [srcLang.id, tgtLang.id]
+    setProcessingLangs([srcLang.id, tgtLang.id])
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 30_000)
     try {
@@ -300,9 +300,9 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
   }, [recognizedText, status, selectedLanguages])
 
   useEffect(() => {
-    if (status !== 'processing') { setProcessingMsgIdx(0); return }
+    if (status !== 'processing') return
     const id = setInterval(() => setProcessingMsgIdx(i => (i + 1) % 2), 1200)
-    return () => clearInterval(id)
+    return () => { clearInterval(id); setProcessingMsgIdx(0) }
   }, [status])
 
   useEffect(() => {
@@ -316,12 +316,14 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
     }
   }, [])
 
+  const callInterpretApiRef = useRef(callInterpretApi)
+
   useEffect(() => {
     if (!pendingAudio) return
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    callInterpretApi(pendingAudio)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    const audio = pendingAudio
+    const timer = setTimeout(() => { void callInterpretApiRef.current(audio) }, 0)
+    return () => clearTimeout(timer)
+  }, [pendingAudio])
 
   const startRecording = async (lang: Language, flagIndex: 0 | 1) => {
     const mimeType = getSupportedMimeType()
@@ -361,11 +363,12 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
         analyserRef.current = analyser
 
         const timeData = new Uint8Array(analyser.fftSize)
-        const startTime = performance.now()
+        let startTime: number | null = null
         const DURATION = 1500
         const COUNT = 3
 
         const tick = (now: number) => {
+          if (startTime === null) startTime = now
           analyser.getByteTimeDomainData(timeData)
           let sum = 0
           for (let j = 0; j < timeData.length; j++) {
@@ -621,10 +624,10 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
                     !translatedText ? ' translation-card__text--placeholder' : ''
                   }`}
                 >
-                  {status === 'processing' && processingLangsRef.current
+                  {status === 'processing' && processingLangs
                     ? [
-                        `${TRANSLATING_MESSAGES[processingLangsRef.current[0]] ?? 'ただいま翻訳中です'}\n${TRANSLATING_MESSAGES[processingLangsRef.current[1]] ?? 'ただいま翻訳中です'}`,
-                        `${PLEASE_WAIT_MESSAGES[processingLangsRef.current[0]] ?? 'しばらくお待ちください'}\n${PLEASE_WAIT_MESSAGES[processingLangsRef.current[1]] ?? 'しばらくお待ちください'}`,
+                        `${TRANSLATING_MESSAGES[processingLangs[0]] ?? 'ただいま翻訳中です'}\n${TRANSLATING_MESSAGES[processingLangs[1]] ?? 'ただいま翻訳中です'}`,
+                        `${PLEASE_WAIT_MESSAGES[processingLangs[0]] ?? 'しばらくお待ちください'}\n${PLEASE_WAIT_MESSAGES[processingLangs[1]] ?? 'しばらくお待ちください'}`,
                       ][processingMsgIdx]
                     : translatedText
                   }

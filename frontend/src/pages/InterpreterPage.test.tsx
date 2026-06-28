@@ -433,15 +433,14 @@ describe('InterpreterPage language flags bar', () => {
 
 describe('InterpreterPage translation visibility during recording', () => {
   it('hides translation card while recording', async () => {
-    let mockRec: { ondataavailable: ((e: { data: Blob }) => void) | null; onstop: (() => void) | null; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; state: string } | undefined
     const mock = {
-      ondataavailable: null as typeof mockRec extends undefined ? null : ((e: { data: Blob }) => void) | null,
+      ondataavailable: null as ((e: { data: Blob }) => void) | null,
       onstop: null as (() => void) | null,
       start: vi.fn(),
       stop: vi.fn(),
       state: 'inactive',
     }
-    const Ctor = vi.fn(function () { mock.state = 'recording'; mockRec = mock as typeof mockRec; return mock }) as unknown as typeof MediaRecorder & { isTypeSupported: (t: string) => boolean }
+    const Ctor = vi.fn(function () { mock.state = 'recording'; return mock }) as unknown as typeof MediaRecorder & { isTypeSupported: (t: string) => boolean }
     Ctor.isTypeSupported = vi.fn().mockReturnValue(false)
     mock.stop = vi.fn(function () { mock.state = 'inactive'; mock.onstop?.() })
     Object.defineProperty(globalThis, 'MediaRecorder', { value: Ctor, writable: true, configurable: true })
