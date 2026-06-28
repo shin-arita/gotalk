@@ -21,6 +21,46 @@ interface HistoryEntry {
   targetLangId: string
 }
 
+const LANG_LOCALE: Record<string, string> = {
+  'ja':    'ja-JP',
+  'en':    'en-US',
+  'zh-CN': 'zh-CN',
+  'zh-TW': 'zh-TW',
+  'ko':    'ko-KR',
+  'th':    'th-TH',
+  'vi':    'vi-VN',
+}
+
+const TRANSLATING_MESSAGES: Record<string, string> = {
+  'ja':    'ただいま翻訳中です',
+  'en':    'Translating now',
+  'zh-CN': '正在翻译中',
+  'zh-TW': '正在翻譯中',
+  'ko':    '번역 중입니다',
+  'th':    'กำลังแปลอยู่',
+  'vi':    'Đang dịch',
+}
+
+const PLEASE_WAIT_MESSAGES: Record<string, string> = {
+  'ja':    'しばらくお待ちください',
+  'en':    'Please wait a moment',
+  'zh-CN': '请稍候',
+  'zh-TW': '請稍候',
+  'ko':    '잠시만 기다려 주세요',
+  'th':    'กรุณารอสักครู่',
+  'vi':    'Vui lòng chờ một chút',
+}
+
+const BACK_TRANSLATION_LABELS: Record<string, string> = {
+  'ja':    '逆翻訳',
+  'en':    'Back translation',
+  'zh-CN': '反向翻译',
+  'zh-TW': '反向翻譯',
+  'ko':    '역번역',
+  'th':    'คำแปลย้อนกลับ',
+  'vi':    'Dịch ngược',
+}
+
 const FLAG_TAP_MESSAGES: Record<string, string> = {
   'ja':    '国旗をタップして話してください。',
   'en':    'Tap the flag to speak.',
@@ -56,6 +96,21 @@ function getSupportedMimeType(): string {
   return types.find(t => MediaRecorder.isTypeSupported(t)) ?? ''
 }
 
+interface SpeechRecognitionEvent {
+  readonly results: { readonly length: number; readonly [i: number]: { readonly [j: number]: { readonly transcript: string } } }
+}
+
+interface SpeechRecognition {
+  lang: string
+  interimResults: boolean
+  continuous: boolean
+  onresult: ((event: SpeechRecognitionEvent) => void) | null
+  onerror: (() => void) | null
+  onend: (() => void) | null
+  start(): void
+  stop(): void
+}
+
 type SpeechRecognitionCtor = new () => SpeechRecognition
 
 function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
@@ -75,6 +130,12 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState('')
   const [history, setHistory] = useState<HistoryEntry[]>([])
+  const [processingMsgIdx, setProcessingMsgIdx] = useState(0)
+  const processingLangsRef = useRef<[string, string] | null>(null)
+
+  const backTranslationLabel = selectedLanguages.length === 2
+    ? `${BACK_TRANSLATION_LABELS[selectedLanguages[0].id] ?? '逆翻訳'} / ${BACK_TRANSLATION_LABELS[selectedLanguages[1].id] ?? '逆翻訳'}`
+    : '逆翻訳'
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
@@ -103,10 +164,11 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
 
   const addHistoryEntry = (source: string, translation: string, bt: string, srcId: string, tgtId: string) => {
     const now = new Date()
+    const locale = LANG_LOCALE[srcId] ?? 'ja-JP'
     setHistory(prev => [{
       id: String(Date.now()),
-      date: `${now.getMonth() + 1}月${now.getDate()}日`,
-      time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
+      date: now.toLocaleDateString(locale, { month: 'short', day: 'numeric' }),
+      time: now.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' }),
       source,
       translation,
       backTranslation: bt,
@@ -136,6 +198,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
 
     const speakerLang = recordingLangRef.current ?? selectedLanguages[0]
     const otherLang = speakerLang.id === selectedLanguages[0].id ? selectedLanguages[1] : selectedLanguages[0]
+    processingLangsRef.current = [speakerLang.id, otherLang.id]
 
     const formData = new FormData()
     formData.append('audio', audioBlob, `recording.${ext}`)
@@ -182,6 +245,9 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
   const callTranslateApi = async (text: string) => {
     setStatus('processing')
     setErrorMessage('')
+    const srcLang = recordingLangRef.current ?? selectedLanguages[0]
+    const tgtLang = srcLang.id === selectedLanguages[0].id ? selectedLanguages[1] : selectedLanguages[0]
+    processingLangsRef.current = [srcLang.id, tgtLang.id]
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 30_000)
     try {
@@ -232,6 +298,12 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
     }, 800)
     return () => { clearTimeout(timer); controller.abort() }
   }, [recognizedText, status, selectedLanguages])
+
+  useEffect(() => {
+    if (status !== 'processing') { setProcessingMsgIdx(0); return }
+    const id = setInterval(() => setProcessingMsgIdx(i => (i + 1) % 2), 1200)
+    return () => clearInterval(id)
+  }, [status])
 
   useEffect(() => {
     return () => {
@@ -542,13 +614,25 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
           <div className="translation-card">
             <div className="translation-card__body">
               <div className="translation-card__main">
-                <p className={`translation-card__text${!translatedText ? ' translation-card__text--placeholder' : ''}`}>
-                  {translatedText}
+                <p
+                  key={status === 'processing' ? processingMsgIdx : 'text'}
+                  className={`translation-card__text${
+                    status === 'processing' ? ' translation-card__text--processing' :
+                    !translatedText ? ' translation-card__text--placeholder' : ''
+                  }`}
+                >
+                  {status === 'processing' && processingLangsRef.current
+                    ? [
+                        `${TRANSLATING_MESSAGES[processingLangsRef.current[0]] ?? 'ただいま翻訳中です'}\n${TRANSLATING_MESSAGES[processingLangsRef.current[1]] ?? 'ただいま翻訳中です'}`,
+                        `${PLEASE_WAIT_MESSAGES[processingLangsRef.current[0]] ?? 'しばらくお待ちください'}\n${PLEASE_WAIT_MESSAGES[processingLangsRef.current[1]] ?? 'しばらくお待ちください'}`,
+                      ][processingMsgIdx]
+                    : translatedText
+                  }
                 </p>
                 <div className="back-translation-section">
                   <div className="back-translation-header">
                     <ChevronIcon />
-                    <span>AI逆翻訳</span>
+                    <span>{backTranslationLabel}</span>
                   </div>
                   {backTranslation && (
                     <p className="back-translation-text">{backTranslation}</p>

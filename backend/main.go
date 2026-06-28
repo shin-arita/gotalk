@@ -216,6 +216,27 @@ func callOpenAI(apiKey, model, prompt string) (string, error) {
 	return strings.TrimSpace(result.Output[0].Content[0].Text), nil
 }
 
+// stripOuterQuotes strips surrounding quotes or brackets if OpenAI wraps the text response in them.
+func stripOuterQuotes(s string) string {
+	s = strings.TrimSpace(s)
+
+	pairs := [][2]string{
+		{`"`, `"`},
+		{`'`, `'`},
+		{"「", "」"},
+		{"『", "』"},
+		{"“", "”"},
+	}
+
+	for _, p := range pairs {
+		if strings.HasPrefix(s, p[0]) && strings.HasSuffix(s, p[1]) {
+			return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, p[0]), p[1]))
+		}
+	}
+
+	return s
+}
+
 // extractJSON strips markdown code fences if OpenAI wraps the JSON in them.
 func extractJSON(s string) string {
 	idx := strings.Index(s, "{")
@@ -510,7 +531,9 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if entries != nil {
 			translatedText = restoreForLang(translatedRaw, entries, tgtLang.ID)
+			translatedText = stripOuterQuotes(translatedText)
 			backTranslation = restoreForLang(backTranslationRaw, entries, srcLang.ID)
+			backTranslation = stripOuterQuotes(backTranslation)
 			ttsText = restoreWithRomanized(translatedRaw, entries)
 			debugLog("プレースホルダ復元後 翻訳結果: %q", translatedText)
 			debugLog("プレースホルダ復元後 バックトランスレーション: %q", backTranslation)
@@ -541,7 +564,9 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 		debugLog("バックトランスレーション 生レスポンス: %q", bt)
 		debugLog("プレースホルダ復元後 バックトランスレーション: %q", bt)
 		translatedText = translated
+		translatedText = stripOuterQuotes(translatedText)
 		backTranslation = bt
+		backTranslation = stripOuterQuotes(backTranslation)
 		ttsText = translatedText
 	}
 
@@ -678,7 +703,9 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if entries != nil {
 			translatedText = restoreForLang(translatedRaw, entries, tgtLang.ID)
+			translatedText = stripOuterQuotes(translatedText)
 			backTranslation = restoreForLang(backTranslationRaw, entries, srcLang.ID)
+			backTranslation = stripOuterQuotes(backTranslation)
 			ttsText = restoreWithRomanized(translatedRaw, entries)
 			debugLog("プレースホルダ復元後 翻訳結果: %q", translatedText)
 			debugLog("プレースホルダ復元後 バックトランスレーション: %q", backTranslation)
@@ -764,7 +791,9 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 		debugLog("プレースホルダ復元後 バックトランスレーション: %q", bt)
 
 		translatedText = dr.TranslatedText
+		translatedText = stripOuterQuotes(translatedText)
 		backTranslation = bt
+		backTranslation = stripOuterQuotes(backTranslation)
 		ttsText = translatedText
 	}
 

@@ -265,6 +265,20 @@
   margin-bottom: 16px;
 }
 
+.translation-card__text--processing {
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+  text-align: center;
+  white-space: pre-line;
+  animation: processing-fade-in 1.0s ease-out forwards;
+}
+
+@keyframes processing-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
 /* 発声ボタン（丸型・右端・マイクと同サイズ） */
 
 .speak-icon-button {

@@ -4,7 +4,7 @@ import LanguageSelectPage from './LanguageSelectPage'
 import { LANGUAGES } from '../languages'
 import type { Language } from '../languages'
 
-const [ja, en, zhCN] = LANGUAGES
+const [ja, en] = LANGUAGES
 
 function renderPage(
   selectedLanguages: Language[] = [],
