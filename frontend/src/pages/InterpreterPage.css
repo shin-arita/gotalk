@@ -62,10 +62,34 @@
   white-space: pre-line;
 }
 
+.lang-flags-bar__scroll-wrap {
+  width: 100%;
+  overflow: hidden;
+}
+
+.lang-flags-bar__scroll-text {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+  margin: 0;
+  white-space: nowrap;
+  text-align: center;
+  animation: flag-guide-scroll 6s linear infinite;
+}
+
+@keyframes flag-guide-scroll {
+  0%   { transform: translateX(110%); }
+  25%  { transform: translateX(0%); }
+  42%  { transform: translateX(0%); }
+  67%  { transform: translateX(-110%); }
+  100% { transform: translateX(-110%); }
+}
+
 .lang-flags-bar__btn {
+  position: relative;
   padding: 0;
   border: none;
-  border-radius: 20px;
+  border-radius: 50%;
   cursor: pointer;
   overflow: hidden;
   background: transparent;
@@ -86,6 +110,17 @@
 @keyframes pulse-flag-red {
   0%, 100% { box-shadow: 0 0 0 3px #dc2626, 0 4px 16px rgba(220, 38, 38, 0.4); }
   50%       { box-shadow: 0 0 0 3px #dc2626, 0 4px 32px rgba(220, 38, 38, 0.7); }
+}
+
+.flag-ripple {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 1);
+  pointer-events: none;
+  transform: scale(0);
+  opacity: 0;
+  will-change: transform, opacity;
 }
 
 .lang-flags-bar__flag {

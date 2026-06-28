@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -11,25 +12,165 @@ import (
 	"github.com/ikawaha/kagome/v2/tokenizer"
 )
 
+// introPatternDefs pairs a self-introduction regex with the minimum number of name words required.
+// "my name is" is unambiguous so min=1; "I am"/"I'm" require min=2 to avoid false positives
+// like "I am happy" or "I am japanese".
+var introPatternDefs = []struct {
+	re       *regexp.Regexp
+	minWords int
+}{
+	{regexp.MustCompile(`(?i)\bmy\s+name\s+is\s+`), 1},
+	{regexp.MustCompile(`(?i)\bi\s*'\s*m\s+`), 2},
+	{regexp.MustCompile(`(?i)\bi\s+am\s+`), 2},
+}
+
+// introNamePatterns is a flat list of regexes for cheap hasIntroPatterns checks.
+var introNamePatterns []*regexp.Regexp
+
+func init() {
+	for _, d := range introPatternDefs {
+		introNamePatterns = append(introNamePatterns, d.re)
+	}
+}
+
+// englishNameWordRe finds consecutive ASCII-letter runs (words) in a string.
+var englishNameWordRe = regexp.MustCompile(`[a-zA-Z]+`)
+
+// nameStopWords are words that cannot begin or appear within a person name after an intro phrase.
+var nameStopWords = map[string]bool{
+	// possessives/determiners
+	"my": true, "your": true, "his": true, "our": true, "their": true, "its": true,
+	"this": true, "that": true, "these": true, "those": true,
+	// articles
+	"a": true, "an": true, "the": true,
+	// conjunctions
+	"and": true, "but": true, "or": true, "so": true, "because": true,
+	"then": true, "if": true, "when": true, "while": true,
+	// pronouns
+	"i": true, "you": true, "he": true, "she": true, "we": true, "they": true, "it": true,
+	"me": true, "him": true, "her": true, "us": true, "them": true,
+	// prepositions
+	"from": true, "in": true, "at": true, "on": true, "to": true, "for": true,
+	"of": true, "with": true, "by": true, "about": true,
+	// auxiliaries
+	"is": true, "are": true, "was": true, "were": true,
+	"have": true, "has": true, "had": true, "do": true, "does": true, "did": true,
+	"will": true, "would": true, "can": true, "could": true, "should": true,
+	// common gerunds/verbs
+	"going": true, "coming": true, "working": true, "living": true, "trying": true,
+	"looking": true, "doing": true, "being": true, "having": true, "getting": true, "feeling": true,
+	// other common non-name words
+	"not": true, "just": true, "very": true, "here": true, "there": true, "also": true,
+	"happy": true, "good": true, "bad": true, "fine": true, "great": true,
+	"sorry": true, "sure": true, "new": true, "old": true,
+	"please": true, "thank": true, "thanks": true,
+}
+
 type propNounType string
 
 const (
 	propNounPerson       propNounType = "person"
 	propNounPlace        propNounType = "place"
 	propNounOrganization propNounType = "organization"
-	propNounFacility     propNounType = "facility"
 	propNounUnknown      propNounType = "unknown"
 )
 
-var facilitySuffixes = []string{
-	"駅", "空港", "港", "ホテル", "病院", "大学", "高校", "中学校", "小学校", "神社", "寺", "城",
+type propNounEntry struct {
+	Placeholder   string            `json:"placeholder"`
+	Surface       string            `json:"surface"`
+	RomanizedText *string           `json:"romanizedText"`
+	Type          propNounType      `json:"type"`
+	Translations  map[string]string `json:"translations,omitempty"`
+	TargetDisplay string            `json:"targetDisplay,omitempty"`
 }
 
-type propNounEntry struct {
-	Placeholder  string       `json:"placeholder"`
-	Surface      string       `json:"surface"`
-	RomanizedText *string     `json:"romanizedText"`
-	Type         propNounType `json:"type"`
+// romajiKataMap maps romanized syllables (longest-first priority) to katakana.
+var romajiKataMap = map[string]string{
+	// 3-char sequences (try before 2-char to avoid wrong splits)
+	"sha": "シャ", "shi": "シ", "shu": "シュ", "sho": "ショ",
+	"chi": "チ", "cha": "チャ", "chu": "チュ", "cho": "チョ",
+	"tsu": "ツ",
+	"kya": "キャ", "kyu": "キュ", "kyo": "キョ",
+	"nya": "ニャ", "nyu": "ニュ", "nyo": "ニョ",
+	"hya": "ヒャ", "hyu": "ヒュ", "hyo": "ヒョ",
+	"mya": "ミャ", "myu": "ミュ", "myo": "ミョ",
+	"rya": "リャ", "ryu": "リュ", "ryo": "リョ",
+	"gya": "ギャ", "gyu": "ギュ", "gyo": "ギョ",
+	"bya": "ビャ", "byu": "ビュ", "byo": "ビョ",
+	"pya": "ピャ", "pyu": "ピュ", "pyo": "ピョ",
+	// 2-char sequences
+	"ka": "カ", "ki": "キ", "ku": "ク", "ke": "ケ", "ko": "コ",
+	"sa": "サ", "si": "シ", "su": "ス", "se": "セ", "so": "ソ",
+	"ta": "タ", "ti": "チ", "tu": "ツ", "te": "テ", "to": "ト",
+	"na": "ナ", "ni": "ニ", "nu": "ヌ", "ne": "ネ", "no": "ノ",
+	"ha": "ハ", "hi": "ヒ", "hu": "フ", "fu": "フ", "he": "ヘ", "ho": "ホ",
+	"ma": "マ", "mi": "ミ", "mu": "ム", "me": "メ", "mo": "モ",
+	"ya": "ヤ", "yu": "ユ", "yo": "ヨ",
+	"ra": "ラ", "ri": "リ", "ru": "ル", "re": "レ", "ro": "ロ",
+	"wa": "ワ", "wo": "ヲ",
+	"ga": "ガ", "gi": "ギ", "gu": "グ", "ge": "ゲ", "go": "ゴ",
+	"za": "ザ", "zi": "ジ", "zu": "ズ", "ze": "ゼ", "zo": "ゾ",
+	"ji": "ジ",
+	"da": "ダ", "di": "ヂ", "du": "ヅ", "de": "デ", "do": "ド",
+	"ba": "バ", "bi": "ビ", "bu": "ブ", "be": "ベ", "bo": "ボ",
+	"pa": "パ", "pi": "ピ", "pu": "プ", "pe": "ペ", "po": "ポ",
+	"fa": "ファ", "fi": "フィ", "fe": "フェ", "fo": "フォ",
+	"ja": "ジャ", "ju": "ジュ", "jo": "ジョ",
+	"va": "ヴァ", "vi": "ヴィ", "vu": "ヴ", "ve": "ヴェ", "vo": "ヴォ",
+	// vowels
+	"a": "ア", "i": "イ", "u": "ウ", "e": "エ", "o": "オ",
+	// standalone n
+	"n": "ン",
+}
+
+// romajiToKatakana converts a single lowercase romanized name word to katakana.
+// Tries 3-char, 2-char, then 1-char segments in order. Returns ("", false) if any
+// segment cannot be matched.
+func romajiToKatakana(s string) (string, bool) {
+	s = strings.ToLower(s)
+	var sb strings.Builder
+	i := 0
+	for i < len(s) {
+		matched := false
+		for _, l := range []int{3, 2, 1} {
+			if i+l > len(s) {
+				continue
+			}
+			chunk := s[i : i+l]
+			if kata, ok := romajiKataMap[chunk]; ok {
+				sb.WriteString(kata)
+				i += l
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return "", false
+		}
+	}
+	return sb.String(), true
+}
+
+// englishNameToKatakana converts an English name (given-name family-name order) to
+// Japanese katakana display form (family-name given-name order).
+// Returns ("", false) if any word cannot be converted.
+func englishNameToKatakana(name string) (string, bool) {
+	words := strings.Fields(name)
+	if len(words) == 0 {
+		return "", false
+	}
+	for i, j := 0, len(words)-1; i < j; i, j = i+1, j-1 {
+		words[i], words[j] = words[j], words[i]
+	}
+	parts := make([]string, 0, len(words))
+	for _, w := range words {
+		kata, ok := romajiToKatakana(w)
+		if !ok {
+			return "", false
+		}
+		parts = append(parts, kata)
+	}
+	return strings.Join(parts, " "), true
 }
 
 // kataToRomaji converts a katakana string to ASCII Hepburn romanization.
@@ -189,14 +330,17 @@ func getTokenizer() (*tokenizer.Tokenizer, error) {
 	return t, nil
 }
 
-// isFacilitySuffix returns true if the token surface exactly matches a facility suffix.
-func isFacilitySuffix(surface string) bool {
-	for _, s := range facilitySuffixes {
-		if surface == s {
-			return true
+// isPureKatakana returns true if every rune in s is a katakana character.
+func isPureKatakana(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '゠' || r > 'ヿ' {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // isProperNoun returns true if the token features indicate 名詞・固有名詞.
@@ -219,6 +363,114 @@ func propNounTypeFromFeatures(features []string) propNounType {
 	default:
 		return propNounUnknown
 	}
+}
+
+// extractEnglishIntroNames detects person names following self-introduction patterns
+// ("my name is", "I am", "I'm") in the text. Returns raw name surface strings.
+// Works regardless of casing, so speech-recognition output like "shin arita" is captured.
+// Stops collecting name words at sentence punctuation or stop words.
+func extractEnglishIntroNames(text string) []string {
+	seen := map[string]bool{}
+	var names []string
+
+	for _, def := range introPatternDefs {
+		locs := def.re.FindAllStringIndex(text, -1)
+		for _, loc := range locs {
+			rest := text[loc[1]:]
+			if len(rest) == 0 {
+				continue
+			}
+			// Skip if rest doesn't start with a letter (e.g. digit, placeholder underscore)
+			if !unicode.IsLetter([]rune(rest)[0]) {
+				continue
+			}
+			// Collect name words, stopping at sentence punctuation between words
+			wordMatches := englishNameWordRe.FindAllStringIndex(rest, -1)
+			var nameParts []string
+			prevEnd := 0
+			for _, wm := range wordMatches {
+				between := rest[prevEnd:wm[0]]
+				// Stop if punctuation or placeholder boundary appears between words
+				if strings.ContainsAny(between, ".!?,;:_") {
+					break
+				}
+				w := rest[wm[0]:wm[1]]
+				if nameStopWords[strings.ToLower(w)] {
+					break
+				}
+				nameParts = append(nameParts, w)
+				if len(nameParts) >= 3 {
+					break
+				}
+				prevEnd = wm[1]
+			}
+			if len(nameParts) < def.minWords {
+				continue
+			}
+			name := strings.Join(nameParts, " ")
+			lower := strings.ToLower(name)
+			if seen[lower] {
+				continue
+			}
+			seen[lower] = true
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// hasIntroPatterns reports whether text contains a self-introduction pattern.
+// Used as a cheap pre-check before running full proper noun protection.
+func hasIntroPatterns(text string) bool {
+	for _, pat := range introNamePatterns {
+		if pat.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractAllProperNouns merges Kagome-based Japanese proper noun extraction with
+// English self-introduction name detection into a single numbered entry list.
+// Kagome is only invoked when the text contains Japanese characters, avoiding
+// unexpected matches on ASCII text.
+func extractAllProperNouns(text string) ([]propNounEntry, error) {
+	var entries []propNounEntry
+
+	if hasJapaneseChars(text) {
+		var err error
+		entries, err = extractProperNouns(text)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	known := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		known[strings.ToLower(e.Surface)] = true
+	}
+
+	offset := len(entries)
+	for _, name := range extractEnglishIntroNames(text) {
+		lower := strings.ToLower(name)
+		if known[lower] {
+			continue
+		}
+		known[lower] = true
+		entry := propNounEntry{
+			Placeholder:  fmt.Sprintf("__GT_PROPN_%03d__", offset),
+			Surface:      name,
+			Type:         propNounPerson,
+			Translations: map[string]string{"en": name},
+		}
+		if td, ok := englishNameToKatakana(name); ok {
+			entry.TargetDisplay = td
+		}
+		entries = append(entries, entry)
+		offset++
+	}
+
+	return entries, nil
 }
 
 // extractProperNouns tokenizes text and extracts proper nouns with compound facility merging.
@@ -256,16 +508,23 @@ func extractProperNouns(text string) ([]propNounEntry, error) {
 			readings = append(readings, r)
 		}
 
-		// Check if next token is a facility suffix
-		if i+1 < len(tokens) {
+		// Compound: person name (surname + given name).
+		// Merges when next token is also 固有名詞・人名, OR is a short (≤3 chars) katakana
+		// sequence immediately following the surname — katakana given names (e.g. シン, ケン)
+		// are often absent from the IPA dictionary and would otherwise reach the AI untranslated.
+		if ptype == propNounPerson && i+1 < len(tokens) {
 			next := tokens[i+1]
-			if isFacilitySuffix(next.Surface) {
+			nextFeatures := next.Features()
+			isNextPersonName := len(nextFeatures) >= 3 && nextFeatures[0] == "名詞" && nextFeatures[1] == "固有名詞" && nextFeatures[2] == "人名"
+			isNextShortKatakana := isPureKatakana(next.Surface) && len([]rune(next.Surface)) <= 3
+			if isNextPersonName || isNextShortKatakana {
 				surface += next.Surface
-				ptype = propNounFacility
-				if r, ok := tokenReading(next.Features()); ok {
+				if r, ok := tokenReading(nextFeatures); ok {
 					readings = append(readings, r)
+				} else if isNextShortKatakana {
+					readings = append(readings, next.Surface)
 				}
-				i++ // consume suffix token
+				i++ // consume given name token
 			}
 		}
 
@@ -299,11 +558,13 @@ func extractProperNouns(text string) ([]propNounEntry, error) {
 				romanizedText = &joined
 			}
 		}
+		translations := map[string]string{"ja": raw.surface}
 		entries[i] = propNounEntry{
 			Placeholder:   placeholder,
 			Surface:       raw.surface,
 			RomanizedText: romanizedText,
 			Type:          raw.ptype,
+			Translations:  translations,
 		}
 	}
 	return entries, nil
@@ -370,10 +631,21 @@ func validatePlaceholders(output string, entries []propNounEntry, expected map[s
 	return nil
 }
 
-// restoreWithSurface replaces placeholders in text with their surface forms.
-func restoreWithSurface(text string, entries []propNounEntry) string {
+// restoreForLang replaces placeholders with the most appropriate form for langID.
+// Priority: Translations[langID] → TargetDisplay → RomanizedText → Surface.
+func restoreForLang(text string, entries []propNounEntry, langID string) string {
 	for _, e := range entries {
-		text = strings.ReplaceAll(text, e.Placeholder, e.Surface)
+		var form string
+		if t, ok := e.Translations[langID]; ok {
+			form = t
+		} else if e.TargetDisplay != "" {
+			form = e.TargetDisplay
+		} else if e.RomanizedText != nil {
+			form = *e.RomanizedText
+		} else {
+			form = e.Surface
+		}
+		text = strings.ReplaceAll(text, e.Placeholder, form)
 	}
 	return text
 }
@@ -405,6 +677,29 @@ func hasJapaneseChars(s string) bool {
 	return false
 }
 
+// collectMissingPlaceholders returns placeholders that appear fewer times than expected in output.
+func collectMissingPlaceholders(output string, expected map[string]int) []string {
+	var missing []string
+	for ph, count := range expected {
+		if strings.Count(output, ph) < count {
+			missing = append(missing, ph)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+// buildRetryPrompt appends a critical reminder about dropped placeholders to basePrompt.
+func buildRetryPrompt(basePrompt string, missingPlaceholders []string) string {
+	var sb strings.Builder
+	sb.WriteString(basePrompt)
+	sb.WriteString("\n\n[CRITICAL RETRY] Your previous response omitted the following placeholder(s). You MUST include each one verbatim — do NOT translate, modify, split, or omit:\n")
+	for _, ph := range missingPlaceholders {
+		sb.WriteString("  " + ph + "\n")
+	}
+	return sb.String()
+}
+
 // applyProperNounProtection runs the full protection pipeline:
 // 1. Extract proper nouns
 // 2. Replace with placeholders
@@ -422,7 +717,7 @@ func runProtectedTranslation(
 	backTranslatePromptFn func(translatedRaw string) string,
 ) (translatedRaw, backTranslationRaw string, entries []propNounEntry, err error) {
 
-	entries, err = extractProperNouns(text)
+	entries, err = extractAllProperNouns(text)
 	if err != nil {
 		log.Printf("WARN: proper noun extraction failed: %v", err)
 		return "", "", nil, err
@@ -435,22 +730,62 @@ func runProtectedTranslation(
 	placeholderText := replacePlaceholders(text, entries)
 	expected := expectedCounts(placeholderText, entries)
 
+	debugLog("固有名詞保護前テキスト: %q", text)
+	debugLog("固有名詞保護後テキスト: %q", placeholderText)
+	for _, e := range entries {
+		rom := "(なし)"
+		if e.RomanizedText != nil {
+			rom = *e.RomanizedText
+		}
+		debugLog("保護マップ: %s → %q [romanized: %s] [targetDisplay: %q]", e.Placeholder, e.Surface, rom, e.TargetDisplay)
+	}
+
 	// Step 1: translate
-	translatedRaw, err = callOpenAI(apiKey, model, translatePromptFn(placeholderText))
+	txPrompt := translatePromptFn(placeholderText)
+	debugLog("翻訳プロンプト:\n%s", txPrompt)
+	debugLog("OpenAI 翻訳対象テキスト: %q", placeholderText)
+	translatedRaw, err = callOpenAI(apiKey, model, txPrompt)
 	if err != nil {
 		return "", "", entries, fmt.Errorf("translation failed: %w", err)
 	}
-	if err = validatePlaceholders(translatedRaw, entries, expected); err != nil {
-		return "", "", entries, fmt.Errorf("proper_noun_protection_failed: translation: %w", err)
+	debugLog("OpenAI 翻訳 生レスポンス: %q", translatedRaw)
+	if valErr := validatePlaceholders(translatedRaw, entries, expected); valErr != nil {
+		missing := collectMissingPlaceholders(translatedRaw, expected)
+		debugLog("プレースホルダ欠落 (翻訳): %v — 再翻訳します", missing)
+		retryPrompt := buildRetryPrompt(txPrompt, missing)
+		translatedRaw, err = callOpenAI(apiKey, model, retryPrompt)
+		if err != nil {
+			return "", "", entries, fmt.Errorf("translation retry failed: %w", err)
+		}
+		debugLog("OpenAI 再翻訳 生レスポンス: %q", translatedRaw)
+		if err = validatePlaceholders(translatedRaw, entries, expected); err != nil {
+			debugLog("プレースホルダ欠落 再試行後も失敗 (翻訳): %v", err)
+			return "", "", entries, fmt.Errorf("proper_noun_protection_failed: translation: %w", err)
+		}
 	}
 
 	// Step 2: back-translate
-	backTranslationRaw, err = callOpenAI(apiKey, model, backTranslatePromptFn(translatedRaw))
+	debugLog("バックトランスレーション入力: %q", translatedRaw)
+	btPrompt := backTranslatePromptFn(translatedRaw)
+	debugLog("バックトランスレーション プロンプト:\n%s", btPrompt)
+	backTranslationRaw, err = callOpenAI(apiKey, model, btPrompt)
 	if err != nil {
 		return "", "", entries, fmt.Errorf("back-translation failed: %w", err)
 	}
-	if err = validatePlaceholders(backTranslationRaw, entries, expected); err != nil {
-		return "", "", entries, fmt.Errorf("proper_noun_protection_failed: back-translation: %w", err)
+	debugLog("バックトランスレーション 生レスポンス: %q", backTranslationRaw)
+	if valErr := validatePlaceholders(backTranslationRaw, entries, expected); valErr != nil {
+		missing := collectMissingPlaceholders(backTranslationRaw, expected)
+		debugLog("プレースホルダ欠落 (バックトランスレーション): %v — 再翻訳します", missing)
+		retryBtPrompt := buildRetryPrompt(btPrompt, missing)
+		backTranslationRaw, err = callOpenAI(apiKey, model, retryBtPrompt)
+		if err != nil {
+			return "", "", entries, fmt.Errorf("back-translation retry failed: %w", err)
+		}
+		debugLog("OpenAI 再バックトランスレーション 生レスポンス: %q", backTranslationRaw)
+		if err = validatePlaceholders(backTranslationRaw, entries, expected); err != nil {
+			debugLog("プレースホルダ欠落 再試行後も失敗 (バックトランスレーション): %v", err)
+			return "", "", entries, fmt.Errorf("proper_noun_protection_failed: back-translation: %w", err)
+		}
 	}
 
 	return translatedRaw, backTranslationRaw, entries, nil

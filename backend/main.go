@@ -78,6 +78,12 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	json.NewEncoder(w).Encode(ErrorResponse{Error: msg})
 }
 
+func debugLog(format string, args ...interface{}) {
+	if os.Getenv("DEBUG_TRANSLATION") == "true" {
+		log.Printf("[DEBUG_TRANSLATION] "+format, args...)
+	}
+}
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -472,7 +478,9 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 
 	var translatedText, backTranslation, ttsText string
 
-	useProtection := srcLang.ID == "ja" && hasJapaneseChars(transcribedText)
+	debugLog("受信テキスト: %q", transcribedText)
+
+	useProtection := (srcLang.ID == "ja" && hasJapaneseChars(transcribedText)) || (tgtLang.ID != "ja" && hasIntroPatterns(transcribedText))
 
 	if useProtection {
 		translatedRaw, backTranslationRaw, entries, perr := runProtectedTranslation(
@@ -501,9 +509,11 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else if entries != nil {
-			translatedText = restoreWithSurface(translatedRaw, entries)
-			backTranslation = restoreWithSurface(backTranslationRaw, entries)
+			translatedText = restoreForLang(translatedRaw, entries, tgtLang.ID)
+			backTranslation = restoreForLang(backTranslationRaw, entries, srcLang.ID)
 			ttsText = restoreWithRomanized(translatedRaw, entries)
+			debugLog("プレースホルダ復元後 翻訳結果: %q", translatedText)
+			debugLog("プレースホルダ復元後 バックトランスレーション: %q", backTranslation)
 		} else {
 			// 0 proper nouns extracted — fall through to normal translation
 			useProtection = false
@@ -511,18 +521,25 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !useProtection {
+		debugLog("固有名詞保護前テキスト: %q", transcribedText)
+		debugLog("OpenAI 翻訳対象テキスト: %q", transcribedText)
 		translated, err := callOpenAI(apiKey, model, translatePrompt(srcLang.Label, tgtLang.Label, tgtLang.ID, transcribedText))
 		if err != nil {
 			log.Printf("OpenAI translation error: %v", err)
 			writeError(w, http.StatusBadGateway, "translation failed")
 			return
 		}
+		debugLog("OpenAI 翻訳 生レスポンス: %q", translated)
+		debugLog("プレースホルダ復元後 翻訳結果: %q", translated)
+		debugLog("バックトランスレーション入力: %q", translated)
 		bt, err := callOpenAI(apiKey, model, backTranslatePrompt(tgtLang.Label, srcLang.Label, srcLang.ID, translated))
 		if err != nil {
 			log.Printf("OpenAI back-translation error: %v", err)
 			writeError(w, http.StatusBadGateway, "translation failed")
 			return
 		}
+		debugLog("バックトランスレーション 生レスポンス: %q", bt)
+		debugLog("プレースホルダ復元後 バックトランスレーション: %q", bt)
 		translatedText = translated
 		backTranslation = bt
 		ttsText = translatedText
@@ -577,6 +594,7 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 	lang0 := req.Languages[0]
 	lang1 := req.Languages[1]
 	log.Printf("translate: text=%q lang0=%s lang1=%s", req.Text, lang0.ID, lang1.ID)
+	debugLog("受信テキスト: %q", req.Text)
 
 	translatePromptFn := func(srcLabel, tgtLabel, tgtID, text string) string {
 		return fmt.Sprintf(
@@ -607,17 +625,30 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Determine if protection path applies
 	jaInCandidates := lang0.ID == "ja" || lang1.ID == "ja"
-	useProtection := jaInCandidates && hasJapaneseChars(req.Text)
+	hasJaChars := hasJapaneseChars(req.Text)
+	useProtection := (jaInCandidates && hasJaChars) || (!jaInCandidates && hasIntroPatterns(req.Text))
 
 	var srcLang, tgtLang LangInfo
 	var translatedText, backTranslation, ttsText string
 
 	if useProtection {
 		// sourceLanguage determined here, not by OpenAI
-		if lang0.ID == "ja" {
-			srcLang, tgtLang = lang0, lang1
+		if hasJaChars {
+			// Japanese text: Japanese is source
+			if lang0.ID == "ja" {
+				srcLang, tgtLang = lang0, lang1
+			} else {
+				srcLang, tgtLang = lang1, lang0
+			}
 		} else {
-			srcLang, tgtLang = lang1, lang0
+			// Non-Japanese text (intro patterns detected): non-Japanese language is source
+			if lang0.ID == "ja" {
+				srcLang, tgtLang = lang1, lang0
+			} else if lang1.ID == "ja" {
+				srcLang, tgtLang = lang0, lang1
+			} else {
+				srcLang, tgtLang = lang0, lang1
+			}
 		}
 
 		translatedRaw, backTranslationRaw, entries, perr := runProtectedTranslation(
@@ -646,9 +677,11 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else if entries != nil {
-			translatedText = restoreWithSurface(translatedRaw, entries)
-			backTranslation = restoreWithSurface(backTranslationRaw, entries)
+			translatedText = restoreForLang(translatedRaw, entries, tgtLang.ID)
+			backTranslation = restoreForLang(backTranslationRaw, entries, srcLang.ID)
 			ttsText = restoreWithRomanized(translatedRaw, entries)
+			debugLog("プレースホルダ復元後 翻訳結果: %q", translatedText)
+			debugLog("プレースホルダ復元後 バックトランスレーション: %q", backTranslation)
 		} else {
 			// 0 proper nouns — fall through to normal translation
 			useProtection = false
@@ -656,6 +689,8 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !useProtection {
+		debugLog("固有名詞保護前テキスト: %q", req.Text)
+		debugLog("OpenAI 翻訳対象テキスト: %q", req.Text)
 		// Normal path: OpenAI detects language and translates
 		detectPrompt := fmt.Sprintf(
 			"You are translating the exact text confirmed by the user on screen.\n"+
@@ -687,6 +722,7 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadGateway, "translation failed")
 			return
 		}
+		debugLog("OpenAI 翻訳 生レスポンス: %q", raw)
 
 		type detectResult struct {
 			SourceLanguage string `json:"sourceLanguage"`
@@ -715,13 +751,17 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 			srcLang, tgtLang = lang1, lang0
 		}
 
+		debugLog("プレースホルダ復元後 翻訳結果: %q", dr.TranslatedText)
 		// Back-translate
+		debugLog("バックトランスレーション入力: %q", dr.TranslatedText)
 		bt, err := callOpenAI(apiKey, model, backTranslatePromptFn(tgtLang.Label, srcLang.Label, srcLang.ID, dr.TranslatedText))
 		if err != nil {
 			log.Printf("OpenAI back-translation error: %v", err)
 			writeError(w, http.StatusBadGateway, "translation failed")
 			return
 		}
+		debugLog("バックトランスレーション 生レスポンス: %q", bt)
+		debugLog("プレースホルダ復元後 バックトランスレーション: %q", bt)
 
 		translatedText = dr.TranslatedText
 		backTranslation = bt

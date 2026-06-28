@@ -21,14 +21,24 @@ interface HistoryEntry {
   targetLangId: string
 }
 
-const FLAG_GUIDE_MESSAGES: Record<string, string> = {
-  'ja':    '国旗をタップして話してください。\n話し終わったらもう一度国旗をタップして終了してください。',
-  'en':    'Tap the flag to speak.\nTap the flag again when you are finished.',
-  'zh-CN': '点击国旗开始说话。\n说完后再次点击国旗结束。',
-  'zh-TW': '點擊國旗開始說話。\n說完後再次點擊國旗結束。',
-  'ko':    '국기를 탭하여 말씀해 주세요.\n말이 끝나면 국기를 다시 탭하여 종료하세요.',
-  'th':    'แตะธงเพื่อพูด\nเมื่อพูดเสร็จแล้ว แตะธงอีกครั้งเพื่อสิ้นสุด',
-  'vi':    'Nhấn vào cờ để nói.\nKhi nói xong, nhấn vào cờ một lần nữa để kết thúc.',
+const FLAG_TAP_MESSAGES: Record<string, string> = {
+  'ja':    '国旗をタップして話してください。',
+  'en':    'Tap the flag to speak.',
+  'zh-CN': '点击国旗开始说话。',
+  'zh-TW': '點擊國旗開始說話。',
+  'ko':    '국기를 탭하여 말씀해 주세요.',
+  'th':    'แตะธงเพื่อพูด',
+  'vi':    'Nhấn vào cờ để nói.',
+}
+
+const FLAG_FINISH_MESSAGES: Record<string, string> = {
+  'ja':    '話し終わったらもう一度国旗をタップして終了してください。',
+  'en':    'Tap the flag again when you are finished.',
+  'zh-CN': '说完后再次点击国旗结束。',
+  'zh-TW': '說完後再次點擊國旗結束。',
+  'ko':    '말이 끝나면 국기를 다시 탭하여 종료하세요.',
+  'th':    'เมื่อพูดเสร็จแล้ว แตะธงอีกครั้งเพื่อสิ้นสุด',
+  'vi':    'Khi nói xong, nhấn vào cờ một lần nữa để kết thúc.',
 }
 
 const LANGUAGE_UNCLEAR_MESSAGES: Record<string, string> = {
@@ -77,6 +87,10 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null)
   const hasLiveTranscriptRef = useRef(false)
   const recognizedTextRef = useRef('')
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const rafIdRef = useRef<number | null>(null)
+  const rippleRefs = useRef<(HTMLDivElement | null)[]>([null, null, null])
 
   useEffect(() => {
     if (!isEditing || !editRef.current) return
@@ -225,6 +239,8 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
       streamRef.current?.getTracks().forEach(t => t.stop())
       audioRef.current?.pause()
       speechRecognitionRef.current?.stop()
+      if (rafIdRef.current !== null) cancelAnimationFrame(rafIdRef.current)
+      audioContextRef.current?.close()
     }
   }, [])
 
@@ -262,6 +278,40 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
       recorder.start()
       setRecordingFlagIndex(flagIndex)
       setStatus('recording')
+
+      try {
+        const audioCtx = new AudioContext()
+        const source = audioCtx.createMediaStreamSource(stream)
+        const analyser = audioCtx.createAnalyser()
+        analyser.fftSize = 256
+        source.connect(analyser)
+        audioContextRef.current = audioCtx
+        analyserRef.current = analyser
+
+        const timeData = new Uint8Array(analyser.fftSize)
+        const startTime = performance.now()
+        const DURATION = 1500
+        const COUNT = 3
+
+        const tick = (now: number) => {
+          analyser.getByteTimeDomainData(timeData)
+          let sum = 0
+          for (let j = 0; j < timeData.length; j++) {
+            const v = (timeData[j] - 128) / 128
+            sum += v * v
+          }
+          const amplitude = Math.min(1, Math.sqrt(sum / timeData.length) * 8)
+          const elapsed = now - startTime
+          rippleRefs.current.forEach((el, ri) => {
+            if (!el) return
+            const phase = ((elapsed / DURATION) + ri / COUNT) % 1
+            el.style.transform = `scale(${phase})`
+            el.style.opacity = String((1 - phase) * amplitude * 0.75)
+          })
+          rafIdRef.current = requestAnimationFrame(tick)
+        }
+        rafIdRef.current = requestAnimationFrame(tick)
+      } catch { /* AudioContext 非対応環境では波紋なし */ }
 
       const RecognitionCtor = getSpeechRecognitionCtor()
       if (RecognitionCtor) {
@@ -301,6 +351,16 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
     userStoppedRef.current = true
     speechRecognitionRef.current?.stop()
     speechRecognitionRef.current = null
+    if (rafIdRef.current !== null) {
+      cancelAnimationFrame(rafIdRef.current)
+      rafIdRef.current = null
+    }
+    rippleRefs.current.forEach(el => {
+      if (el) { el.style.transform = 'scale(0)'; el.style.opacity = '0' }
+    })
+    audioContextRef.current?.close()
+    audioContextRef.current = null
+    analyserRef.current = null
     setRecordingFlagIndex(null)
     setStatus('processing')
     mediaRecorderRef.current.stop()
@@ -391,9 +451,11 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
 
       {selectedLanguages.length === 2 && (
         <div className="lang-flags-bar">
-          <p className="lang-flags-bar__guide">
-            {FLAG_GUIDE_MESSAGES[selectedLanguages[0].id] ?? FLAG_GUIDE_MESSAGES['en']}
-          </p>
+          {status !== 'recording' && (
+            <p className="lang-flags-bar__guide">
+              {FLAG_TAP_MESSAGES[selectedLanguages[0].id] ?? FLAG_TAP_MESSAGES['en']}
+            </p>
+          )}
           <div className="lang-flags-bar__flags">
             {([0, 1] as const).map(i => {
               const lang = selectedLanguages[i]
@@ -416,13 +478,28 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
                     src={`/flags/${lang.id}.svg`}
                     alt={lang.label}
                   />
+                  {isThisRecording && (
+                    <>
+                      <div className="flag-ripple" ref={el => { rippleRefs.current[0] = el }} />
+                      <div className="flag-ripple" ref={el => { rippleRefs.current[1] = el }} />
+                      <div className="flag-ripple" ref={el => { rippleRefs.current[2] = el }} />
+                    </>
+                  )}
                 </button>
               )
             })}
           </div>
-          <p className="lang-flags-bar__guide">
-            {FLAG_GUIDE_MESSAGES[selectedLanguages[1].id] ?? FLAG_GUIDE_MESSAGES['en']}
-          </p>
+          {status !== 'recording' ? (
+            <p className="lang-flags-bar__guide">
+              {FLAG_TAP_MESSAGES[selectedLanguages[1].id] ?? FLAG_TAP_MESSAGES['en']}
+            </p>
+          ) : recordingFlagIndex !== null ? (
+            <div className="lang-flags-bar__scroll-wrap">
+              <p className="lang-flags-bar__scroll-text">
+                {FLAG_FINISH_MESSAGES[selectedLanguages[recordingFlagIndex].id] ?? FLAG_FINISH_MESSAGES['en']}
+              </p>
+            </div>
+          ) : null}
         </div>
       )}
 
