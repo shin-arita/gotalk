@@ -1,0 +1,3 @@
+FROM golang:1.24-alpine
+RUN echo 'export PATH=/go/bin:/usr/local/go/bin:$PATH' > /etc/profile.d/go.sh
+WORKDIR /app

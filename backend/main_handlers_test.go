@@ -45,6 +45,32 @@ func openAITextResponse(text string) string {
 	return fmt.Sprintf(`{"output":[{"content":[{"type":"text","text":%s}]}]}`, jsonString(text))
 }
 
+func buildInterpretRequestWithTranscript(audioData []byte, myLang, theirLang, speaker, transcript string) (*http.Request, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile("audio", "test.webm")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := part.Write(audioData); err != nil {
+		return nil, err
+	}
+	for _, kv := range [][2]string{
+		{"myLanguage", myLang},
+		{"theirLanguage", theirLang},
+		{"speaker", speaker},
+		{"transcript", transcript},
+	} {
+		if err := mw.WriteField(kv[0], kv[1]); err != nil {
+			return nil, err
+		}
+	}
+	mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/interpret", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	return req, nil
+}
+
 func buildInterpretRequest(audioData []byte, includeAudio bool, myLang, theirLang string) (*http.Request, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -538,6 +564,7 @@ func TestInterpretHandler_TranslationError(t *testing.T) {
 }
 
 func TestInterpretHandler_InvalidTranslationJSON(t *testing.T) {
+	// Translation result is now plain text (not JSON), so "not valid json" is accepted as-is.
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	callCount := 0
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
@@ -557,8 +584,15 @@ func TestInterpretHandler_InvalidTranslationJSON(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	interpretHandler(rec, req)
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp InterpretResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.TranslatedText != "not valid json" {
+		t.Errorf("translatedText=%q want %q", resp.TranslatedText, "not valid json")
 	}
 }
 
@@ -699,7 +733,7 @@ func TestCallWhisper_Whisper1_Success(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return fakeHTTPResponse(http.StatusOK, `{"language":"japanese","text":"こんにちは"}`), nil
 	})
-	text, lang, err := callWhisper("test-key", "whisper-1", []byte("fake audio"), "test.webm")
+	text, lang, err := callWhisper("test-key", "whisper-1", []byte("fake audio"), "test.webm", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,7 +746,7 @@ func TestCallWhisper_GPT4oTranscribe_Success(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return fakeHTTPResponse(http.StatusOK, `{"text":"hello","language":""}`), nil
 	})
-	text, _, err := callWhisper("test-key", "gpt-4o-transcribe", []byte("fake audio"), "test.webm")
+	text, _, err := callWhisper("test-key", "gpt-4o-transcribe", []byte("fake audio"), "test.webm", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -725,7 +759,7 @@ func TestCallWhisper_NonOKStatus(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return fakeHTTPResponse(http.StatusUnauthorized, `{"error":"unauthorized"}`), nil
 	})
-	_, _, err := callWhisper("test-key", "whisper-1", []byte("fake audio"), "test.webm")
+	_, _, err := callWhisper("test-key", "whisper-1", []byte("fake audio"), "test.webm", "", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -735,7 +769,7 @@ func TestCallWhisper_InvalidJSON(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return fakeHTTPResponse(http.StatusOK, `not json`), nil
 	})
-	_, _, err := callWhisper("test-key", "whisper-1", []byte("fake audio"), "test.webm")
+	_, _, err := callWhisper("test-key", "whisper-1", []byte("fake audio"), "test.webm", "", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -745,8 +779,373 @@ func TestCallWhisper_TransportError(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("network error")
 	})
-	_, _, err := callWhisper("test-key", "whisper-1", []byte("fake audio"), "test.webm")
+	_, _, err := callWhisper("test-key", "whisper-1", []byte("fake audio"), "test.webm", "", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+// ─── 過剰補正禁止（Anti-correction rules） ────────────────────────────────────
+
+// TestTranslateHandler_PromptForbidsSpeechCorrection verifies that the translate prompt
+// instructs the model not to correct or infer proper nouns absent from the input.
+// This prevents hallucinations like "でありか新" → "Arida Shin".
+// The handler now makes 2 calls (translate + back-translate); we check that the first
+// call's prompt contains all anti-correction phrases.
+func TestTranslateHandler_PromptForbidsSpeechCorrection(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	var capturedBodies []string
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		capturedBodies = append(capturedBodies, string(b))
+		result := `{"sourceLanguage":"ja","targetLanguage":"en","translatedText":"I am Japanese and Arika new."}`
+		return fakeHTTPResponse(http.StatusOK, openAITextResponse(result)), nil
+	})
+	body := `{"text":"私は日本人でありか新","languages":[{"id":"ja","label":"Japanese"},{"id":"en","label":"English"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/translate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	translateHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(capturedBodies) == 0 {
+		t.Fatal("no HTTP calls made")
+	}
+	// The first call is the translation/detect prompt; it must contain all anti-correction phrases.
+	firstPrompt := capturedBodies[0]
+	for _, phrase := range []string{"Do NOT correct", "speech recognition", "as-is", "STRICT", "NEVER generate"} {
+		if !strings.Contains(firstPrompt, phrase) {
+			t.Errorf("translate prompt missing anti-correction phrase: %q", phrase)
+		}
+	}
+}
+
+// TestInterpretHandler_TranscriptPath_PromptForbidsSpeechCorrection verifies the same
+// anti-correction rules in the interpret handler's client-transcript (fast) path.
+// The handler now makes 2 calls (translate + back-translate); the first call's prompt
+// must contain all anti-correction phrases.
+func TestInterpretHandler_TranscriptPath_PromptForbidsSpeechCorrection(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	var capturedBodies []string
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		capturedBodies = append(capturedBodies, string(b))
+		return fakeHTTPResponse(http.StatusOK, openAITextResponse("I am Japanese and Arita Shin.")), nil
+	})
+	req, err := buildInterpretRequestWithTranscript(
+		[]byte("audio"),
+		`{"id":"ja","label":"Japanese"}`,
+		`{"id":"en","label":"English"}`,
+		"ja",
+		"私は日本人のありたしんです",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	interpretHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(capturedBodies) == 0 {
+		t.Fatal("no HTTP calls made")
+	}
+	// The first call is the translation prompt; it must contain all anti-correction phrases.
+	firstPrompt := capturedBodies[0]
+	for _, phrase := range []string{"Do NOT correct", "speech recognition", "as-is", "STRICT", "NEVER generate"} {
+		if !strings.Contains(firstPrompt, phrase) {
+			t.Errorf("interpret translate prompt missing anti-correction phrase: %q", phrase)
+		}
+	}
+}
+
+// TestTranslateHandler_HakataStation verifies the proper noun protection path for 博多駅.
+// Kagome detects 博多 (place) → placeholder __GT_PROPN_000__; 駅 (common noun) is left for OpenAI to translate.
+// OpenAI receives "__GT_PROPN_000__駅はどこですか" and returns "Where is __GT_PROPN_000__ Station?".
+// translatedText restores __GT_PROPN_000__ with the romanized form "Hakata" for the English target.
+func TestTranslateHandler_HakataStation(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	callCount := 0
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		callCount++
+		switch callCount {
+		case 1: // translate call: AI translates 駅→Station and returns placeholder intact
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("Where is __GT_PROPN_000__ Station?")), nil
+		default: // back-translate call
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("__GT_PROPN_000__駅はどこですか。")), nil
+		}
+	})
+	body := `{"text":"博多駅はどこですか","languages":[{"id":"ja","label":"Japanese"},{"id":"en","label":"English"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/translate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	translateHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp TranslateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	// translatedText and ttsText: __GT_PROPN_000__ → "Hakata"; 駅 is already translated as "Station" by OpenAI.
+	if resp.TranslatedText != "Where is Hakata Station?" {
+		t.Errorf("translatedText=%q want %q", resp.TranslatedText, "Where is Hakata Station?")
+	}
+	if resp.TtsText != "Where is Hakata Station?" {
+		t.Errorf("ttsText=%q want %q", resp.TtsText, "Where is Hakata Station?")
+	}
+}
+
+// TestTranslateHandler_PersonNameKatakana verifies that a person name with a katakana given name
+// (e.g. "有田シン") is fully protected. The surname 有田 (固有名詞・人名) and the short katakana
+// given name シン are merged into one placeholder so the AI cannot semantically translate シン.
+func TestTranslateHandler_PersonNameKatakana(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	callCount := 0
+	var firstPromptBody string
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		callCount++
+		if callCount == 1 {
+			firstPromptBody = string(b)
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("Hello, my name is __GT_PROPN_000__.")), nil
+		}
+		return fakeHTTPResponse(http.StatusOK, openAITextResponse("__GT_PROPN_000__です。")), nil
+	})
+	body := `{"text":"有田シンです","languages":[{"id":"ja","label":"Japanese"},{"id":"en","label":"English"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/translate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	translateHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	// シン must not appear raw in the translation prompt — it must be inside a placeholder
+	if strings.Contains(firstPromptBody, "シン") {
+		t.Errorf("シン appeared raw (unprotected) in translate prompt")
+	}
+	var resp TranslateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	// translatedText must contain the romanized name (e.g. "Arita Shin") for the English target.
+	if !strings.Contains(resp.TranslatedText, "Shin") {
+		t.Errorf("translatedText=%q should contain romanized Shin", resp.TranslatedText)
+	}
+	// ttsText must contain the romanized given name Shin
+	if !strings.Contains(resp.TtsText, "Shin") {
+		t.Errorf("ttsText=%q should contain romanized Shin", resp.TtsText)
+	}
+}
+
+// TestTranslateHandler_DonKihote verifies the proper noun protection path for ドン・キホーテ.
+// Kagome detects ドン・キホーテ as 固有名詞・組織 → placeholder __GT_PROPN_000__.
+// The mock preserves the placeholder; surface is restored in translatedText.
+// Reading ドンキホーテ → romanized "Donkihote" (long vowel ー dropped, oo→o collapsed).
+func TestTranslateHandler_DonKihote(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	callCount := 0
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		callCount++
+		switch callCount {
+		case 1: // translate call
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("I want to go to __GT_PROPN_000__.")), nil
+		default: // back-translate call
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("__GT_PROPN_000__に行きたいです。")), nil
+		}
+	})
+	body := `{"text":"ドン・キホーテに行きたいです","languages":[{"id":"ja","label":"Japanese"},{"id":"en","label":"English"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/translate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	translateHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp TranslateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.TranslatedText != "I want to go to Donkihote." {
+		t.Errorf("translatedText=%q want romanized Donkihote", resp.TranslatedText)
+	}
+	if resp.TtsText != "I want to go to Donkihote." {
+		t.Errorf("ttsText=%q want romanized Donkihote", resp.TtsText)
+	}
+}
+
+// TestTranslateHandler_EnglishIntroName verifies that English names following "my name is"
+// are passed raw to OpenAI when translating en→ja. Placeholder protection is intentionally
+// disabled for this direction because the katakana fallback was producing reversed/garbled names.
+func TestTranslateHandler_EnglishIntroName(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	var capturedBodies []string
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		capturedBodies = append(capturedBodies, string(b))
+		if len(capturedBodies) == 1 {
+			result := `{"sourceLanguage":"en","targetLanguage":"ja","translatedText":"私の名前はシン アリタです。"}`
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse(result)), nil
+		}
+		return fakeHTTPResponse(http.StatusOK, openAITextResponse("My name is shin arita.")), nil
+	})
+	body := `{"text":"my name is shin arita","languages":[{"id":"en","label":"English"},{"id":"ja","label":"Japanese"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/translate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	translateHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(capturedBodies) == 0 {
+		t.Fatal("no HTTP calls made")
+	}
+	// The first call must send the name raw — no placeholder for en→ja.
+	firstPrompt := capturedBodies[0]
+	if strings.Contains(firstPrompt, "__GT_PROPN_000__") {
+		t.Errorf("placeholder appeared in translate prompt — English names must not be protected for en→ja")
+	}
+	if !strings.Contains(firstPrompt, "shin arita") {
+		t.Errorf(`"shin arita" should appear raw in translate prompt`)
+	}
+	var resp TranslateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.TranslatedText != "私の名前はシン アリタです。" {
+		t.Errorf("translatedText=%q", resp.TranslatedText)
+	}
+}
+
+// TestTranslateHandler_PlaceholderDropped_RetrySucceeds verifies that when OpenAI drops a
+// placeholder in the first translation attempt, the handler retries with a stronger prompt
+// and succeeds if the retry includes the placeholder.
+func TestTranslateHandler_PlaceholderDropped_RetrySucceeds(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	callCount := 0
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		callCount++
+		switch callCount {
+		case 1: // first translate: drops placeholder
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("I want to go to a station.")), nil
+		case 2: // retry translate: includes placeholder; 駅 translated as Station by OpenAI
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("I want to go to __GT_PROPN_000__ Station.")), nil
+		default: // back-translate
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("__GT_PROPN_000__駅に行きたいです。")), nil
+		}
+	})
+	body := `{"text":"博多駅に行きたいです","languages":[{"id":"ja","label":"Japanese"},{"id":"en","label":"English"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/translate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	translateHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if callCount != 3 {
+		t.Errorf("expected 3 OpenAI calls (translate + retry + back-translate), got %d", callCount)
+	}
+	var resp TranslateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.TranslatedText != "I want to go to Hakata Station." {
+		t.Errorf("translatedText=%q want %q", resp.TranslatedText, "I want to go to Hakata Station.")
+	}
+}
+
+// TestTranslateHandler_PlaceholderDropped_RetryFails verifies that when both the initial
+// translation and the retry drop the placeholder, the handler returns 502.
+func TestTranslateHandler_PlaceholderDropped_RetryFails(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return fakeHTTPResponse(http.StatusOK, openAITextResponse("I want to go to a station.")), nil
+	})
+	body := `{"text":"博多駅に行きたいです","languages":[{"id":"ja","label":"Japanese"},{"id":"en","label":"English"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/translate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	translateHandler(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+}
+
+// TestTranslateHandler_BackTranslatePlaceholderDropped_RetrySucceeds verifies the retry
+// logic applies to the back-translation step as well.
+func TestTranslateHandler_BackTranslatePlaceholderDropped_RetrySucceeds(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	callCount := 0
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		callCount++
+		switch callCount {
+		case 1: // translate: placeholder intact; 駅 translated as Station by OpenAI
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("I want to go to __GT_PROPN_000__ Station.")), nil
+		case 2: // back-translate: drops placeholder
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("駅に行きたいです。")), nil
+		default: // back-translate retry: placeholder intact
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("__GT_PROPN_000__駅に行きたいです。")), nil
+		}
+	})
+	body := `{"text":"博多駅に行きたいです","languages":[{"id":"ja","label":"Japanese"},{"id":"en","label":"English"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/translate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	translateHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if callCount != 3 {
+		t.Errorf("expected 3 OpenAI calls (translate + back-translate + retry), got %d", callCount)
+	}
+}
+
+// TestInterpretHandler_EnglishIntroName verifies that English names following "I am" are
+// passed raw to OpenAI when translating en→ja. Placeholder protection is intentionally
+// disabled for this direction because the katakana fallback was producing reversed/garbled names.
+func TestInterpretHandler_EnglishIntroName(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	var capturedBodies []string
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		capturedBodies = append(capturedBodies, string(b))
+		if len(capturedBodies) == 1 {
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("私は タロ スズキです。")), nil
+		}
+		return fakeHTTPResponse(http.StatusOK, openAITextResponse("I am taro suzuki.")), nil
+	})
+	req, err := buildInterpretRequestWithTranscript(
+		[]byte("audio"),
+		`{"id":"en","label":"English"}`,
+		`{"id":"ja","label":"Japanese"}`,
+		"en",
+		"I am taro suzuki",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	interpretHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(capturedBodies) == 0 {
+		t.Fatal("no HTTP calls made")
+	}
+	// The first call must send the name raw — no placeholder for en→ja.
+	firstPrompt := capturedBodies[0]
+	if strings.Contains(firstPrompt, "__GT_PROPN_000__") {
+		t.Errorf("placeholder appeared in translate prompt — English names must not be protected for en→ja")
+	}
+	if !strings.Contains(firstPrompt, "taro suzuki") {
+		t.Errorf(`"taro suzuki" should appear raw in translate prompt`)
+	}
+	var resp InterpretResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.TranslatedText != "私は タロ スズキです。" {
+		t.Errorf("translatedText=%q", resp.TranslatedText)
 	}
 }

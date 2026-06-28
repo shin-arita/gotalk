@@ -136,6 +136,100 @@ func TestCorsMiddleware(t *testing.T) {
 	}
 }
 
+// TestExtractProperNouns_KatakanaPersonName verifies that a katakana given name immediately
+// following a kanji surname is protected. Kagome often does not classify short katakana names
+// (e.g. シン) as 固有名詞, so the compound logic must merge them with the preceding surname.
+func TestExtractProperNouns_KatakanaPersonName(t *testing.T) {
+	entries, err := extractProperNouns("有田シンです")
+	if err != nil {
+		t.Fatalf("extractProperNouns error: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Surface, "シン") {
+			return // シン is protected — either merged into 有田シン or as its own entry
+		}
+	}
+	t.Errorf("シン not in any protected entry; got %v", entries)
+}
+
+func TestExtractEnglishIntroNames(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want []string
+	}{
+		// "my name is" (min=1 word)
+		{"my name is lowercase", "my name is shin arita", []string{"shin arita"}},
+		{"My Name Is mixed case", "My name is Shin Arita", []string{"Shin Arita"}},
+		{"MY NAME IS uppercase", "MY NAME IS SHIN ARITA", []string{"SHIN ARITA"}},
+		{"speech recognition variant", "my name is sing arita", []string{"sing arita"}},
+		{"three-word name", "my name is alice mary johnson", []string{"alice mary johnson"}},
+		{"my name is single word", "my name is alice", []string{"alice"}},
+		// "I am" and "I'm" (min=2 words to reduce false positives)
+		{"I am two-word name", "I am taro suzuki", []string{"taro suzuki"}},
+		{"I'm two-word name", "I'm john smith", []string{"john smith"}},
+		{"i'm lowercase", "i'm alice johnson", []string{"alice johnson"}},
+		// stops at sentence punctuation
+		{"stops at period", "my name is shin arita. Nice to meet you.", []string{"shin arita"}},
+		{"stops at comma", "my name is alice, nice to meet you", []string{"alice"}},
+		// stops at stop words
+		{"stops at and", "my name is alice and here we go", []string{"alice"}},
+		{"I am stops at and", "my name is alice and I am japanese", []string{"alice"}},
+		{"stops at from", "I am bob smith from japan", []string{"bob smith"}},
+		// single word after "I am" / "I'm" → skipped (min=2)
+		{"I am single word skipped", "I am going to the store", []string{}},
+		{"I am article skipped", "I am a developer", []string{}},
+		{"I am single non-stop skipped", "I am japanese", []string{}},
+		{"I'm stop word", "I'm not sure", []string{}},
+		{"digit after pattern", "I am 30 years old", []string{}},
+		// no intro pattern
+		{"no intro pattern japanese", "こんにちは", []string{}},
+		{"no intro pattern english", "hello world", []string{}},
+		// deduplication
+		{"dedup same pattern", "my name is john smith. my name is john smith.", []string{"john smith"}},
+		{"dedup different pattern", "my name is john smith. I am john smith.", []string{"john smith"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractEnglishIntroNames(tt.text)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got=%v want=%v", got, tt.want)
+			}
+			for i, g := range got {
+				if g != tt.want[i] {
+					t.Errorf("[%d] got=%q want=%q", i, g, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestHasIntroPatterns(t *testing.T) {
+	tests := []struct {
+		text string
+		want bool
+	}{
+		{"my name is shin", true},
+		{"My Name Is Shin", true},
+		{"MY NAME IS SHIN", true},
+		{"I am taro", true},
+		{"i am taro", true},
+		{"I'm alice", true},
+		{"i'm alice", true},
+		{"こんにちは", false},
+		{"hello world", false},
+		{"私は有田シンです", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			if got := hasIntroPatterns(tt.text); got != tt.want {
+				t.Fatalf("hasIntroPatterns(%q)=%v want=%v", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCorsMiddlewareOptions(t *testing.T) {
 	nextCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

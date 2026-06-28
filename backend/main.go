@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 const (
@@ -38,6 +39,7 @@ type TranslateResponse struct {
 	TargetLanguage  string `json:"targetLanguage"`
 	TranslatedText  string `json:"translatedText"`
 	BackTranslation string `json:"backTranslation"`
+	TtsText         string `json:"ttsText"`
 }
 
 type InterpretResponse struct {
@@ -46,6 +48,7 @@ type InterpretResponse struct {
 	TargetLanguage  string `json:"targetLanguage"`
 	TranslatedText  string `json:"translatedText"`
 	BackTranslation string `json:"backTranslation"`
+	TtsText         string `json:"ttsText"`
 }
 
 type ErrorResponse struct {
@@ -73,6 +76,12 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(ErrorResponse{Error: msg})
+}
+
+func debugLog(format string, args ...interface{}) {
+	if os.Getenv("DEBUG_TRANSLATION") == "true" {
+		log.Printf("[DEBUG_TRANSLATION] "+format, args...)
+	}
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -207,6 +216,27 @@ func callOpenAI(apiKey, model, prompt string) (string, error) {
 	return strings.TrimSpace(result.Output[0].Content[0].Text), nil
 }
 
+// stripOuterQuotes strips surrounding quotes or brackets if OpenAI wraps the text response in them.
+func stripOuterQuotes(s string) string {
+	s = strings.TrimSpace(s)
+
+	pairs := [][2]string{
+		{`"`, `"`},
+		{`'`, `'`},
+		{"「", "」"},
+		{"『", "』"},
+		{"“", "”"},
+	}
+
+	for _, p := range pairs {
+		if strings.HasPrefix(s, p[0]) && strings.HasSuffix(s, p[1]) {
+			return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, p[0]), p[1]))
+		}
+	}
+
+	return s
+}
+
 // extractJSON strips markdown code fences if OpenAI wraps the JSON in them.
 func extractJSON(s string) string {
 	idx := strings.Index(s, "{")
@@ -220,9 +250,25 @@ func extractJSON(s string) string {
 	return s[idx : end+1]
 }
 
+// whisperLangCode converts an app language ID to the ISO 639-1 code Whisper expects.
+func whisperLangCode(id string) string {
+	return strings.SplitN(id, "-", 2)[0]
+}
+
+// whisperPrompts holds language-specific transcription hints to improve proper-noun recognition.
+var whisperPrompts = map[string]string{
+	"ja": "日本語の会話です。固有名詞（地名・駅名・施設名・店名・会社名・人名・ブランド名）はカタカナや漢字で正確に認識してください。",
+	"en": "English conversation. Transcribe proper nouns—people, places, stations, shops, companies, brands—accurately.",
+	"zh": "这是中文对话。请准确识别专有名词，包括人名、地名、站名、设施名、店铺名、公司名和品牌名。",
+	"ko": "한국어 대화입니다. 인명, 지명, 역명, 시설명, 상호명, 회사명, 브랜드명 등 고유명사를 정확하게 인식해주세요.",
+	"th": "การสนทนาภาษาไทย โปรดถอดเสียงคำนามเฉพาะ เช่น ชื่อบุคคล สถานที่ สถานี ร้านค้า บริษัท และแบรนด์ให้ถูกต้อง",
+	"vi": "Cuộc hội thoại tiếng Việt. Hãy nhận dạng chính xác các danh từ riêng như tên người, địa danh, tên ga, cửa hàng, công ty và thương hiệu.",
+}
+
 // callWhisper transcribes audio via OpenAI and returns the text and detected language.
 // whisper-1 supports verbose_json (includes language); gpt-4o-transcribe only supports json (no language field).
-func callWhisper(apiKey, model string, audioData []byte, filename string) (text, lang string, err error) {
+// Pass language (ISO 639-1, e.g. "ja") and prompt to improve accuracy; empty string skips the field.
+func callWhisper(apiKey, model string, audioData []byte, filename, language, prompt string) (text, lang string, err error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 
@@ -242,6 +288,16 @@ func callWhisper(apiKey, model string, audioData []byte, filename string) (text,
 	}
 	if err = mw.WriteField("response_format", responseFormat); err != nil {
 		return "", "", err
+	}
+	if language != "" {
+		if err = mw.WriteField("language", language); err != nil {
+			return "", "", err
+		}
+	}
+	if prompt != "" {
+		if err = mw.WriteField("prompt", prompt); err != nil {
+			return "", "", err
+		}
 	}
 	mw.Close()
 
@@ -350,76 +406,168 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	speaker := r.FormValue("speaker")
-	log.Printf("interpret: myLang=%s theirLang=%s speaker=%q file=%s size=%d",
-		myLang.ID, theirLang.ID, speaker, fileHeader.Filename, len(audioData))
+	clientTranscript := strings.TrimSpace(r.FormValue("transcript"))
+	log.Printf("interpret: myLang=%s theirLang=%s speaker=%q file=%s size=%d hasTranscript=%v",
+		myLang.ID, theirLang.ID, speaker, fileHeader.Filename, len(audioData), clientTranscript != "")
 
-	// Step 1: language detection via whisper-1 (audio-based, sequential).
-	_, detectedLang, err := callWhisper(apiKey, langDetectionModel, audioData, fileHeader.Filename)
-	if err != nil {
-		log.Printf("Whisper (lang detection) error: %v", err)
-		writeError(w, http.StatusBadGateway, "language detection failed")
-		return
-	}
-	if detectedLang == "" {
-		log.Printf("language detection failed: empty language from %s", langDetectionModel)
-		writeError(w, http.StatusBadGateway, "language detection failed")
-		return
-	}
-
-	// Step 2: match against selected languages. Bail out early on mismatch.
 	var srcLang, tgtLang LangInfo
-	switch {
-	case whisperLangMatches(detectedLang, myLang.ID):
-		srcLang, tgtLang = myLang, theirLang
-	case whisperLangMatches(detectedLang, theirLang.ID):
-		srcLang, tgtLang = theirLang, myLang
-	default:
-		log.Printf("language_mismatch: detected=%q myLang=%s theirLang=%s", detectedLang, myLang.ID, theirLang.ID)
-		writeError(w, http.StatusUnprocessableEntity, "language_mismatch")
-		return
+	var transcribedText string
+
+	if clientTranscript != "" {
+		// Fast path: Web Speech API transcript is available — Whisper not needed.
+		// Language direction is determined by the speaker field sent from the client.
+		switch speaker {
+		case myLang.ID:
+			srcLang, tgtLang = myLang, theirLang
+		case theirLang.ID:
+			srcLang, tgtLang = theirLang, myLang
+		default:
+			writeError(w, http.StatusBadRequest, "invalid speaker")
+			return
+		}
+		transcribedText = clientTranscript
+		log.Printf("interpret: transcript=%q src=%s tgt=%s", transcribedText, srcLang.ID, tgtLang.ID)
+	} else {
+		// Fallback path: no transcript (Web Speech API unavailable) — use Whisper.
+
+		// Step 1: language detection via whisper-1.
+		_, detectedLang, err := callWhisper(apiKey, langDetectionModel, audioData, fileHeader.Filename, "", "")
+		if err != nil {
+			log.Printf("Whisper (lang detection) error: %v", err)
+			writeError(w, http.StatusBadGateway, "language detection failed")
+			return
+		}
+		if detectedLang == "" {
+			log.Printf("language detection failed: empty language from %s", langDetectionModel)
+			writeError(w, http.StatusBadGateway, "language detection failed")
+			return
+		}
+
+		// Step 2: match against selected languages.
+		switch {
+		case whisperLangMatches(detectedLang, myLang.ID):
+			srcLang, tgtLang = myLang, theirLang
+		case whisperLangMatches(detectedLang, theirLang.ID):
+			srcLang, tgtLang = theirLang, myLang
+		default:
+			log.Printf("language_mismatch: detected=%q myLang=%s theirLang=%s", detectedLang, myLang.ID, theirLang.ID)
+			writeError(w, http.StatusUnprocessableEntity, "language_mismatch")
+			return
+		}
+
+		// Step 3: transcription via gpt-4o-transcribe.
+		txModel := os.Getenv("WHISPER_MODEL")
+		if txModel == "" {
+			txModel = defaultWhisperModel
+		}
+		langCode := whisperLangCode(srcLang.ID)
+		transcribedText, _, err = callWhisper(apiKey, txModel, audioData, fileHeader.Filename, langCode, whisperPrompts[langCode])
+		if err != nil {
+			log.Printf("Whisper (transcription) error: %v", err)
+			writeError(w, http.StatusBadGateway, "transcription failed")
+			return
+		}
+		log.Printf("Whisper: detectedLang=%q text=%q", detectedLang, transcribedText)
 	}
 
-	// Step 3: transcription via gpt-4o-transcribe (called only when language matched).
-	txModel := os.Getenv("WHISPER_MODEL")
-	if txModel == "" {
-		txModel = defaultWhisperModel
-	}
-	transcribedText, _, err := callWhisper(apiKey, txModel, audioData, fileHeader.Filename)
-	if err != nil {
-		log.Printf("Whisper (transcription) error: %v", err)
-		writeError(w, http.StatusBadGateway, "transcription failed")
-		return
-	}
-	log.Printf("Whisper: detectedLang=%q text=%q", detectedLang, transcribedText)
-
-	prompt := fmt.Sprintf(
-		"Translate the following %s text into %s (%s).\n"+
-			"Also back-translate the result into %s (%s).\n\n"+
-			"Text: %q\n\n"+
-			"Rules:\n"+
-			"- Return ONLY a single-line JSON object. No markdown, no code block, no explanation.\n\n"+
-			`Output: {"translatedText":"","backTranslation":""}`,
-		srcLang.Label,
-		tgtLang.Label, tgtLang.ID,
-		srcLang.Label, srcLang.ID,
-		transcribedText,
-	)
-
-	raw, err := callOpenAI(apiKey, model, prompt)
-	if err != nil {
-		log.Printf("OpenAI error: %v", err)
-		writeError(w, http.StatusBadGateway, "translation failed")
-		return
+	translatePrompt := func(srcLabel, tgtLabel, tgtID, text string) string {
+		return fmt.Sprintf(
+			"You are translating the exact text confirmed by the user on screen.\n"+
+				"Do NOT correct, normalize, infer, or rewrite the input — even if it looks like a speech recognition error.\n\n"+
+				"Translate the following %s text into %s (%s).\n"+
+				"Return ONLY the translated text. No JSON, no markdown, no explanation.\n\n"+
+				"Rules:\n"+
+				"- STRICT: Translate the input text exactly as written. Do NOT fix typos, garbled text, or apparent speech recognition mistakes.\n"+
+				"- NEVER generate proper nouns (names, places, etc.) not explicitly present in the input.\n"+
+				"- If the input is unnatural or garbled, translate it as-is without attempting to repair it.\n"+
+				"- Proper nouns that DO appear in the input must NOT be semantically translated; keep the original form or romanize phonetically.\n"+
+				"- Placeholder は変更・削除・分割・翻訳せず、完全一致で保持すること。\n\n"+
+				"Text: %q",
+			srcLabel, tgtLabel, tgtID, text,
+		)
 	}
 
-	var result struct {
-		TranslatedText  string `json:"translatedText"`
-		BackTranslation string `json:"backTranslation"`
+	backTranslatePrompt := func(tgtLabel, srcLabel, srcID, text string) string {
+		return fmt.Sprintf(
+			"Back-translate the following %s text into %s (%s).\n"+
+				"Return ONLY the back-translated text. No JSON, no markdown, no explanation.\n\n"+
+				"- Placeholder は変更・削除・分割・翻訳せず、完全一致で保持すること。\n\n"+
+				"Text: %q",
+			tgtLabel, srcLabel, srcID, text,
+		)
 	}
-	if err := json.Unmarshal([]byte(extractJSON(raw)), &result); err != nil {
-		log.Printf("JSON parse error: %v | raw: %s", err, raw)
-		writeError(w, http.StatusBadGateway, "translation failed")
-		return
+
+	var translatedText, backTranslation, ttsText string
+
+	debugLog("受信テキスト: %q", transcribedText)
+
+	useProtection := (srcLang.ID == "ja" && hasJapaneseChars(transcribedText)) || (tgtLang.ID != "ja" && hasIntroPatterns(transcribedText))
+
+	if useProtection {
+		translatedRaw, backTranslationRaw, entries, perr := runProtectedTranslation(
+			apiKey, model,
+			transcribedText,
+			func(placeholderText string) string {
+				return translatePrompt(srcLang.Label, tgtLang.Label, tgtLang.ID, placeholderText)
+			},
+			func(translatedRaw string) string {
+				return backTranslatePrompt(tgtLang.Label, srcLang.Label, srcLang.ID, translatedRaw)
+			},
+		)
+		if perr != nil {
+			if strings.Contains(perr.Error(), "proper_noun_protection_failed") {
+				log.Printf("interpret: proper noun protection failed: %v", perr)
+				writeError(w, http.StatusBadGateway, "proper_noun_protection_failed")
+				return
+			}
+			if entries == nil {
+				// Tokenizer failure: fall through to normal translation below
+				log.Printf("WARN: interpret: kagome failed, falling back: %v", perr)
+				useProtection = false
+			} else {
+				log.Printf("interpret: translation error: %v", perr)
+				writeError(w, http.StatusBadGateway, "translation failed")
+				return
+			}
+		} else if entries != nil {
+			translatedText = restoreForLang(translatedRaw, entries, tgtLang.ID)
+			translatedText = stripOuterQuotes(translatedText)
+			backTranslation = restoreForLang(backTranslationRaw, entries, srcLang.ID)
+			backTranslation = stripOuterQuotes(backTranslation)
+			ttsText = restoreWithRomanized(translatedRaw, entries)
+			debugLog("プレースホルダ復元後 翻訳結果: %q", translatedText)
+			debugLog("プレースホルダ復元後 バックトランスレーション: %q", backTranslation)
+		} else {
+			// 0 proper nouns extracted — fall through to normal translation
+			useProtection = false
+		}
+	}
+
+	if !useProtection {
+		debugLog("固有名詞保護前テキスト: %q", transcribedText)
+		debugLog("OpenAI 翻訳対象テキスト: %q", transcribedText)
+		translated, err := callOpenAI(apiKey, model, translatePrompt(srcLang.Label, tgtLang.Label, tgtLang.ID, transcribedText))
+		if err != nil {
+			log.Printf("OpenAI translation error: %v", err)
+			writeError(w, http.StatusBadGateway, "translation failed")
+			return
+		}
+		debugLog("OpenAI 翻訳 生レスポンス: %q", translated)
+		debugLog("プレースホルダ復元後 翻訳結果: %q", translated)
+		debugLog("バックトランスレーション入力: %q", translated)
+		bt, err := callOpenAI(apiKey, model, backTranslatePrompt(tgtLang.Label, srcLang.Label, srcLang.ID, translated))
+		if err != nil {
+			log.Printf("OpenAI back-translation error: %v", err)
+			writeError(w, http.StatusBadGateway, "translation failed")
+			return
+		}
+		debugLog("バックトランスレーション 生レスポンス: %q", bt)
+		debugLog("プレースホルダ復元後 バックトランスレーション: %q", bt)
+		translatedText = translated
+		translatedText = stripOuterQuotes(translatedText)
+		backTranslation = bt
+		backTranslation = stripOuterQuotes(backTranslation)
+		ttsText = translatedText
 	}
 
 	log.Printf("interpret result: %s -> %s", srcLang.ID, tgtLang.ID)
@@ -429,8 +577,9 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 		Text:            transcribedText,
 		SourceLanguage:  srcLang.ID,
 		TargetLanguage:  tgtLang.ID,
-		TranslatedText:  result.TranslatedText,
-		BackTranslation: result.BackTranslation,
+		TranslatedText:  translatedText,
+		BackTranslation: backTranslation,
+		TtsText:         ttsText,
 	})
 }
 
@@ -470,66 +619,199 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 	lang0 := req.Languages[0]
 	lang1 := req.Languages[1]
 	log.Printf("translate: text=%q lang0=%s lang1=%s", req.Text, lang0.ID, lang1.ID)
+	debugLog("受信テキスト: %q", req.Text)
 
-	prompt := fmt.Sprintf(
-		"You are a translation assistant.\n\n"+
-			"Input text: %q\n"+
-			"Candidate languages: %q (%s) and %q (%s)\n\n"+
-			"Instructions:\n"+
-			"1. Determine whether the input text is written in one of the two candidate languages.\n"+
-			"   - If yes, assign that language ID to sourceLanguage.\n"+
-			"   - If no (the text is in a different language or unrecognisable), set sourceLanguage to \"unknown\" and leave the other fields empty.\n"+
-			"2. If sourceLanguage is known, translate the input to the other candidate language. Assign to translatedText.\n"+
-			"3. If sourceLanguage is known, back-translate translatedText into sourceLanguage. Assign to backTranslation.\n\n"+
-			"Rules:\n"+
-			"- Do NOT force the input into a candidate language if it clearly belongs to neither.\n"+
-			"- Use language IDs (not labels) for sourceLanguage and targetLanguage.\n"+
-			"- Return ONLY a single-line JSON object. No markdown, no code block, no explanation.\n\n"+
-			`Output: {"sourceLanguage":"","targetLanguage":"","translatedText":"","backTranslation":""}`,
-		req.Text,
-		lang0.ID, lang0.Label,
-		lang1.ID, lang1.Label,
-	)
-
-	raw, err := callOpenAI(apiKey, model, prompt)
-	if err != nil {
-		log.Printf("OpenAI error: %v", err)
-		writeError(w, http.StatusBadGateway, "translation failed")
-		return
+	translatePromptFn := func(srcLabel, tgtLabel, tgtID, text string) string {
+		return fmt.Sprintf(
+			"You are translating the exact text confirmed by the user on screen.\n"+
+				"Do NOT correct, normalize, infer, or rewrite the input — even if it looks like a speech recognition error.\n\n"+
+				"Translate the following %s text into %s (%s).\n"+
+				"Return ONLY the translated text. No JSON, no markdown, no explanation.\n\n"+
+				"Rules:\n"+
+				"- STRICT: Translate the input text exactly as written. Do NOT fix typos, garbled text, or apparent speech recognition mistakes.\n"+
+				"- NEVER generate proper nouns (names, places, etc.) not explicitly present in the input.\n"+
+				"- If the input is unnatural or garbled, translate it as-is without attempting to repair it.\n"+
+				"- Proper nouns that DO appear in the input must NOT be semantically translated; keep the original form or romanize phonetically.\n"+
+				"- Placeholder は変更・削除・分割・翻訳せず、完全一致で保持すること。\n\n"+
+				"Text: %q",
+			srcLabel, tgtLabel, tgtID, text,
+		)
 	}
 
-	type translationResult struct {
-		SourceLanguage  string `json:"sourceLanguage"`
-		TargetLanguage  string `json:"targetLanguage"`
-		TranslatedText  string `json:"translatedText"`
-		BackTranslation string `json:"backTranslation"`
+	backTranslatePromptFn := func(tgtLabel, srcLabel, srcID, text string) string {
+		return fmt.Sprintf(
+			"Back-translate the following %s text into %s (%s).\n"+
+				"Return ONLY the back-translated text. No JSON, no markdown, no explanation.\n\n"+
+				"- Placeholder は変更・削除・分割・翻訳せず、完全一致で保持すること。\n\n"+
+				"Text: %q",
+			tgtLabel, srcLabel, srcID, text,
+		)
 	}
 
-	var result translationResult
-	if err := json.Unmarshal([]byte(extractJSON(raw)), &result); err != nil {
-		log.Printf("JSON parse error: %v | raw: %s", err, raw)
-		writeError(w, http.StatusBadGateway, "translation failed")
-		return
+	// Determine if protection path applies
+	jaInCandidates := lang0.ID == "ja" || lang1.ID == "ja"
+	hasJaChars := hasJapaneseChars(req.Text)
+	useProtection := (jaInCandidates && hasJaChars) || (!jaInCandidates && hasIntroPatterns(req.Text))
+
+	var srcLang, tgtLang LangInfo
+	var translatedText, backTranslation, ttsText string
+
+	if useProtection {
+		// sourceLanguage determined here, not by OpenAI
+		if hasJaChars {
+			// Japanese text: Japanese is source
+			if lang0.ID == "ja" {
+				srcLang, tgtLang = lang0, lang1
+			} else {
+				srcLang, tgtLang = lang1, lang0
+			}
+		} else {
+			// Non-Japanese text (intro patterns detected): non-Japanese language is source
+			if lang0.ID == "ja" {
+				srcLang, tgtLang = lang1, lang0
+			} else if lang1.ID == "ja" {
+				srcLang, tgtLang = lang0, lang1
+			} else {
+				srcLang, tgtLang = lang0, lang1
+			}
+		}
+
+		translatedRaw, backTranslationRaw, entries, perr := runProtectedTranslation(
+			apiKey, model,
+			req.Text,
+			func(placeholderText string) string {
+				return translatePromptFn(srcLang.Label, tgtLang.Label, tgtLang.ID, placeholderText)
+			},
+			func(translatedRaw string) string {
+				return backTranslatePromptFn(tgtLang.Label, srcLang.Label, srcLang.ID, translatedRaw)
+			},
+		)
+		if perr != nil {
+			if strings.Contains(perr.Error(), "proper_noun_protection_failed") {
+				log.Printf("translate: proper noun protection failed: %v", perr)
+				writeError(w, http.StatusBadGateway, "proper_noun_protection_failed")
+				return
+			}
+			if entries == nil {
+				// Tokenizer failure: fall through to normal translation
+				log.Printf("WARN: translate: kagome failed, falling back: %v", perr)
+				useProtection = false
+			} else {
+				log.Printf("translate: translation error: %v", perr)
+				writeError(w, http.StatusBadGateway, "translation failed")
+				return
+			}
+		} else if entries != nil {
+			translatedText = restoreForLang(translatedRaw, entries, tgtLang.ID)
+			translatedText = stripOuterQuotes(translatedText)
+			backTranslation = restoreForLang(backTranslationRaw, entries, srcLang.ID)
+			backTranslation = stripOuterQuotes(backTranslation)
+			ttsText = restoreWithRomanized(translatedRaw, entries)
+			debugLog("プレースホルダ復元後 翻訳結果: %q", translatedText)
+			debugLog("プレースホルダ復元後 バックトランスレーション: %q", backTranslation)
+		} else {
+			// 0 proper nouns — fall through to normal translation
+			useProtection = false
+		}
 	}
 
-	log.Printf("result: %s -> %s", result.SourceLanguage, result.TargetLanguage)
+	if !useProtection {
+		debugLog("固有名詞保護前テキスト: %q", req.Text)
+		debugLog("OpenAI 翻訳対象テキスト: %q", req.Text)
+		// Normal path: OpenAI detects language and translates
+		detectPrompt := fmt.Sprintf(
+			"You are translating the exact text confirmed by the user on screen.\n"+
+				"Do NOT correct, normalize, infer, or rewrite the input — even if it looks like a speech recognition error.\n\n"+
+				"Input text: %q\n"+
+				"Candidate languages: %q (%s) and %q (%s)\n\n"+
+				"Instructions:\n"+
+				"1. Determine whether the input text is written in one of the two candidate languages.\n"+
+				"   - If yes, assign that language ID to sourceLanguage.\n"+
+				"   - If no (the text is in a different language or unrecognisable), set sourceLanguage to \"unknown\" and leave the other fields empty.\n"+
+				"2. If sourceLanguage is known, translate the input to the other candidate language. Assign to translatedText.\n\n"+
+				"Rules:\n"+
+				"- STRICT: Translate the input text exactly as written. Do NOT fix typos, garbled text, or apparent speech recognition mistakes.\n"+
+				"- NEVER generate proper nouns (names, places, etc.) not explicitly present in the input. Example: 'でありか新' must NOT become 'Arida Shin' — translate those exact characters as-is.\n"+
+				"- If the input is unnatural or garbled, translate it as-is without attempting to repair it.\n"+
+				"- Proper nouns that DO appear in the input must NOT be semantically translated; keep the original form or romanize phonetically.\n"+
+				"- Do NOT force the input into a candidate language if it clearly belongs to neither.\n"+
+				"- Use language IDs (not labels) for sourceLanguage and targetLanguage.\n"+
+				"- Return ONLY a single-line JSON object. No markdown, no code block, no explanation.\n\n"+
+				`Output: {"sourceLanguage":"","targetLanguage":"","translatedText":""}`,
+			req.Text,
+			lang0.ID, lang0.Label,
+			lang1.ID, lang1.Label,
+		)
 
-	if result.SourceLanguage == "unknown" || (result.SourceLanguage != lang0.ID && result.SourceLanguage != lang1.ID) {
-		log.Printf("language_mismatch: text=%q lang0=%s lang1=%s detected=%q", req.Text, lang0.ID, lang1.ID, result.SourceLanguage)
-		writeError(w, http.StatusUnprocessableEntity, "language_mismatch")
-		return
+		raw, err := callOpenAI(apiKey, model, detectPrompt)
+		if err != nil {
+			log.Printf("OpenAI error: %v", err)
+			writeError(w, http.StatusBadGateway, "translation failed")
+			return
+		}
+		debugLog("OpenAI 翻訳 生レスポンス: %q", raw)
+
+		type detectResult struct {
+			SourceLanguage string `json:"sourceLanguage"`
+			TargetLanguage string `json:"targetLanguage"`
+			TranslatedText string `json:"translatedText"`
+		}
+		var dr detectResult
+		if err := json.Unmarshal([]byte(extractJSON(raw)), &dr); err != nil {
+			log.Printf("JSON parse error: %v | raw: %s", err, raw)
+			writeError(w, http.StatusBadGateway, "translation failed")
+			return
+		}
+
+		log.Printf("detect result: %s -> %s", dr.SourceLanguage, dr.TargetLanguage)
+
+		if dr.SourceLanguage == "unknown" || (dr.SourceLanguage != lang0.ID && dr.SourceLanguage != lang1.ID) {
+			log.Printf("language_mismatch: text=%q lang0=%s lang1=%s detected=%q", req.Text, lang0.ID, lang1.ID, dr.SourceLanguage)
+			writeError(w, http.StatusUnprocessableEntity, "language_mismatch")
+			return
+		}
+
+		// Determine src/tgt from detected source
+		if dr.SourceLanguage == lang0.ID {
+			srcLang, tgtLang = lang0, lang1
+		} else {
+			srcLang, tgtLang = lang1, lang0
+		}
+
+		debugLog("プレースホルダ復元後 翻訳結果: %q", dr.TranslatedText)
+		// Back-translate
+		debugLog("バックトランスレーション入力: %q", dr.TranslatedText)
+		bt, err := callOpenAI(apiKey, model, backTranslatePromptFn(tgtLang.Label, srcLang.Label, srcLang.ID, dr.TranslatedText))
+		if err != nil {
+			log.Printf("OpenAI back-translation error: %v", err)
+			writeError(w, http.StatusBadGateway, "translation failed")
+			return
+		}
+		debugLog("バックトランスレーション 生レスポンス: %q", bt)
+		debugLog("プレースホルダ復元後 バックトランスレーション: %q", bt)
+
+		translatedText = dr.TranslatedText
+		translatedText = stripOuterQuotes(translatedText)
+		backTranslation = bt
+		backTranslation = stripOuterQuotes(backTranslation)
+		ttsText = translatedText
 	}
+
+	log.Printf("translate result: %s -> %s", srcLang.ID, tgtLang.ID)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(TranslateResponse{
-		SourceLanguage:  result.SourceLanguage,
-		TargetLanguage:  result.TargetLanguage,
-		TranslatedText:  result.TranslatedText,
-		BackTranslation: result.BackTranslation,
+		SourceLanguage:  srcLang.ID,
+		TargetLanguage:  tgtLang.ID,
+		TranslatedText:  translatedText,
+		BackTranslation: backTranslation,
+		TtsText:         ttsText,
 	})
 }
 
 func main() {
+	http.DefaultClient.Timeout = 120 * time.Second
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/api/tts", ttsHandler)

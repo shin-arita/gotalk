@@ -9,17 +9,14 @@ type Page = 'language-select' | 'interpreter'
 export default function App() {
   const [page, setPage] = useState<Page>('language-select')
   const [selectedLanguages, setSelectedLanguages] = useState<Language[]>([])
-  const [pendingAudio, setPendingAudio] = useState<Blob | null>(null)
 
   if (window.location.hash === '#tts-test') return <TtsTestPage />
 
-  const handleStart = (audioBlob: Blob) => {
-    setPendingAudio(audioBlob)
+  const handleNavigate = () => {
     setPage('interpreter')
   }
 
   const handleBack = () => {
-    setPendingAudio(null)
     setPage('language-select')
   }
 
@@ -28,7 +25,6 @@ export default function App() {
       <InterpreterPage
         selectedLanguages={selectedLanguages}
         onBack={handleBack}
-        pendingAudio={pendingAudio ?? undefined}
       />
     )
   }
@@ -37,7 +33,7 @@ export default function App() {
     <LanguageSelectPage
       selectedLanguages={selectedLanguages}
       onSelectionChange={setSelectedLanguages}
-      onStart={handleStart}
+      onNavigate={handleNavigate}
     />
   )
 }

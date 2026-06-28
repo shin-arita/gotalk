@@ -25,6 +25,7 @@ function renderPage(
 function makeInterpretResponse(overrides: Partial<{
   text: string
   translatedText: string
+  ttsText: string
   backTranslation: string
   sourceLanguage: string
   targetLanguage: string
@@ -32,6 +33,7 @@ function makeInterpretResponse(overrides: Partial<{
   return {
     text: 'Hello',
     translatedText: 'こんにちは',
+    ttsText: 'こんにちは',
     backTranslation: '(Hello)',
     sourceLanguage: 'en',
     targetLanguage: 'ja',
@@ -133,13 +135,13 @@ describe('InterpreterPage language mismatch (interpret API)', () => {
     expect(screen.queryByRole('button', { name: '発声する' })).not.toBeInTheDocument()
   })
 
-  it('resets status to idle — mic button is re-enabled', async () => {
+  it('resets status to idle after mismatch (speak button hidden)', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       make422Response({ error: 'language_mismatch' }),
     )
     renderPage([ja, en], vi.fn(), new Blob(['audio']))
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
-    expect(screen.getByRole('button', { name: '話す' })).not.toBeDisabled()
+    expect(screen.queryByRole('button', { name: '発声する' })).not.toBeInTheDocument()
   })
 })
 
@@ -175,16 +177,6 @@ describe('InterpreterPage language mismatch (translate API)', () => {
 // ============================================================
 
 describe('InterpreterPage translation response', () => {
-  it('shows recognized text', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      makeOkResponse(makeInterpretResponse({ text: 'Good morning' })),
-    )
-    renderPage([ja, en], vi.fn(), new Blob(['audio']))
-    await waitFor(() =>
-      expect(screen.getByText('Good morning', { selector: '.source-card__text' })).toBeInTheDocument(),
-    )
-  })
-
   it('shows translated text', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       makeOkResponse(makeInterpretResponse({ translatedText: 'おはようございます' })),
@@ -238,48 +230,7 @@ describe('InterpreterPage history', () => {
     expect(document.querySelector('.history-item__translation')?.textContent).toBe('やあ')
   })
 
-  it('does not show expand button when there are 5 or fewer entries', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      makeOkResponse(makeInterpretResponse()),
-    )
-    renderPage([ja, en], vi.fn(), new Blob(['audio']))
-    await waitFor(() =>
-      expect(document.querySelectorAll('.history-item')).toHaveLength(1),
-    )
-    expect(
-      screen.queryByRole('button', { name: '履歴をすべて表示' }),
-    ).not.toBeInTheDocument()
-  })
-
-  it('shows expand button when more than 5 entries exist', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      makeOkResponse(makeInterpretResponse()),
-    )
-    renderPage([ja, en], vi.fn(), new Blob(['audio']))
-    // Wait for initial interpretation to complete
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: '編集' })).not.toBeDisabled(),
-    )
-
-    for (let i = 0; i < 5; i++) {
-      fireEvent.click(screen.getByRole('button', { name: '編集' }))
-      const textarea = screen.getByRole('textbox', { name: '原文を編集' })
-      fireEvent.change(textarea, { target: { value: `retranslate-${i}` } })
-      await act(async () => {
-        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
-      })
-      // Wait for retranslation to complete (edit button re-enables when status returns to 'ready')
-      await waitFor(() =>
-        expect(screen.getByRole('button', { name: '編集' })).not.toBeDisabled(),
-      )
-    }
-
-    expect(
-      screen.getByRole('button', { name: '履歴をすべて表示' }),
-    ).toBeInTheDocument()
-  })
-
-  it('expand button shows all entries; collapse button hides extras', async () => {
+  it('shows all history entries without expand button', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       makeOkResponse(makeInterpretResponse()),
     )
@@ -300,14 +251,8 @@ describe('InterpreterPage history', () => {
       )
     }
 
-    // 5 visible, 1 hidden
-    expect(document.querySelectorAll('.history-item')).toHaveLength(5)
-
-    fireEvent.click(screen.getByRole('button', { name: '履歴をすべて表示' }))
     expect(document.querySelectorAll('.history-item')).toHaveLength(6)
-
-    fireEvent.click(screen.getByRole('button', { name: '履歴を閉じる' }))
-    expect(document.querySelectorAll('.history-item')).toHaveLength(5)
+    expect(screen.queryByRole('button', { name: '履歴をすべて表示' })).not.toBeInTheDocument()
   })
 })
 
@@ -335,9 +280,9 @@ describe('InterpreterPage TTS (OpenAI)', () => {
     )
   })
 
-  it('clicking speak POSTs to /api/tts with correct body', async () => {
+  it('clicking speak POSTs to /api/tts with ttsText from response', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
-    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse({ translatedText: 'こんにちは' })))
+    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse({ translatedText: 'こんにちは', ttsText: 'Konnichiwa' })))
     fetchMock.mockResolvedValueOnce(makeAudioOkResponse())
 
     renderPage([ja, en], vi.fn(), new Blob(['audio']))
@@ -352,7 +297,7 @@ describe('InterpreterPage TTS (OpenAI)', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: 'こんにちは' }),
+      body: JSON.stringify({ text: 'Konnichiwa' }),
     })
   })
 
@@ -408,72 +353,11 @@ describe('InterpreterPage TTS (OpenAI)', () => {
 })
 
 // ============================================================
-// MediaRecorder mock helpers (recording / mic-reject tests)
-// ============================================================
-
-interface MockRecorderInstance {
-  ondataavailable: ((e: { data: Blob }) => void) | null
-  onstop: (() => void) | null
-  start: ReturnType<typeof vi.fn>
-  stop: ReturnType<typeof vi.fn>
-  state: string
-}
-
-let mockRecorder: MockRecorderInstance | undefined
-let mockGetUserMedia: ReturnType<typeof vi.fn>
-
-function setupMediaRecorderMock() {
-  const mock: MockRecorderInstance = {
-    ondataavailable: null,
-    onstop: null,
-    start: vi.fn(),
-    stop: vi.fn(),
-    state: 'inactive',
-  }
-
-  const Ctor = vi.fn(function () {
-    mock.state = 'recording'
-    mockRecorder = mock
-    return mock
-  }) as unknown as typeof MediaRecorder & { isTypeSupported: (t: string) => boolean }
-
-  Ctor.isTypeSupported = vi.fn().mockReturnValue(false)
-
-  mock.stop = vi.fn(function () {
-    mock.state = 'inactive'
-    mock.onstop?.()
-  })
-
-  Object.defineProperty(globalThis, 'MediaRecorder', {
-    value: Ctor,
-    writable: true,
-    configurable: true,
-  })
-
-  return mock
-}
-
-function setupGetUserMediaMock(rejects = false) {
-  const fakeStream = { getTracks: () => [{ stop: vi.fn() }] }
-  const getUserMedia = rejects
-    ? vi.fn().mockRejectedValue(new Error('Permission denied'))
-    : vi.fn().mockResolvedValue(fakeStream)
-
-  Object.defineProperty(globalThis.navigator, 'mediaDevices', {
-    value: { getUserMedia },
-    writable: true,
-    configurable: true,
-  })
-
-  return getUserMedia
-}
-
-// ============================================================
 // Translate API 500 (retranslation error)
 // ============================================================
 
 describe('InterpreterPage translate API 500', () => {
-  it('shows HTTP 500 error and re-enables mic button', async () => {
+  it('shows HTTP 500 error on retranslation failure', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
     fetchMock.mockResolvedValueOnce(make500Response())
@@ -492,7 +376,6 @@ describe('InterpreterPage translate API 500', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
     expect(screen.getByRole('alert').textContent).toContain('HTTP 500')
-    expect(screen.getByRole('button', { name: '話す' })).not.toBeDisabled()
   })
 
   it('retains previous translatedText and keeps speak button accessible after 500', async () => {
@@ -523,125 +406,292 @@ describe('InterpreterPage translate API 500', () => {
 })
 
 // ============================================================
-// Recording start/stop
+// Language flags bar
 // ============================================================
 
-describe('InterpreterPage recording start/stop', () => {
+describe('InterpreterPage language flags bar', () => {
+  it('renders flag buttons for both selected languages', () => {
+    renderPage([ja, en])
+    expect(screen.getByRole('button', { name: 'Japaneseで話す' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Englishで話す' })).toBeInTheDocument()
+  })
+
+  it('does not render flags bar when fewer than 2 languages provided', () => {
+    renderPage([ja])
+    expect(screen.queryByRole('button', { name: 'Japaneseで話す' })).not.toBeInTheDocument()
+  })
+
+  it('does not render a bottom mic button', () => {
+    renderPage([ja, en])
+    expect(screen.queryByRole('button', { name: '話す' })).not.toBeInTheDocument()
+  })
+})
+
+// ============================================================
+// Recording — translation visibility
+// ============================================================
+
+describe('InterpreterPage translation visibility during recording', () => {
+  it('hides translation card while recording', async () => {
+    const mock = {
+      ondataavailable: null as ((e: { data: Blob }) => void) | null,
+      onstop: null as (() => void) | null,
+      start: vi.fn(),
+      stop: vi.fn(),
+      state: 'inactive',
+    }
+    const Ctor = vi.fn(function () { mock.state = 'recording'; return mock }) as unknown as typeof MediaRecorder & { isTypeSupported: (t: string) => boolean }
+    Ctor.isTypeSupported = vi.fn().mockReturnValue(false)
+    mock.stop = vi.fn(function () { mock.state = 'inactive'; mock.onstop?.() })
+    Object.defineProperty(globalThis, 'MediaRecorder', { value: Ctor, writable: true, configurable: true })
+    Object.defineProperty(globalThis.navigator, 'mediaDevices', {
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }) },
+      writable: true, configurable: true,
+    })
+
+    renderPage([ja, en])
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
+    })
+
+    expect(document.querySelector('.translation-card')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '発声する' })).not.toBeInTheDocument()
+
+    Object.defineProperty(globalThis, 'MediaRecorder', { value: undefined, writable: true, configurable: true })
+  })
+
+  it('shows translation card after recording ends', async () => {
+    let mockRec2: { ondataavailable: ((e: { data: Blob }) => void) | null; onstop: (() => void) | null; stop: ReturnType<typeof vi.fn>; state: string } | undefined
+    const mock2 = {
+      ondataavailable: null as ((e: { data: Blob }) => void) | null,
+      onstop: null as (() => void) | null,
+      start: vi.fn(),
+      stop: vi.fn(),
+      state: 'inactive',
+    }
+    const Ctor2 = vi.fn(function () { mock2.state = 'recording'; mockRec2 = mock2; return mock2 }) as unknown as typeof MediaRecorder & { isTypeSupported: (t: string) => boolean }
+    Ctor2.isTypeSupported = vi.fn().mockReturnValue(false)
+    mock2.stop = vi.fn(function () { mock2.state = 'inactive'; mock2.onstop?.() })
+    Object.defineProperty(globalThis, 'MediaRecorder', { value: Ctor2, writable: true, configurable: true })
+    Object.defineProperty(globalThis.navigator, 'mediaDevices', {
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }) },
+      writable: true, configurable: true,
+    })
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeOkResponse(makeInterpretResponse({ translatedText: 'こんにちは' })),
+    )
+    renderPage([ja, en])
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
+    })
+    act(() => { mockRec2!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
+    })
+
+    await waitFor(() =>
+      expect(screen.getByText('こんにちは', { selector: '.translation-card__text' })).toBeInTheDocument(),
+    )
+    expect(document.querySelector('.translation-card')).toBeInTheDocument()
+
+    Object.defineProperty(globalThis, 'MediaRecorder', { value: undefined, writable: true, configurable: true })
+  })
+})
+
+// ============================================================
+// MediaRecorder / getUserMedia mock helpers (flag-tap tests)
+// ============================================================
+
+interface MockRecorderInstance {
+  ondataavailable: ((e: { data: Blob }) => void) | null
+  onstop: (() => void) | null
+  start: ReturnType<typeof vi.fn>
+  stop: ReturnType<typeof vi.fn>
+  state: string
+}
+
+let mockRecorder: MockRecorderInstance | undefined
+
+function setupMediaRecorderMock() {
+  const mock: MockRecorderInstance = {
+    ondataavailable: null,
+    onstop: null,
+    start: vi.fn(),
+    stop: vi.fn(),
+    state: 'inactive',
+  }
+  const Ctor = vi.fn(function () {
+    mock.state = 'recording'
+    mockRecorder = mock
+    return mock
+  }) as unknown as typeof MediaRecorder & { isTypeSupported: (t: string) => boolean }
+  Ctor.isTypeSupported = vi.fn().mockReturnValue(false)
+  mock.stop = vi.fn(function () {
+    mock.state = 'inactive'
+    mock.onstop?.()
+  })
+  Object.defineProperty(globalThis, 'MediaRecorder', { value: Ctor, writable: true, configurable: true })
+  return mock
+}
+
+function setupGetUserMediaMock(rejects = false) {
+  const fakeStream = { getTracks: () => [{ stop: vi.fn() }] }
+  const getUserMedia = rejects
+    ? vi.fn().mockRejectedValue(new Error('Permission denied'))
+    : vi.fn().mockResolvedValue(fakeStream)
+  Object.defineProperty(globalThis.navigator, 'mediaDevices', { value: { getUserMedia }, writable: true, configurable: true })
+  return getUserMedia
+}
+
+// ============================================================
+// Flag-tap recording
+// ============================================================
+
+describe('InterpreterPage flag-tap recording', () => {
   beforeEach(() => {
     mockRecorder = undefined
     setupMediaRecorderMock()
-    mockGetUserMedia = setupGetUserMediaMock()
+    setupGetUserMediaMock()
   })
 
   afterEach(() => {
     delete (globalThis as Record<string, unknown>).MediaRecorder
   })
 
-  it('calls getUserMedia({ audio: true }) and enters recording state on mic press', async () => {
+  it('tapping left flag calls getUserMedia and shows recording state', async () => {
+    renderPage([ja, en])
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
+    })
+    expect(screen.getByRole('button', { name: 'Japaneseの録音を停止' })).toBeInTheDocument()
+  })
+
+  it('tapping right flag starts recording for the right language', async () => {
+    renderPage([ja, en])
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Englishで話す' }))
+    })
+    expect(screen.getByRole('button', { name: 'Englishの録音を停止' })).toBeInTheDocument()
+  })
+
+  it('opposite flag is disabled during recording', async () => {
+    renderPage([ja, en])
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
+    })
+    expect(screen.getByRole('button', { name: 'Englishで話す' })).toBeDisabled()
+  })
+
+  it('re-tapping the same flag stops recording and calls /api/interpret', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeOkResponse(makeInterpretResponse()),
+    )
     renderPage([ja, en])
 
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: '話す' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
+    })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
     })
 
-    expect(mockGetUserMedia).toHaveBeenCalledWith({ audio: true })
-    expect(screen.getByRole('button', { name: '停止して翻訳' })).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledWith('/api/interpret', expect.objectContaining({ method: 'POST' }))
   })
 
-  it('pressing stop calls MediaRecorder.stop', async () => {
+  it('sends left flag language as speaker', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeOkResponse(makeInterpretResponse()),
+    )
+    renderPage([ja, en])
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
+    })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
+    })
+
+    const [, options] = fetchMock.mock.calls[0]
+    const body = (options as RequestInit).body as FormData
+    expect(body.get('speaker')).toBe('ja')
+    expect(JSON.parse(body.get('myLanguage') as string).id).toBe('ja')
+    expect(JSON.parse(body.get('theirLanguage') as string).id).toBe('en')
+  })
+
+  it('sends right flag language as speaker', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeOkResponse(makeInterpretResponse()),
+    )
+    renderPage([ja, en])
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Englishで話す' }))
+    })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Englishの録音を停止' }))
+    })
+
+    const [, options] = fetchMock.mock.calls[0]
+    const body = (options as RequestInit).body as FormData
+    expect(body.get('speaker')).toBe('en')
+    expect(JSON.parse(body.get('myLanguage') as string).id).toBe('en')
+    expect(JSON.parse(body.get('theirLanguage') as string).id).toBe('ja')
+  })
+
+  it('both flags are re-enabled after recording completes', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       makeOkResponse(makeInterpretResponse()),
     )
     renderPage([ja, en])
 
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: '話す' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
     })
-    const stopSpy = mockRecorder!.stop
-
-    act(() => {
-      mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) })
-    })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: '停止して翻訳' }))
-    })
-
-    expect(stopSpy).toHaveBeenCalled()
-  })
-
-  it('calls /api/interpret after ondataavailable + onstop, then shows translation', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      makeOkResponse(makeInterpretResponse({
-        text: 'Spoken text',
-        translatedText: '話されたテキスト',
-        backTranslation: '(Spoken text)',
-      })),
-    )
-
-    renderPage([ja, en])
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: '話す' }))
-    })
-    act(() => {
-      mockRecorder!.ondataavailable?.({ data: new Blob(['audio'], { type: 'audio/webm' }) })
-    })
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: '停止して翻訳' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
     })
 
     await waitFor(() =>
-      expect(
-        screen.getByText('Spoken text', { selector: '.source-card__text' }),
-      ).toBeInTheDocument(),
+      expect(screen.getByRole('button', { name: 'Japaneseで話す' })).toBeInTheDocument(),
     )
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/interpret',
-      expect.objectContaining({ method: 'POST' }),
-    )
-    expect(
-      screen.getByText('話されたテキスト', { selector: '.translation-card__text' }),
-    ).toBeInTheDocument()
-    expect(screen.getByText('(Spoken text)')).toBeInTheDocument()
-  })
-})
-
-// ============================================================
-// Mic permission reject
-// ============================================================
-
-describe('InterpreterPage mic permission reject', () => {
-  beforeEach(() => {
-    setupMediaRecorderMock()
-    mockGetUserMedia = setupGetUserMediaMock(true)
+    expect(screen.getByRole('button', { name: 'Englishで話す' })).not.toBeDisabled()
   })
 
-  afterEach(() => {
-    delete (globalThis as Record<string, unknown>).MediaRecorder
-  })
-
-  it('shows mic access denied error after getUserMedia rejects', async () => {
+  it('shows mic access error when getUserMedia rejects', async () => {
+    setupGetUserMediaMock(true)
     renderPage([ja, en])
 
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: '話す' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
     })
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
-    expect(screen.getByRole('alert').textContent).toContain(
-      'マイクへのアクセスが許可されていません',
-    )
+    expect(screen.getByRole('alert').textContent).toContain('マイクへのアクセスが許可されていません')
   })
 
-  it('resets to idle and re-enables mic button after permission reject', async () => {
+  it('translation result and history are added after flag-tap recording', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeOkResponse(makeInterpretResponse({ text: 'こんにちは', translatedText: 'Hello' })),
+    )
     renderPage([ja, en])
 
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: '話す' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
+    })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
     })
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: '話す' })).not.toBeDisabled(),
+      expect(screen.getByText('Hello', { selector: '.translation-card__text' })).toBeInTheDocument(),
     )
+    expect(document.querySelector('.history-item__source')?.textContent).toBe('こんにちは')
   })
 })
