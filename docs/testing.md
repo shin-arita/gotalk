@@ -1,214 +1,175 @@
 # Testing
 
-## 現在の位置づけ
+## 1. テスト方針
 
-GoTalk のテストは、現時点ではテスト基盤整備段階です。Backend Unit Test の第一段階と、Frontend Unit Test 基盤を CI に組み込んでいます。
+GoTalk のテストは Backend と Frontend を分けて実行します。
 
-OpenAI API など外部サービスへ実際に接続するテストは前提にしていません。CI 上で安定して実行できる範囲として、アプリケーション側で制御できるロジックと UI の基本動作を中心に検証しています。
+Backend は Go 標準の `go test` で、HTTP handler、OpenAI API 呼び出し wrapper、固有名詞保護、`sourceLanguage`、バックトランスレーション、TTS、API エラーを検証します。外部 API へ実通信しないよう、テストでは `http.DefaultClient.Transport` を mock transport に差し替えます。
 
-## 完了済み
+Frontend は Vitest、Testing Library、jsdom で、言語選択、`SpeechRecognition` を使う音声入力フロー、リアルタイム翻訳、`sourceLanguage` 送信、翻訳結果表示、バックトランスレーション表示、TTS、状態遷移、エラー処理を検証します。
 
-### Backend Unit Test 第一段階
+## 2. Backend テスト
 
-現在の backend test では、以下を検証しています。
+Backend のテストファイルは次のとおりです。
 
-- `whisperLangMatches` の言語タグ照合
-- `extractJSON` の JSON 抽出
-- `/health` handler のレスポンス
-- `writeError` の JSON error response
-- CORS middleware の通常リクエスト処理
-- CORS middleware の OPTIONS 処理
-
-### Frontend Unit Test 基盤
-
-現在の frontend test では、以下を検証しています。
-
-- 言語定義 `LANGUAGES` の件数、必須項目、ID 一意性、主要言語データ
-- 言語選択画面の表示
-- 2 言語未満のとき開始ボタンが無効になること
-- 2 言語選択時に開始ボタンが有効になること
-- 言語カード選択と解除
-- 3 言語目を追加しない制御
-- 録音開始、停止、`onStart` callback の呼び出し
-
-## 完了済み（続き）
-
-### Backend Unit Test 第二段階
-
-`http.DefaultClient.Transport` をテスト用 `mockTransport` で差し替えることで、外部 API への実通信なしに以下を検証しています。
-
-**translateHandler**
-
-- GET → 405
-- `OPENAI_API_KEY` 未設定 → 500
-- invalid JSON → 400
-- `text` 空（空白のみ）→ 400
-- `languages` 1件 → 400
-- `callOpenAI` transport error → 502
-- OpenAI レスポンスが非 JSON → 502
-- `sourceLanguage == "unknown"` → 422
-- `sourceLanguage` がいずれの言語とも不一致 → 422
-- 正常系 → 200、レスポンス内容を検証
-
-**interpretHandler**
-
-- GET → 405
-- `OPENAI_API_KEY` 未設定 → 500
-- Content-Type が multipart でない → 400
-- `audio` フィールド未指定 → 400
-- `myLanguage` が不正 JSON → 400
-- `myLanguage.id` が空 → 400
-- `theirLanguage` が不正 JSON → 400
-- `theirLanguage.id` が空 → 400
-- Step 1（言語判定 Whisper）transport error → 502
-- Step 1 が空 `language` を返す → 502
-- Step 2 で言語不一致（`language_mismatch`）→ 422
-- Step 3（文字起こし Whisper）transport error → 502
-- Step 4（OpenAI 翻訳）transport error → 502
-- OpenAI レスポンスが非 JSON → 502
-- 正常系 myLang 一致 → 200
-- 正常系 theirLang 一致（src/tgt 逆転）→ 200
-
-**callOpenAI**
-
-- transport error → error
-- 非 200 ステータス → error
-- 非 JSON レスポンス → error
-- `output` 空配列 → error
-- `content` 空配列 → error
-- 正常系 → TrimSpace 済み文字列を返す
-
-**callWhisper**
-
-- transport error → error
-- 非 200 ステータス → error（レスポンスボディ付き）
-- 非 JSON レスポンス → error
-- `whisper-1` モデル → `response_format=verbose_json`、language を返す
-- `gpt-4o-transcribe` モデル → `response_format=json`
-
----
-
-## coverage 結果（Backend Test 第二段階完了時点）
-
-```
-gotalk/main.go:52:   corsMiddleware      100.0%
-gotalk/main.go:65:   writeError          100.0%
-gotalk/main.go:71:   healthHandler       100.0%
-gotalk/main.go:77:   callOpenAI           91.7%
-gotalk/main.go:128:  extractJSON         100.0%
-gotalk/main.go:142:  callWhisper          83.9%
-gotalk/main.go:197:  whisperLangMatches  100.0%
-gotalk/main.go:225:  interpretHandler     97.1%
-gotalk/main.go:353:  translateHandler    100.0%
-gotalk/main.go:448:  main                 0.0%
-total:                                   92.2%
-```
-
-## 実装変更なしで coverage 100% に届かない理由
-
-### 未到達のブロックと理由
-
-| 関数 | 未到達ブロック | 理由 |
-| --- | --- | --- |
-| `callOpenAI` | `json.Marshal` の error 分岐 | 対象 struct がすべて string フィールドのため Marshal は絶対に失敗しない |
-| `callOpenAI` | `http.NewRequest` の error 分岐 | `openAIResponsesURL` は有効な const URL のため NewRequest は失敗しない |
-| `callWhisper` | `mw.CreateFormFile` の error 分岐 | `bytes.Buffer` への書き込みは失敗しない |
-| `callWhisper` | `part.Write` の error 分岐 | 同上 |
-| `callWhisper` | `mw.WriteField("model")` の error 分岐 | 同上 |
-| `callWhisper` | `mw.WriteField("response_format")` の error 分岐 | 同上 |
-| `callWhisper` | `http.NewRequest` の error 分岐 | `whisperURL` は有効な const URL のため失敗しない |
-| `interpretHandler` | `io.ReadAll(file)` の error 分岐 | multipart ファイルはメモリ上にあるため ReadAll は失敗しない |
-| `main` | 関数全体 | `http.ListenAndServe` がブロックするため、テストから呼び出せない |
-
-### 構造的な原因
-
-- 外部 API の URL が `const` で固定されており、テストから差し替えられない
-- handler が `callOpenAI` / `callWhisper` を直接呼ぶ（dependency injection なし）
-- `http.DefaultClient.Transport` の差し替えは有効だが、NewRequest/Marshal の内部エラーパスには届かない
-
-### 将来 100% を目指す場合の方針
-
-実装変更が許容される場合は以下を検討:
-
-1. **OpenAI クライアントを interface 化する**  
-   `type OpenAIClient interface { Do(*http.Request) (*http.Response, error) }` を定義し、handler に注入する。テストでは失敗する実装を渡せる。
-
-2. **URL を変数化する**  
-   `openAIResponsesURL` と `whisperURL` を const から var にすると、テストで書き換えてエラーを誘発できる。ただし本番仕様への影響を要評価。
-
-3. **`http.NewRequest` を wrapper 関数経由にする**  
-   エラーを注入できる関数ポインタを持つことで、到達不能だった error return を通過させられる。
-
-4. **`main()` の起動ロジックを分離する**  
-   `run()` 関数に切り出してテストから呼び出せるようにする（goroutine + listener ready チャネルを使うパターン）。
-
-## 今後予定
-
-### Frontend Test 拡張
-
-- Interpreter page の翻訳レスポンス表示
-- 認識テキスト編集後の再翻訳 flow
-- language mismatch 表示
-- history 表示と展開
-- speech synthesis 呼び出し部分の UI 挙動
-
-## Frontend
-
-Frontend は Vitest、Testing Library、jsdom を使ってテストします。
-
-```bash
-cd frontend
-npm ci
-npm run lint
-npm run test
-npm run test:coverage
-npm run build
-```
-
-| コマンド | 内容 |
+| ファイル | 主な対象 |
 | --- | --- |
-| `npm run lint` | ESLint による静的解析 |
-| `npm run test` | Vitest の単体テスト |
-| `npm run test:coverage` | coverage 付きテスト実行 |
-| `npm run build` | TypeScript build と Vite build |
+| `backend/main_test.go` | 共通 helper、health、CORS、固有名詞抽出補助 |
+| `backend/main_handlers_test.go` | `/api/translate`、`/api/tts`、OpenAI 呼び出し、固有名詞保護、`sourceLanguage` |
 
-## Backend
-
-Backend は Go 標準の `go test` と `go vet` を使って検証します。
+実行コマンド:
 
 ```bash
 cd backend
-go vet ./...
 go test ./...
+```
+
+主な検証対象:
+
+- `/health` が JSON で `{"status":"ok"}` を返すこと
+- `writeError` が JSON error response を返すこと
+- CORS middleware が通常 request と `OPTIONS` request を処理すること
+- `extractJSON` が OpenAI response から JSON 部分を取り出すこと
+- `callOpenAI` が transport error、非 200、invalid JSON、空 output、空 content、正常系を扱うこと
+- `/api/translate` が method、API key 未設定、invalid JSON、空 text、`languages` 不足、OpenAI error、invalid translation JSON、`language_mismatch`、正常系を扱うこと
+- `sourceLanguage` が不正な場合に 400 を返し、OpenAI を呼ばないこと
+- `sourceLanguage` が指定された場合に翻訳方向を固定すること
+- `sourceLanguage` 指定時にも固有名詞保護経路が動くこと
+- 翻訳 prompt が speech recognition error や固有名詞の過剰補正を禁止する文言を含むこと
+- 固有名詞保護で博多、博多駅、有田シン、ドン・キホーテなどが placeholder 化され、翻訳結果と `ttsText` に復元されること
+- placeholder が翻訳時に欠落した場合、1 回 retry して成功または 502 になること
+- placeholder がバックトランスレーション時に欠落した場合、retry すること
+- 英語自己紹介名の抽出条件と intro pattern 判定
+- `/api/tts` が method、API key 未設定、invalid JSON、空 text、OpenAI error、非 200、正常系を扱うこと
+- `callOpenAITTS` が正常系、transport error、非 200 を扱うこと
+
+バックトランスレーションは `/api/translate` の中で翻訳後に別 OpenAI call として実行されます。テストでは mock transport の call count や返却値を使い、翻訳 call とバックトランスレーション call の両方を検証します。
+
+## 3. Frontend テスト
+
+Frontend のテストファイルは次のとおりです。
+
+| ファイル | 主な対象 |
+| --- | --- |
+| `frontend/src/languages.test.ts` | 言語定義 |
+| `frontend/src/pages/LanguageSelectPage.test.tsx` | 言語選択画面 |
+| `frontend/src/pages/InterpreterPage.test.tsx` | 通訳画面、音声入力、翻訳、TTS、状態遷移 |
+
+実行コマンド:
+
+```bash
+cd frontend
+npm test
+```
+
+主な検証対象:
+
+- `LANGUAGES` が 7 件で、各言語の `id`、`speechCode`、`label` が定義されていること
+- 言語 ID が一意であること
+- 言語選択画面が全言語カードを表示すること
+- 言語カードの選択、解除、3 言語目を追加しない制御
+- 2 言語目選択時の navigation callback
+- `SpeechRecognition` / `webkitSpeechRecognition` mock を使った音声入力開始・停止
+- 国旗ボタンごとの音声入力開始、反対側の国旗の disabled、音声入力完了後の再有効化
+- 空 transcript の場合に `/api/translate` を呼ばず、エラーを表示すること
+- 音声入力終了後に `/api/translate` へ transcript、`languages`、`sourceLanguage` を送ること
+- 右側の国旗で音声入力した場合に、その言語 ID を `sourceLanguage` として送ること
+- 音声入力中リアルタイム翻訳 request に `sourceLanguage` を含めること
+- 翻訳成功時に `translatedText`、`backTranslation`、読み上げボタン、履歴を表示すること
+- `/api/translate` が 422 `language_mismatch` を返した場合のエラー表示と状態 reset
+- `/api/translate` が 500 を返した場合のエラー表示
+- 手入力再翻訳 flow と再翻訳失敗時の扱い
+- `/api/tts` に `ttsText` を送ること
+- TTS fetch 中の button disabled、audio `onended` 後の復帰、TTS 失敗後の復帰
+- `recording` 中は翻訳カードを隠し、音声入力終了後に表示すること
+
+Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeObjectURL` を mock します。API 呼び出しは `fetch` mock で検証します。
+
+## 4. テスト対象
+
+現在の実装でテスト対象になっている主な機能は次のとおりです。
+
+| 領域 | 対象 |
+| --- | --- |
+| Backend API | `/health`、`/api/translate`、`/api/tts` |
+| 翻訳 | OpenAI Responses API wrapper、翻訳 prompt、JSON response parse |
+| 翻訳方向 | `sourceLanguage` 指定、未指定時の `language_mismatch` |
+| 固有名詞保護 | Kagome 抽出、英語自己紹介 pattern、placeholder、retry、復元、`ttsText` |
+| バックトランスレーション | 翻訳後の back-translation call、placeholder 検証と retry |
+| TTS | OpenAI Audio Speech API wrapper、`audio/mpeg` response、TTS error |
+| Frontend 音声 | `SpeechRecognition` / `webkitSpeechRecognition`、国旗ボタン音声入力フロー |
+| Frontend API 利用 | `/api/translate`、`/api/tts`、`sourceLanguage`、`language_mismatch` |
+| Frontend UI | 翻訳結果、バックトランスレーション、履歴、読み上げボタン、エラー表示 |
+
+## 5. ビルド確認
+
+Backend build:
+
+```bash
+cd backend
 go build -o /tmp/gotalk-backend .
 ```
 
-| コマンド | 内容 |
-| --- | --- |
-| `go vet ./...` | Go の静的解析 |
-| `go test ./...` | Go の単体テスト |
-| `go build -o /tmp/gotalk-backend .` | backend binary のビルド確認 |
-
-## Docker 起動確認
-
-必要に応じて、Docker Compose で起動状態を確認します。
+Frontend build:
 
 ```bash
-docker compose up -d --build
-docker compose ps
-curl http://localhost:8080/health
+cd frontend
+npm run build
 ```
 
-`/health` が `{"status":"ok"}` を返せば、backend の基本起動は成功です。
+Frontend の `npm run build` は `tsc -b && vite build` を実行します。
 
-## CI で実行される検証
+## 6. backend-dev
 
-Pull Request と main push では GitHub Actions により以下が自動実行されます。
+Docker Compose には Backend 開発用の `backend-dev` service があります。`./backend` を `/app` に mount し、Go command を実行できます。
 
-- Frontend lint: `npm run lint`
-- Frontend test: `npm run test`
-- Frontend coverage: `npm run test:coverage`
-- Frontend build: `npm run build`
-- Backend vet: `go vet ./...`
-- Backend test: `go test ./...`
-- Backend build: `go build -o /tmp/gotalk-backend .`
+Format:
+
+```bash
+docker compose run --rm backend-dev gofmt -w .
+```
+
+Test:
+
+```bash
+docker compose run --rm backend-dev go test ./...
+```
+
+Build:
+
+```bash
+docker compose run --rm backend-dev go build -o /tmp/gotalk-backend .
+```
+
+`backend-dev` は port を公開しません。通常の API server 起動は `backend` service を使います。
+
+## 7. CI
+
+CI では Backend と Frontend の検証を分けて実行します。
+
+Frontend:
+
+- `npm run lint`
+- `npm run test`
+- `npm run test:coverage`
+- `npm run build`
+
+Backend:
+
+- `go vet ./...`
+- `go test ./...`
+- `go build -o /tmp/gotalk-backend .`
+
+## 8. 削除された旧テスト
+
+現在の実装では、Backend が音声データを受け取って文字起こしする経路はありません。そのため、この文書では現行の `/api/translate`、`/api/tts`、`SpeechRecognition` に関するテスト項目だけを扱います。
+
+音声のテキスト化は Frontend の `SpeechRecognition` / `webkitSpeechRecognition` が担当します。Backend は音声データではなく、認識済みテキストを `/api/translate` で受け取ります。
+
+## 9. 関連ドキュメント
+
+- [architecture.md](architecture.md)
+- [translation-flow.md](translation-flow.md)
+- [speech-flow.md](speech-flow.md)
+- [proper-noun-protection.md](proper-noun-protection.md)
+- [api.md](api.md)

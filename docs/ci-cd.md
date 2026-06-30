@@ -1,84 +1,96 @@
 # CI/CD
 
-## 現在の開発フロー
+## 1. 概要
 
-GoTalk は、Pull Request で CI とレビューを行い、main へ merge された変更を main push として CD に流す運用です。
+GoTalk は GitHub Actions で CI、CD、Codex Review ラベル運用を行います。
 
-CD workflow は `push` to `main` をトリガーに起動しますが、`production` Environment の承認ゲートを通過してから VPS へデプロイします。
+現在存在する workflow は次の 3 つです。
+
+- `.github/workflows/ci.yml`
+- `.github/workflows/cd.yml`
+- `.github/workflows/codex-review-request.yml`
+
+Pull Request では CI とレビューを行い、`main` へ merge された変更は `push` to `main` として CD workflow に流れます。CD は GitHub Environment `production` の承認を通過してから VPS へ SSH 接続し、Docker Compose で更新します。
 
 ```mermaid
 flowchart LR
-  Feature[feature branch] --> PR[Pull Request]
-  PR --> CI[GitHub Actions CI<br/>pull_request]
-  CI --> Review[Codex Review]
-  Review --> Merge[merge to main]
-  Merge --> MainPush[main push]
-  MainPush --> CD[GitHub Actions CD<br/>push to main]
-  CD --> Approval[Waiting for approval<br/>production environment]
-  Approval --> VPS[VPS deploy]
+  Feature[feature branch] --> Commit[commit]
+  Commit --> Push[push]
+  Push --> PR[Pull Request]
+  PR --> CI[CI<br/>frontend / backend]
+  PR --> ReviewRequest["@codex review"]
+  ReviewRequest --> ReviewPending[review-pending]
+  ReviewPending --> Codex[Codex Review]
+  Codex --> Ready[merge-ready]
+  Codex --> Blocked[merge-blocked]
+  Ready --> Merge[merge to main]
+  CI --> Merge
+  Merge --> CD[CD<br/>push to main]
+  CD --> Approval[production approval]
+  Approval --> VPS[VPS deploy<br/>docker compose up -d --build]
 ```
 
-承認者（Required reviewers）は GitHub リポジトリの Settings → Environments → production で設定します。
+## 2. CI
 
-## 役割分担
+CI は `.github/workflows/ci.yml` で定義されています。
 
-| 役割 | 担当 | 内容 |
-| --- | --- | --- |
-| 実装 | Claude Code | 機能追加、修正、テスト追加 |
-| 自動検証 | GitHub Actions CI | lint、test、coverage、build |
-| レビュー | Codex | 差分確認、品質リスクの指摘、改善提案 |
-| デプロイ | GitHub Actions CD | main push を契機に VPS へ SSH デプロイ |
-
-## CI 構成
-
-CI は `.github/workflows/ci.yml` で定義しています。
-
-トリガー:
+Trigger:
 
 - `push` to `main`
 - `pull_request`
 
-### Frontend job
+### Frontend
 
-working directory: `frontend`
+Frontend job は `frontend` directory で実行されます。
 
-- Node.js 22 をセットアップ
-- npm cache を有効化
-- `npm ci`
-- `npm run lint`
-- `npm run test`
-- `npm run test:coverage`
-- `npm run build`
+| 項目 | 内容 |
+| --- | --- |
+| runner | `ubuntu-latest` |
+| Node.js | `22` |
+| cache | `npm`、`frontend/package-lock.json` |
+| install | `npm ci` |
+| lint | `npm run lint` |
+| test | `npm run test` |
+| coverage | `npm run test:coverage` |
+| build | `npm run build` |
 
-### Backend job
+### Backend
 
-working directory: `backend`
+Backend job は `backend` directory で実行されます。
 
-- Go 1.22 をセットアップ
-- Go module cache を有効化
-- `go vet ./...`
-- `go test ./...`
-- `go build -o /tmp/gotalk-backend .`
+| 項目 | 内容 |
+| --- | --- |
+| runner | `ubuntu-latest` |
+| Go | `1.22` |
+| cache | `backend/go.sum` |
+| vet | `go vet ./...` |
+| test | `go test ./...` |
+| build | `go build -o /tmp/gotalk-backend .` |
 
-## CI の目的
+## 3. CD
 
-- PR 時点で静的解析、単体テスト、カバレッジ計測、ビルドを自動検証する
-- main へ取り込む前にフロントエンドとバックエンドの基本品質を確認する
-- レビュー担当の Codex が、CI 結果と差分を合わせて確認できる状態にする
+CD は `.github/workflows/cd.yml` で定義されています。
 
-## CD 構成
+| 項目 | 内容 |
+| --- | --- |
+| Trigger | `push` to `main` |
+| job | `deploy` |
+| runner | `ubuntu-latest` |
+| environment | `production` |
+| deploy target | VPS |
+| deploy method | SSH 経由で VPS 上の repository を更新し、Docker Compose を起動 |
 
-CD は `.github/workflows/cd.yml` で定義しています。
+`deploy` job は `environment: production` を指定しています。GitHub Environment 側で Required reviewers が設定されている場合、承認されるまで VPS への deploy は実行されません。
 
-トリガー:
+VPS への SSH 接続には `appleboy/ssh-action@v1.2.2` を使います。参照する GitHub Secrets は次のとおりです。
 
-- `push` to `main`
+| Secret | 用途 |
+| --- | --- |
+| `VPS_HOST` | VPS host |
+| `VPS_USER` | SSH user |
+| `VPS_SSH_KEY` | SSH private key |
 
-deploy job に `environment: production` を設定しており、GitHub の production Environment に設定された Required reviewers が承認するまでデプロイは保留されます。承認後、GitHub Actions から VPS へ SSH 接続し、VPS 上で Docker Compose を使ってアプリケーションを更新します。
-
-## デプロイ手順
-
-CD workflow では `appleboy/ssh-action@v1.2.2` を使い、VPS 上で以下を実行します。
+VPS 上で実行する deploy script:
 
 ```bash
 set -e
@@ -88,30 +100,74 @@ docker compose up -d --build
 docker compose ps
 ```
 
-## GitHub Secrets
+## 4. GitHub Actions
 
-| Secret | 用途 |
+現在存在する workflow は次のとおりです。
+
+| ファイル名 | Trigger | 役割 |
+| --- | --- | --- |
+| `.github/workflows/ci.yml` | `push` to `main`、`pull_request` | Frontend と Backend の lint / test / coverage / build |
+| `.github/workflows/cd.yml` | `push` to `main` | `production` Environment 承認後、VPS に SSH 接続して Docker Compose で deploy |
+| `.github/workflows/codex-review-request.yml` | `issue_comment` created、`pull_request` synchronize | `@codex review` request と Codex bot result に応じて PR label を更新 |
+
+`codex-review-request.yml` は次の label を扱います。
+
+| Label | 用途 |
 | --- | --- |
-| `VPS_HOST` | VPS のホスト名または IP アドレス |
-| `VPS_USER` | SSH ユーザー |
-| `VPS_SSH_KEY` | SSH 秘密鍵 |
+| `review-pending` | Codex review 待ち |
+| `merge-ready` | review 結果が merge 可能 |
+| `merge-blocked` | review 結果が merge block |
 
-## GitHub Environment 設定
+`@codex review` を含む人間の PR comment では `review-pending` を追加し、`merge-ready` と `merge-blocked` を外します。Bot comment では本文の keyword から ready / blocked を判定し、`merge-ready` または `merge-blocked` を適用します。PR synchronize では `merge-ready` を外して `review-pending` を追加します。`merge-blocked` は synchronize では外しません。
 
-production Environment の承認ゲートを有効にするには、GitHub リポジトリで以下を設定します。
+## 5. 開発フロー
 
-1. Settings → Environments → New environment で `production` を作成
-2. Required reviewers に承認者（`shin-arita`）を追加
-3. Save protection rules
+現在の運用フローは次のとおりです。
 
-## 今後の改善項目
+1. feature branch を作成する
+2. Claude Code で実装、修正、テスト、ドキュメント更新を行う
+3. commit する
+4. branch を push する
+5. Pull Request を作成する
+6. GitHub Actions CI で Frontend / Backend の検証を行う
+7. PR comment で `@codex review` を依頼する
+8. Codex Review の結果に応じて `merge-ready` または `merge-blocked` label が付く
+9. CI と review 結果を確認して merge する
+10. `main` への push を trigger に CD が起動する
+11. `production` Environment の承認後、VPS に deploy する
 
-- デプロイ後ヘルスチェックの自動化
-- デプロイ失敗時の通知
+## 6. 品質保証
 
-## 運用上の注意
+品質保証は CI、テスト、build、Codex Review を組み合わせます。
 
-- main push で CD が起動し、production Environment の承認待ちになる
-- 承認者が GitHub Actions の画面から approve するとデプロイが実行される
-- VPS 側の `~/gotalk` は GitHub の main と `git pull --ff-only` できる状態にしておく
-- VPS 側の `.env` に `OPENAI_API_KEY` を設定しておく
+Frontend:
+
+- ESLint: `npm run lint`
+- Vitest: `npm run test`
+- coverage: `npm run test:coverage`
+- TypeScript / Vite build: `npm run build`
+
+Backend:
+
+- Go vet: `go vet ./...`
+- Go test: `go test ./...`
+- Go build: `go build -o /tmp/gotalk-backend .`
+
+Codex Review:
+
+- PR 差分に対する review request を `@codex review` comment で開始する
+- review request 中は `review-pending` を使う
+- review 結果 comment に応じて `merge-ready` または `merge-blocked` を付ける
+- PR 更新時は `merge-ready` を外し、再 review 待ちとして `review-pending` を付ける
+
+## 7. デプロイ後確認
+
+CD workflow は deploy script の最後で `docker compose ps` を実行します。
+
+デプロイ後は VPS 上の Docker Compose service 状態と、Backend の health check を確認します。Backend health check は `/health` で `{"status":"ok"}` を返します。
+
+## 8. 関連ドキュメント
+
+- [development.md](development.md)
+- [testing.md](testing.md)
+- [architecture.md](architecture.md)
