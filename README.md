@@ -6,7 +6,7 @@ GoTalk は、異なる言語を話す 2 人がブラウザ上で会話するた�
 
 翻訳文に加えてバックトランスレーションも表示することで、「相手にどう伝わるか」を確認しながら会話できる体験を目指しています。
 
-このプロジェクトは、AI を使ったユーザー体験を実装するだけでなく、テスト、レビュー、デプロイ、承認付き本番反映、VPS 運用まで含めて 1 つのサービスとして成立させることを目的にしています。実際に使える音声通訳アプリを題材に、機能実装と運用品質の両方を設計・構築できることを示すためのポートフォリオです。
+このプロジェクトは、AI を使ったユーザー体験を実装するだけでなく、テスト、レビュー、デプロイ、本番反映の承認ゲート（GitHub の `production` Environment）、VPS 運用まで含めて 1 つのサービスとして成立させることを目的にしています。実際に使える音声通訳アプリを題材に、機能実装と運用品質の両方を設計・構築できることを示すためのポートフォリオです。
 
 ## 主な機能
 
@@ -63,7 +63,7 @@ flowchart LR
     CI --> Review[Codex Review]
     Review --> Main[Merge to main]
     Main --> CD[GitHub Actions CD]
-    CD --> Approval[Production Approval Gate]
+    CD --> Approval[production Environment<br/>Required reviewers 設定時は承認待ち]
     Approval -->|SSH deploy| VPS[VPS]
     VPS --> Docker[Docker Compose]
   end

@@ -56,6 +56,8 @@ docker compose up -d --build
 docker compose ps
 ```
 
+この `docker compose up -d --build` はサービス名を指定していないため、`backend-dev` も build と起動の対象になり、起動してすぐ終了します。詳細は [ci-cd.md](ci-cd.md) を参照してください。
+
 ## 4. VPS
 
 VPS では GoTalk repository を `/home/ubuntu/gotalk` に配置する運用です。CD workflow 側では `cd ~/gotalk` を実行します。
