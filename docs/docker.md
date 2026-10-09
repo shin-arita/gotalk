@@ -24,14 +24,14 @@ flowchart LR
     BackendDev[backend-dev<br/>Go development container]
   end
 
-  OpenAI[OpenAI API<br/>Responses API / Audio Speech API]
+  OpenAI[OpenAI API<br/>Responses API / Audio Transcriptions API / Audio Speech API]
 
   Compose --> Frontend
   Compose --> Backend
   Compose --> BackendDev
 
   Frontend -->|VITE_BACKEND_URL=http://backend:8080<br/>/api proxy| Backend
-  Backend -->|translation / back translation / TTS| OpenAI
+  Backend -->|transcription / translation / back translation / TTS| OpenAI
   BackendDev -.->|manual go commands<br/>mounted ./backend| Backend
 ```
 
@@ -108,7 +108,7 @@ environment:
   - DEBUG_TRANSLATION=true
 ```
 
-Backend は OpenAI Responses API で翻訳とバックトランスレーションを行い、OpenAI Audio Speech API で TTS を行います。OpenAI API key は Backend 側の環境変数として扱われます。
+Backend は OpenAI Audio Transcriptions API で言語判定と文字起こしを行い、OpenAI Responses API で翻訳とバックトランスレーションを行い、OpenAI Audio Speech API で TTS を行います。OpenAI API key は Backend 側の環境変数として扱われます。
 
 ## 6. backend-dev
 
@@ -147,8 +147,9 @@ docker compose run --rm backend-dev go test ./...
 | `VITE_BACKEND_URL` | `frontend` | Vite proxy の Backend 接続先 | Architecture では `http://localhost:8080` が fallback として記載されている |
 | `OPENAI_TTS_MODEL` | Backend 実装 | TTS model | `gpt-4o-mini-tts` |
 | `OPENAI_TTS_VOICE` | Backend 実装 | TTS voice | `marin` |
+| `WHISPER_MODEL` | Backend 実装 | `/api/interpret` で音声を文字起こしする model | `gpt-4o-transcribe` |
 
-`OPENAI_TTS_MODEL` と `OPENAI_TTS_VOICE` は `docker-compose.yml` では定義されていません。Backend 実装では未設定時の default が使われます。
+`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `docker-compose.yml` では backend に渡していません。そのため `.env` に書いても Docker Compose で起動した場合は反映されず、Backend 実装の未設定時の default が使われます。言語判定に使う `whisper-1` は Backend 実装で固定されており、環境変数では変更できません。
 
 ## 8. ネットワーク構成
 

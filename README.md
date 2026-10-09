@@ -11,8 +11,10 @@ GoTalk は、異なる言語を話す 2 人がブラウザ上で会話するた�
 ## 主な機能
 
 - 2 言語を選択して音声通訳を開始
-- マイク入力とブラウザ SpeechRecognition による音声認識
+- マイク入力の録音と、ブラウザ SpeechRecognition による音声認識
+- 音声認識テキストが得られない場合の、OpenAI 音声文字起こし API（whisper-1、gpt-4o-transcribe）による言語判定と文字起こし
 - OpenAI Responses API による翻訳とバックトランスレーション
+- 録音中のリアルタイム翻訳表示
 - 認識テキストの編集と再翻訳
 - OpenAI Audio Speech API による翻訳文の読み上げ
 - 画面内の会話履歴表示
@@ -21,7 +23,7 @@ GoTalk は、異なる言語を話す 2 人がブラウザ上で会話するた�
 
 - Frontend: React, TypeScript, Vite
 - Backend: Go, net/http
-- AI: OpenAI Responses API, OpenAI Audio Speech API
+- AI: OpenAI Responses API, OpenAI Audio Transcriptions API (whisper-1, gpt-4o-transcribe), OpenAI Audio Speech API
 - Infrastructure: Docker Compose, VPS, HTTPS
 - CI/CD: GitHub Actions
 - Monitoring: Uptime Kuma, Discord Webhook
@@ -46,9 +48,11 @@ GoTalk は、異なる言語を話す 2 人がブラウザ上で会話するた�
 ```mermaid
 flowchart LR
   subgraph App[Application]
-    User[User Browser] -->|SpeechRecognition| Frontend[React / Vite]
-    Frontend -->|POST /api/translate text + languages| Backend[Go API]
+    User[User Browser] -->|MediaRecorder / SpeechRecognition| Frontend[React / Vite]
+    Frontend -->|POST /api/interpret audio + optional transcript| Backend[Go API]
+    Frontend -->|POST /api/translate text + languages<br/>real-time / re-translation| Backend
     Frontend -->|POST /api/tts text| Backend
+    Backend -->|language detection / transcription| Transcriptions[OpenAI Audio Transcriptions API]
     Backend -->|translation / back translation| Responses[OpenAI Responses API]
     Backend -->|speech synthesis| Speech[OpenAI Audio Speech API]
   end
@@ -187,6 +191,8 @@ OPENAI_MODEL=gpt-4o-mini
 OPENAI_TTS_MODEL=gpt-4o-mini-tts
 OPENAI_TTS_VOICE=marin
 ```
+
+`docker-compose.yml` が backend に渡している環境変数は `OPENAI_API_KEY`、`OPENAI_MODEL`、`DEBUG_TRANSLATION` だけです。`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `.env` に書いても Docker Compose で起動した場合は反映されず、Backend の既定値（`gpt-4o-mini-tts`、`marin`、`gpt-4o-transcribe`）が使われます。
 
 Docker Compose で frontend/backend を起動します。
 

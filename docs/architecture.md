@@ -4,9 +4,11 @@
 
 GoTalk は、異なる言語を話す 2 人がブラウザ上で会話するための音声通訳 Web アプリケーションです。
 
-現在の GoTalk は、ブラウザの `SpeechRecognition` で音声をテキスト化し、そのテキストを Backend の `/api/translate` に送って翻訳とバックトランスレーションを行います。翻訳文は Frontend に表示され、必要に応じて `/api/tts` で音声合成して再生します。
+現在の GoTalk は、国旗ボタンで開始した発話を `MediaRecorder` で録音し、録音終了時に音声を Backend の `/api/interpret` に送って確定翻訳とバックトランスレーションを取得します。録音と並行してブラウザの `SpeechRecognition` も動かし、認識テキストが得られた場合はそのテキストを `transcript` として同じリクエストに添えます。Backend は `transcript` があればそれを翻訳し、なければ OpenAI の音声文字起こし API で言語判定と文字起こしを行ってから翻訳します。翻訳文は Frontend に表示され、必要に応じて `/api/tts` で音声合成して再生します。
 
-Frontend は React / TypeScript / Vite で実装され、言語選択、`SpeechRecognition`、リアルタイム翻訳、翻訳結果表示、バックトランスレーション表示、TTS 再生、会話履歴表示を担当します。Backend は Go の `net/http` で実装され、OpenAI API キーをサーバー側で扱い、翻訳、バックトランスレーション、固有名詞保護、TTS を実行します。
+録音中は `SpeechRecognition` の認識テキストを `/api/translate` に送ってリアルタイム翻訳を表示します。原文を編集した後の再翻訳も `/api/translate` で行います。
+
+Frontend は React / TypeScript / Vite で実装され、言語選択、録音、`SpeechRecognition`、リアルタイム翻訳、翻訳結果表示、バックトランスレーション表示、TTS 再生、会話履歴表示を担当します。Backend は Go の `net/http` で実装され、OpenAI API キーをサーバー側で扱い、文字起こし、翻訳、バックトランスレーション、固有名詞保護、TTS を実行します。
 
 この文書は GoTalk のシステム設計の入口です。翻訳処理、音声処理、固有名詞保護、API 詳細は個別ドキュメントにまとめています。ここでは現在の実装に基づく全体像を整理します。
 
@@ -15,12 +17,15 @@ Frontend は React / TypeScript / Vite で実装され、言語選択、`SpeechR
 ```mermaid
 flowchart LR
   User[User Browser] --> Frontend[Frontend<br/>React / TypeScript / Vite]
+  Frontend -->|MediaRecorder| Recorder[録音音声]
   Frontend -->|SpeechRecognition| BrowserSpeech[Web Speech API]
 
   BrowserSpeech -->|recognized text| Frontend
-  Frontend -->|POST /api/translate<br/>JSON text + languages + optional sourceLanguage| Backend[Backend<br/>Go net/http]
+  Frontend -->|POST /api/interpret<br/>multipart audio + languages + speaker + optional transcript| Backend[Backend<br/>Go net/http]
+  Frontend -->|POST /api/translate<br/>JSON text + languages| Backend
   Frontend -->|POST /api/tts<br/>JSON text| Backend
 
+  Backend -->|language detection / transcription| Transcriptions[OpenAI Audio Transcriptions API<br/>whisper-1 / WHISPER_MODEL default gpt-4o-transcribe]
   Backend -->|translation / back translation| Responses[OpenAI Responses API<br/>OPENAI_MODEL default gpt-4o-mini]
   Backend -->|speech synthesis| TTS[OpenAI Audio Speech API<br/>OPENAI_TTS_MODEL default gpt-4o-mini-tts]
 
@@ -36,9 +41,9 @@ flowchart LR
 | --- | --- | --- |
 | Frontend | `frontend/src/App.tsx` | 言語選択画面と通訳画面の切り替え |
 | Frontend | `frontend/src/pages/LanguageSelectPage.tsx` | 2 言語の選択 |
-| Frontend | `frontend/src/pages/InterpreterPage.tsx` | `SpeechRecognition`、翻訳 API 呼び出し、TTS 再生、履歴表示 |
+| Frontend | `frontend/src/pages/InterpreterPage.tsx` | 録音、`SpeechRecognition`、翻訳 API 呼び出し、TTS 再生、履歴表示 |
 | Frontend | `frontend/src/languages.ts` | 対応言語と `SpeechRecognition` 用 locale |
-| Backend | `backend/main.go` | API handler、OpenAI API 呼び出し、翻訳・TTS の制御 |
+| Backend | `backend/main.go` | API handler、OpenAI API 呼び出し、文字起こし・翻訳・TTS の制御 |
 | Backend | `backend/propnoun.go` | 固有名詞抽出、プレースホルダ保護、復元、検証、リトライ |
 | Runtime | `docker-compose.yml` | frontend / backend / backend-dev の Compose 定義 |
 | CI/CD | `.github/workflows/*.yml` | CI、CD、Codex review ラベル運用 |
@@ -48,13 +53,13 @@ flowchart LR
 Frontend はブラウザ上の会話 UI と、Backend API へのリクエスト生成を担当します。
 
 - 2 つの利用言語を選択する
-- 選択した言語ごとの国旗ボタンで音声入力を開始・停止する
-- `SpeechRecognition` / `webkitSpeechRecognition` で音声をテキスト化する
-- 音声入力中の認識テキストを使って `/api/translate` へリアルタイム翻訳を投げる
-- 音声入力中と音声入力終了時の `/api/translate` リクエストに、話している国旗の言語 ID を `sourceLanguage` として指定する
-- 音声入力終了時に認識済みテキストを `/api/translate` へ送り、確定翻訳とバックトランスレーションを取得する
-- 認識テキスト、翻訳文、バックトランスレーションを表示する
-- 認識テキストの編集後、`/api/translate` で再翻訳する
+- 選択した言語ごとの国旗ボタンで録音を開始・停止する
+- `getUserMedia` で取得した音声を `MediaRecorder` で録音する
+- 録音と並行して `SpeechRecognition` / `webkitSpeechRecognition` を動かし、認識テキストを表示する
+- 録音中の認識テキストを使って `/api/translate` へリアルタイム翻訳を投げる
+- 録音終了時に音声を `/api/interpret` へ送り、確定翻訳とバックトランスレーションを取得する。タップされた国旗の言語を `myLanguage` と `speaker`、もう一方を `theirLanguage` として送り、認識テキストがあれば `transcript` として添える
+- 原文、翻訳文、バックトランスレーションを表示する
+- 原文の編集後、`/api/translate` で再翻訳する
 - `/api/tts` から返る `audio/mpeg` を `Audio` で再生する
 - 画面内に会話履歴を保持して表示する
 
@@ -66,12 +71,13 @@ Backend は Go の単一 HTTP サーバーとして動作し、OpenAI API キー
 
 - CORS middleware と API routing を提供する
 - `/health` でヘルスチェックを返す
+- `/api/interpret` で録音音声を受け取り、確定翻訳とバックトランスレーションを実行する
 - `/api/translate` でテキスト翻訳とバックトランスレーションを実行する
 - `/api/tts` で翻訳文の音声合成を実行する
-- OpenAI Responses API と Audio Speech API を呼び出す
+- OpenAI Audio Transcriptions API、Responses API、Audio Speech API を呼び出す
 - 必要な場合に固有名詞保護を適用し、OpenAI への入力ではプレースホルダを保持させる
-- `sourceLanguage` が指定された場合、選択済み 2 言語のうち指定された言語を翻訳元、もう一方を翻訳先として翻訳方向を固定する
-- `sourceLanguage` が未指定の場合、固有名詞保護を適用する経路では入力文字種や名前表現と選択言語から翻訳方向を決め、通常経路では OpenAI Responses API で 2 言語候補から翻訳元を判定する
+- `/api/interpret` では、`transcript` がある場合は `speaker` に一致する言語を翻訳元にする。`transcript` がない場合は `whisper-1` で判定した言語を選択言語と照合して翻訳元を決め、`WHISPER_MODEL` で文字起こしする
+- `/api/translate` では、固有名詞保護を適用する経路では入力文字種や名前表現と選択言語から翻訳方向を決め、通常経路では OpenAI Responses API で 2 言語候補から翻訳元を判定する
 - `language_mismatch`、`translation failed`、`tts failed` などのエラーを JSON で返す
 
 Backend の HTTP client timeout は `main()` で 120 秒に設定されています。
@@ -80,11 +86,13 @@ Backend の HTTP client timeout は `main()` で 120 秒に設定されていま
 
 | 用途 | API / endpoint | モデル指定 | 実装箇所 |
 | --- | --- | --- | --- |
+| 言語判定 | Audio Transcriptions API `/v1/audio/transcriptions` | `whisper-1` 固定（`langDetectionModel`） | `callWhisper` / `/api/interpret` |
+| 文字起こし | Audio Transcriptions API `/v1/audio/transcriptions` | `WHISPER_MODEL`、未設定時 `gpt-4o-transcribe` | `callWhisper` / `/api/interpret` |
 | 翻訳 | Responses API `/v1/responses` | `OPENAI_MODEL`、未設定時 `gpt-4o-mini` | `callOpenAI` |
 | バックトランスレーション | Responses API `/v1/responses` | `OPENAI_MODEL`、未設定時 `gpt-4o-mini` | `callOpenAI` |
 | 音声合成 | Audio Speech API `/v1/audio/speech` | `OPENAI_TTS_MODEL`、未設定時 `gpt-4o-mini-tts` | `callOpenAITTS` / `/api/tts` |
 
-`OPENAI_TTS_VOICE` は未設定時 `marin` です。
+言語判定と文字起こしは、`/api/interpret` に `transcript` がない場合だけ実行します。`OPENAI_TTS_VOICE` は未設定時 `marin` です。
 
 ## 6. Docker 構成
 
@@ -108,23 +116,22 @@ Dockerfile の概要:
 
 ```mermaid
 sequenceDiagram
-  participant Browser as Browser SpeechRecognition
   participant FE as Frontend
   participant BE as Backend
+  participant WH as OpenAI Audio Transcriptions API
   participant PN as Proper noun protection
   participant OA as OpenAI Responses API
-  participant TTS as OpenAI Audio Speech API
 
-  Browser-->>FE: recognized text
-  FE->>BE: POST /api/translate text + languages + optional sourceLanguage
+  FE->>BE: POST /api/interpret audio + myLanguage + theirLanguage + speaker + optional transcript
   BE->>BE: validate request
-  BE->>BE: sourceLanguage判定
-  alt sourceLanguage is specified
-    BE->>BE: fix source / target direction from sourceLanguage
-  else sourceLanguage is not specified and protection path applies
-    BE->>BE: infer source / target from text and selected languages
-  else sourceLanguage is not specified and normal path applies
-    BE->>BE: defer source detection to translation request
+  alt transcript is present
+    BE->>BE: source = language matching speaker
+  else transcript is absent
+    BE->>WH: whisper-1 language detection
+    WH-->>BE: detected language
+    BE->>BE: match detected language with myLanguage / theirLanguage
+    BE->>WH: WHISPER_MODEL transcription with language + prompt
+    WH-->>BE: transcribed text
   end
   BE->>BE: 固有名詞保護の適用判定
   alt protection applies
@@ -138,19 +145,17 @@ sequenceDiagram
     BE->>PN: validate placeholders, retry once if needed
     BE->>PN: restore placeholders for display and TTS
   else normal path
-    BE->>OA: detect source language and translate text
-    OA-->>BE: sourceLanguage / targetLanguage / translated text
+    BE->>OA: translate text
+    OA-->>BE: translated text
     BE->>OA: back-translate translated text
     OA-->>BE: backTranslation
   end
-  BE-->>FE: translatedText + backTranslation + ttsText
-  FE->>BE: POST /api/tts text
-  BE->>TTS: synthesize speech
-  TTS-->>BE: audio/mpeg
-  BE-->>FE: audio/mpeg
+  BE-->>FE: text + sourceLanguage + targetLanguage + translatedText + backTranslation + ttsText
 ```
 
-`/api/translate` は `sourceLanguage` が指定された場合、指定言語を翻訳元として翻訳方向を固定します。未指定の場合、固有名詞保護を適用する経路では入力文字種や名前表現と選択言語から翻訳方向を決め、通常経路では OpenAI Responses API に 2 言語候補から翻訳元を判定させます。通常経路で候補外または判定不能の場合は `language_mismatch` を返します。
+`/api/interpret` は、`transcript` がある場合は `speaker` に一致する言語を翻訳元、もう一方を翻訳先にします。`transcript` がない場合は `whisper-1` の判定言語が `myLanguage`、`theirLanguage` のどちらに一致するかで翻訳方向を決め、どちらにも一致しない場合は `language_mismatch` を返します。
+
+`/api/translate` は、録音中のリアルタイム翻訳と原文編集後の再翻訳で使います。固有名詞保護を適用する経路では入力文字種や名前表現と選択言語から翻訳方向を決め、通常経路では OpenAI Responses API に 2 言語候補から翻訳元を判定させます。通常経路で候補外または判定不能の場合は `language_mismatch` を返します。
 
 ## 8. 音声処理フロー
 
@@ -158,26 +163,26 @@ sequenceDiagram
 sequenceDiagram
   participant User as User
   participant FE as Frontend
+  participant MR as MediaRecorder
   participant Browser as Browser SpeechRecognition
   participant BE as Backend
-  participant OA as OpenAI Responses API
   participant TTS as OpenAI Audio Speech API
 
   User->>FE: tap language flag to start
+  FE->>FE: getUserMedia
+  FE->>MR: start recording
   FE->>Browser: start SpeechRecognition with selected speechCode
   Browser-->>FE: interim transcript
-  FE->>BE: POST /api/translate for real-time translation
-  BE->>BE: fix source / target direction from sourceLanguage
-  BE->>OA: translate current transcript
-  OA-->>BE: translated text
+  FE->>BE: POST /api/translate text + languages (real-time translation)
   BE-->>FE: live translated text
 
   User->>FE: tap same flag to stop
   FE->>Browser: stop SpeechRecognition
-  FE->>BE: POST /api/translate final transcript + sourceLanguage
-  BE->>OA: translate and back-translate
-  OA-->>BE: translatedText + backTranslation
-  BE-->>FE: translatedText + backTranslation + ttsText
+  FE->>MR: stop recording
+  MR-->>FE: onstop (audio blob)
+  FE->>BE: POST /api/interpret audio + languages + speaker + optional transcript
+  BE-->>FE: text + translatedText + backTranslation + ttsText
+  User->>FE: tap speak button
   FE->>BE: POST /api/tts text
   BE->>TTS: synthesize speech
   TTS-->>BE: audio/mpeg
@@ -185,7 +190,7 @@ sequenceDiagram
   FE->>FE: play audio
 ```
 
-音声入力開始時は `getUserMedia({ audio: true })` でマイク権限を確認し、`AudioContext` / `AnalyserNode` で入力中の波紋表示を制御します。音声の文字起こしはブラウザの `SpeechRecognition` が担当し、Backend には認識済みテキストだけを送ります。
+録音開始時は `getUserMedia({ audio: true })` でマイク入力を取得し、`MediaRecorder` で録音します。`AudioContext` / `AnalyserNode` で入力中の波紋表示を制御します。録音と並行してブラウザの `SpeechRecognition` を動かし、認識テキストを表示とリアルタイム翻訳に使います。録音終了時は、`SpeechRecognition` の認識テキストの有無にかかわらず録音音声を `/api/interpret` に送ります。認識テキストがある場合は `transcript` として添え、ない場合は Backend が音声から文字起こしします。
 
 ## 9. 固有名詞保護の概要
 
@@ -198,7 +203,7 @@ sequenceDiagram
 - 翻訳後にプレースホルダを表示用・TTS 用のテキストへ復元する
 - 保護を適用できない場合は通常の翻訳処理へフォールバックする
 
-プレースホルダの形式、検証、リトライ、復元ルールの詳細は [proper-noun-protection.md](proper-noun-protection.md) にまとめています。
+保護を適用する条件は `/api/interpret` と `/api/translate` で異なります。プレースホルダの形式、適用条件、検証、リトライ、復元ルールの詳細は [proper-noun-protection.md](proper-noun-protection.md) にまとめています。
 
 ## 10. バックトランスレーションの概要
 
@@ -211,8 +216,9 @@ Backend では翻訳後に別 prompt でバックトランスレーションを�
 | Method | Path | 概要 |
 | --- | --- | --- |
 | `GET` | `/health` | Backend のヘルスチェック |
-| `POST` | `/api/translate` | テキストと 2 言語、任意の `sourceLanguage` を受け取り、翻訳とバックトランスレーションを返す |
 | `POST` | `/api/tts` | テキストを受け取り、読み上げ音声 `audio/mpeg` を返す |
+| `POST` | `/api/interpret` | 録音音声、2 言語、話者、任意の認識テキストを受け取り、原文、翻訳、バックトランスレーションを返す |
+| `POST` | `/api/translate` | テキストと 2 言語を受け取り、翻訳とバックトランスレーションを返す |
 
 各 API の request / response / error の詳細は [api.md](api.md) を参照してください。
 

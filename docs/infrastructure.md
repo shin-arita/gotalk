@@ -4,7 +4,7 @@
 
 GoTalk は VPS 上で Docker Compose により `frontend` と `backend` を起動します。GitHub Actions の CD workflow は `main` への push を trigger に起動し、`production` Environment の承認後、SSH で VPS に接続して repository を更新します。
 
-Backend は OpenAI API キーをサーバー側で扱い、OpenAI Responses API と OpenAI Audio Speech API へ outbound 接続します。Frontend は Backend の `/api` にリクエストし、Backend が翻訳、バックトランスレーション、TTS を実行します。
+Backend は OpenAI API キーをサーバー側で扱い、OpenAI Audio Transcriptions API、OpenAI Responses API、OpenAI Audio Speech API へ outbound 接続します。Frontend は Backend の `/api` にリクエストし、Backend が文字起こし、翻訳、バックトランスレーション、TTS を実行します。
 
 ## 2. サーバー構成
 
@@ -36,7 +36,7 @@ flowchart LR
   User[User Browser] -->|HTTPS / domain| Public[Public endpoint]
   Public --> Frontend[frontend<br/>gotalk-frontend<br/>5173]
   Frontend -->|/api proxy<br/>http://backend:8080| Backend[backend<br/>gotalk-backend<br/>8080]
-  Backend -->|HTTPS| OpenAI[OpenAI API<br/>Responses API / Audio Speech API]
+  Backend -->|HTTPS| OpenAI[OpenAI API<br/>Responses API / Audio Transcriptions API / Audio Speech API]
 
   subgraph VPS[VPS / Docker Compose]
     Frontend
@@ -92,8 +92,11 @@ docker compose ps
 | `VITE_BACKEND_URL` | `frontend` | Vite proxy の Backend 接続先 | Compose では `http://backend:8080` |
 | `OPENAI_TTS_MODEL` | Backend 実装 | TTS model | `gpt-4o-mini-tts` |
 | `OPENAI_TTS_VOICE` | Backend 実装 | TTS voice | `marin` |
+| `WHISPER_MODEL` | Backend 実装 | `/api/interpret` で音声を文字起こしする model | `gpt-4o-transcribe` |
 
 VPS 側の `.env` には少なくとも `OPENAI_API_KEY` を設定します。`OPENAI_MODEL` は `docker-compose.yml` で default が定義されています。
+
+`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `docker-compose.yml` では backend に渡していません。そのため `.env` に書いても Docker Compose で起動した場合は反映されず、Backend 実装の未設定時の default が使われます。
 
 ```env
 OPENAI_API_KEY=sk-...

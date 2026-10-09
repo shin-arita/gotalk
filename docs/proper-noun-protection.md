@@ -33,12 +33,22 @@ sequenceDiagram
 
 ## 3. 保護対象
 
-現在の実装で固有名詞保護経路に入る条件は `backend/main.go` の `useProtection` で決まります。
+現在の実装で固有名詞保護経路に入る条件は `backend/main.go` の `useProtection` で決まります。条件は `/api/translate` と `/api/interpret` で異なります。
+
+`/api/translate`:
 
 | 条件 | 保護経路 |
 | --- | --- |
 | 選択言語のどちらかが `ja` で、入力に日本語文字が含まれる | 使用する |
 | 選択言語のどちらも `ja` ではなく、英語自己紹介パターンを含む | 使用する |
+| 上記以外 | 使用しない |
+
+`/api/interpret`（翻訳元と翻訳先が決まった後に判定します）:
+
+| 条件 | 保護経路 |
+| --- | --- |
+| 翻訳元言語が `ja` で、原文に日本語文字が含まれる | 使用する |
+| 翻訳先言語が `ja` 以外で、原文に英語自己紹介パターンを含む | 使用する |
 | 上記以外 | 使用しない |
 
 日本語文字の判定は、ひらがな、カタカナ、CJK 統合漢字、CJK Extension A のいずれかを含むかで行います。
@@ -122,7 +132,7 @@ OpenAI に渡す翻訳対象テキストは、抽出した surface をプレー�
 5. 翻訳結果を入力としてバックトランスレーションする
 6. バックトランスレーション結果のプレースホルダを検証する
 
-保護なしの経路では、元の入力テキストをそのまま OpenAI Responses API に渡します。`sourceLanguage` が指定されている場合は翻訳元と翻訳先を固定し、未指定の場合は OpenAI の JSON 応答で翻訳元と翻訳先を判定します。
+保護なしの経路では、元の入力テキストをそのまま OpenAI Responses API に渡します。`/api/translate` では OpenAI の JSON 応答で翻訳元と翻訳先を判定します。`/api/interpret` では翻訳元と翻訳先が決まっているため、翻訳結果のテキストだけを返すよう指示して翻訳します。
 
 固有名詞保護経路に入っても、抽出 entry が 0 件の場合は通常翻訳へ進みます。Kagome tokenizer の初期化または抽出に失敗した場合も、通常翻訳へフォールバックします。
 
@@ -132,7 +142,7 @@ OpenAI に渡す翻訳対象テキストは、抽出した surface をプレー�
 
 保護ありの経路では、表示用に復元する前の `translatedRaw` をバックトランスレーション入力にします。つまり、バックトランスレーションにもプレースホルダを含んだ翻訳結果を渡します。
 
-バックトランスレーション結果にも翻訳時と同じ期待出現回数でプレースホルダ検証を行います。検証に成功した後、`sourceLanguage` 側の言語 ID に合わせて復元し、`backTranslation` として返します。
+バックトランスレーション結果にも翻訳時と同じ期待出現回数でプレースホルダ検証を行います。検証に成功した後、翻訳元言語 ID に合わせて復元し、`backTranslation` として返します。
 
 保護なしの経路では、翻訳済みテキストをそのままバックトランスレーション入力にします。
 
@@ -155,7 +165,7 @@ TTS 用の復元は `restoreWithRomanized` で行います。プレースホル�
 
 ## 9. エラー処理
 
-Kagome tokenizer の初期化や固有名詞抽出に失敗した場合、`runProtectedTranslation` は entry なしで error を返します。呼び出し側の `/api/translate` は警告ログを出し、固有名詞保護を使わない通常翻訳へフォールバックします。
+Kagome tokenizer の初期化や固有名詞抽出に失敗した場合、`runProtectedTranslation` は entry なしで error を返します。呼び出し側の `/api/translate` と `/api/interpret` は警告ログを出し、固有名詞保護を使わない通常翻訳へフォールバックします。
 
 保護ありの翻訳またはバックトランスレーションで OpenAI Responses API 呼び出しに失敗した場合、entry は存在するため通常翻訳へはフォールバックせず、`translation failed` を返します。
 
@@ -164,7 +174,7 @@ Kagome tokenizer の初期化や固有名詞抽出に失敗した場合、`runPr
 - 翻訳結果の検証失敗時は翻訳を 1 回再試行する
 - バックトランスレーション結果の検証失敗時はバックトランスレーションを 1 回再試行する
 
-再試行後もプレースホルダ検証に失敗した場合、`proper_noun_protection_failed` として扱います。`/api/translate` は HTTP 502 で JSON error `proper_noun_protection_failed` を返します。
+再試行後もプレースホルダ検証に失敗した場合、`proper_noun_protection_failed` として扱います。`/api/translate` と `/api/interpret` は HTTP 502 で JSON error `proper_noun_protection_failed` を返します。
 
 固有名詞が 1 件も抽出されなかった場合はエラーではなく、通常翻訳へ進みます。
 
