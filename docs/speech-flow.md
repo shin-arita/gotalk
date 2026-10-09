@@ -106,7 +106,7 @@ Frontend の音声処理は `frontend/src/pages/InterpreterPage.tsx` に実装�
 | `recording` | 録音中の状態です。`SpeechRecognition` が認識テキストを更新し、リアルタイム翻訳が動きます。同じ国旗ボタンで終了できます。 |
 | `processing` | 録音終了後に `/api/interpret` で確定翻訳を実行している状態、または原文編集後に `/api/translate` で再翻訳している状態です。翻訳中メッセージを表示し、国旗ボタンと読み上げ操作は無効になります。 |
 | `ready` | 翻訳文、バックトランスレーション、`ttsText` が取得済みの状態です。国旗ボタンから次の録音を開始でき、読み上げもできます。 |
-| `speaking` | `/api/tts` の結果を `Audio` で再生している状態です。再生終了または再生エラーで `ready` に戻ります。 |
+| `speaking` | `/api/tts` の結果を `Audio` で再生している状態です。再生終了または再生エラーで `ready` に戻ります。国旗ボタンは操作できませんが、原文の編集はできます。 |
 
 主な状態遷移は以下です。
 
@@ -120,11 +120,15 @@ stateDiagram-v2
   processing --> idle: 翻訳失敗または language_mismatch
   ready --> processing: 原文を編集して確定
   idle --> processing: 原文を編集して確定
+  speaking --> processing: 原文を編集して確定
+  ready --> idle: マイクの取得に失敗
   ready --> speaking: 読み上げボタンをタップ
   speaking --> ready: 再生終了または再生エラー
 ```
 
-録音を止めた後は、認識テキストの有無にかかわらず必ず `processing` へ進みます。原文の編集は、原文があり、`status` が `recording` と `processing` 以外のときに開始できます。
+録音を止めた後は、認識テキストの有無にかかわらず必ず `processing` へ進みます。原文の編集は、原文があり、`status` が `recording` と `processing` 以外（`idle`、`ready`、`speaking`）のときに開始でき、確定すると `/api/translate` で再翻訳して `processing` へ進みます。
+
+`status` を `recording` にするのは `getUserMedia` と `MediaRecorder` の開始に成功した後です。そのため、`getUserMedia` や `MediaRecorder` の作成に失敗した場合は `recording` を経由せず、`ready` から開始した場合は `idle` に変わり、`idle` から開始した場合は `idle` のままです。どちらの場合もマイクアクセス不可のエラーメッセージを表示します。
 
 ## 6. リアルタイム翻訳
 
@@ -181,13 +185,13 @@ stateDiagram-v2
 - `ttsText`
 - `backTranslation`
 
-`transcript` を送らなかった場合は、レスポンスの `text` を原文として表示します。`ttsText` はレスポンスに存在する場合はその値を使い、存在しない場合は `translatedText` を使います。成功後は `status` を `ready` にし、履歴に原文、翻訳文、バックトランスレーション、翻訳元言語、翻訳先言語を追加します。履歴に表示するのは原文と翻訳文です。
+録音中に `onresult` が一度も呼ばれなかった場合（`hasLiveTranscriptRef.current` が `false`）は、レスポンスの `text` を原文として表示します。`onresult` は呼ばれたが認識テキストが空だった場合は、`transcript` を送らず、`text` も原文として表示しません。`ttsText` はレスポンスに存在する場合はその値を使い、存在しない場合は `translatedText` を使います。成功後は `status` を `ready` にし、履歴に原文、翻訳文、バックトランスレーション、翻訳元言語、翻訳先言語を追加します。履歴に表示するのは原文と翻訳文です。
 
 `/api/interpret` が `422` で `language_mismatch` を返した場合は、言語不明メッセージを表示し、翻訳文とバックトランスレーションを空にして `idle` に戻します。それ以外の失敗ではタイムアウトまたはエラー内容に応じたメッセージを表示し、`idle` に戻します。
 
 ## 8. TTS
 
-TTS は、確定翻訳後に翻訳カードの読み上げボタンから実行されます。
+TTS は、確定翻訳（`/api/interpret`）または原文編集後の再翻訳（`/api/translate`）が成功した後に、翻訳カードの読み上げボタンから実行されます。
 
 Frontend は `handleSpeak` で `status` を `speaking` にし、Backend の `/api/tts` に以下を送信します。
 

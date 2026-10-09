@@ -73,12 +73,12 @@ flowchart LR
 
 ## 品質保証
 
-- GitHub Actions CI による lint、test、coverage、build の自動検証
+- GitHub Actions CI による自動検証（Frontend は lint、test、coverage、build、Backend は vet、test、build）
 - Backend Unit Test による handler、OpenAI 連携まわりのエラーハンドリング、固有名詞保護、補助ロジックの検証
 - Frontend Unit Test による主要画面、ユーザー操作、UI ロジックの検証
 - Codex Review による差分レビューと品質リスクの確認
 
-テスト方針とテスト対象は [docs/testing.md](docs/testing.md) を参照してください。coverage は Frontend だけを CI の `npm run test:coverage` で計測しており、しきい値は設定していません。Backend の coverage は CI では計測していません。CI/CD の詳細は [docs/ci-cd.md](docs/ci-cd.md) にまとめています。
+テスト方針とテスト対象は [docs/testing.md](docs/testing.md) を参照してください。coverage は Frontend だけを CI の `npm run test:coverage` で計測しており、しきい値は設定していません（除外対象は docs/testing.md を参照してください）。Backend の coverage は CI では計測していません。CI/CD の詳細は [docs/ci-cd.md](docs/ci-cd.md) にまとめています。
 
 ### Codex Review ラベル運用
 
@@ -117,10 +117,10 @@ flowchart LR
 - Pull Request Workflow による main 取り込み前の確認
 - Branch Protection による main ブランチ保護
 - GitHub Actions CD による main push 起点のデプロイ workflow
-- `production` Environment の Required reviewers による Production Approval Gate
-- 承認後、GitHub Actions から SSH で VPS に接続し、Docker Compose で更新
+- `production` Environment を使った Production Approval Gate（GitHub 側で Required reviewers が設定されている場合）
+- GitHub Actions から SSH で VPS に接続し、Docker Compose で更新
 
-CD は CI 成功後に無条件で本番反映される構成ではなく、GitHub の `production` Environment 承認を通過してからデプロイされます。
+CD は `main` への push で起動します。CI の完了を条件にしていないため、`main` への push では CI と CD が並行して動きます。CD の deploy job は `production` Environment を指定しているため、GitHub 側で Required reviewers が設定されている場合は、承認されるまで VPS への deploy は実行されません。
 
 ## インフラ / 運用
 
@@ -188,17 +188,17 @@ cp .env.example .env
 ```env
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
-OPENAI_TTS_MODEL=gpt-4o-mini-tts
-OPENAI_TTS_VOICE=marin
 ```
 
-`docker-compose.yml` が backend に渡している環境変数は `OPENAI_API_KEY`、`OPENAI_MODEL`、`DEBUG_TRANSLATION` だけです。`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `.env` に書いても Docker Compose で起動した場合は反映されず、Backend の既定値（`gpt-4o-mini-tts`、`marin`、`gpt-4o-transcribe`）が使われます。
+`.env` を読むのは Docker Compose の変数置換だけで、Backend 自身は `.env` を読み込みません。`docker-compose.yml` は `.env` の値のうち `OPENAI_API_KEY` と `OPENAI_MODEL` を backend に渡します（`DEBUG_TRANSLATION=true` は `docker-compose.yml` に直接書かれています）。`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `.env` に書いても、どの起動方法でも反映されません。これらはホスト上で Backend を直接実行する場合に、シェルの環境変数として渡したときだけ反映されます。未設定時は Backend の既定値（`gpt-4o-mini-tts`、`marin`、`gpt-4o-transcribe`）が使われます。`.env.example` ではこの 3 つをコメントアウトして記載しています。
 
 Docker Compose で frontend/backend を起動します。
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build frontend backend
 ```
+
+サービス名を指定せずに `docker compose up` を実行すると、`backend-dev` も build・起動の対象になります。`backend-dev` は `entrypoint: [""]` とイメージ既定の `CMD`（`/bin/sh`）の組み合わせのため、起動してすぐ終了します。
 
 | URL | 用途 |
 | --- | --- |

@@ -33,16 +33,20 @@ go test ./...
 - `whisperLangMatches` が言語名（`japanese` など）と ISO コード（`ja` など）の両方で選択言語と照合できること（`TestWhisperLangMatches`）
 - `callWhisper` が `whisper-1` と `gpt-4o-transcribe` の正常系、非 200、invalid JSON、transport error を扱うこと（`TestCallWhisper_*` 5 件）
 - `callOpenAI` が transport error、非 200、invalid JSON、空 output、空 content、正常系を扱うこと
-- `/api/interpret` が method、API key 未設定、invalid multipart、`audio` なし、`myLanguage` / `theirLanguage` の不正と空 ID、言語判定エラー、判定言語が空、`language_mismatch`、文字起こしエラー、翻訳エラー、翻訳結果が JSON でない場合、`myLanguage` / `theirLanguage` それぞれに一致した場合の正常系、英語自己紹介名を扱うこと（`TestInterpretHandler_*` 17 件）
+- `/api/interpret` が method、API key 未設定、invalid multipart、`audio` なし、`myLanguage` / `theirLanguage` の不正と空 ID、言語判定エラー、判定言語が空、`language_mismatch`、文字起こしエラー、翻訳エラー、`myLanguage` / `theirLanguage` それぞれに一致した場合の正常系を扱うこと
+- `/api/interpret` が OpenAI のプレーンテキストの翻訳結果（JSON でない文字列）をそのまま `translatedText` として受け付け、HTTP 200 を返すこと（`TestInterpretHandler_InvalidTranslationJSON`）
 - `/api/interpret` の transcript 経路で、翻訳 prompt が speech recognition error の補正や固有名詞の生成を禁止する文言を含むこと（`TestInterpretHandler_TranscriptPath_PromptForbidsSpeechCorrection`）
+- `/api/translate`（`en` と `ja` を選択）と `/api/interpret`（`en` から `ja` への翻訳）で、英語の自己紹介に続く名前が placeholder にならず、そのまま OpenAI への翻訳 prompt に含まれること（`TestTranslateHandler_EnglishIntroName`、`TestInterpretHandler_EnglishIntroName`）
 - `/api/translate` が method、API key 未設定、invalid JSON、空 text、`languages` 不足、OpenAI error、invalid translation JSON、`language_mismatch`、正常系を扱うこと
 - `/api/translate` の翻訳 prompt が speech recognition error や固有名詞の過剰補正を禁止する文言を含むこと
-- 固有名詞保護で博多、博多駅、有田シン、ドン・キホーテなどが placeholder 化され、翻訳結果と `ttsText` に復元されること
+- 固有名詞保護で「博多駅」の「博多」、「有田シン」（姓と短いカタカナの名を 1 つの placeholder にまとめる）、「ドン・キホーテ」が placeholder 化され、翻訳結果と `ttsText` にローマ字で復元されること。「博多駅」の「駅」は placeholder にならず、OpenAI が翻訳します
 - placeholder が翻訳時に欠落した場合、1 回 retry して成功または 502 になること
 - placeholder がバックトランスレーション時に欠落した場合、retry すること
 - 英語自己紹介名の抽出条件と intro pattern 判定
 - `/api/tts` が method、API key 未設定、invalid JSON、空 text、OpenAI error、非 200、正常系を扱うこと
 - `callOpenAITTS` が正常系、transport error、非 200 を扱うこと
+
+`TestInterpretHandler_` で始まるテスト関数は、`TestInterpretHandler_TranscriptPath_PromptForbidsSpeechCorrection` と `TestInterpretHandler_EnglishIntroName` を含めて 18 件です。
 
 バックトランスレーションは `/api/interpret` と `/api/translate` の中で翻訳後に別 OpenAI call として実行されます。テストでは mock transport の call count や返却値を使い、言語判定 call、文字起こし call、翻訳 call、バックトランスレーション call を検証します。
 
@@ -67,10 +71,14 @@ npm test
 
 - `LANGUAGES` が 7 件で、各言語の `id`、`speechCode`、`label` が定義されていること
 - 言語 ID が一意であること
-- 言語選択画面が全言語カードを表示すること
+- 言語選択画面が全言語カードとアプリ名を表示し、下部のマイクボタンを表示しないこと
+- 選択中の言語カードは `aria-pressed="true"`、未選択の言語カードは `aria-pressed="false"` になること
 - 言語カードの選択、解除、3 言語目を追加しない制御
-- 2 言語目選択時の navigation callback
+- 2 言語目選択時の navigation callback（`onSelectionChange` の後に `onNavigate` を呼ぶこと、1 言語目の選択や選択解除では呼ばないこと）
+- 言語選択画面を unmount しても例外が発生しないこと
 - 国旗ボタンが選択言語ごとに表示されること
+- 選択言語が 2 未満の場合は国旗バーを表示しないこと
+- 通訳画面に下部のマイクボタンがないこと
 - `MediaRecorder` と `getUserMedia` の mock を使った、国旗タップによる録音開始・停止
 - 録音中の反対側の国旗の disabled、録音完了後の再有効化
 - 同じ国旗の再タップで録音を停止し、`/api/interpret` を呼ぶこと
@@ -78,6 +86,7 @@ npm test
 - `getUserMedia` が失敗した場合にマイクアクセスのエラーを表示すること
 - `/api/interpret` が 422 `language_mismatch` を返した場合に、選択言語ごとの言語不明メッセージを表示し、翻訳文を空にして `idle` に戻すこと（3 件）
 - 確定翻訳の成功時に `translatedText`、`backTranslation`、読み上げボタン、履歴を表示すること
+- 履歴は展開ボタンなしで全件を表示すること
 - `/api/interpret` が 500 を返した場合のエラー表示
 - 再翻訳で `/api/translate` が 422 `language_mismatch` を返した場合のエラー表示
 - 再翻訳で `/api/translate` が 500 を返した場合のエラー表示と、直前の翻訳文と読み上げボタンが残ること
@@ -165,7 +174,7 @@ Backend:
 - `go test ./...`
 - `go build -o /tmp/gotalk-backend .`
 
-coverage は Frontend だけを計測しています。`npm run test:coverage`（`vitest run --coverage`）が `@vitest/coverage-v8` で計測し、`frontend/vitest.config.ts` ではしきい値を設定していません。Backend は CI で `go test ./...` を実行するだけで、coverage は計測していません。
+coverage は Frontend だけを計測しています。`npm run test:coverage`（`vitest run --coverage`）が `@vitest/coverage-v8` で計測し、`frontend/vitest.config.ts` ではしきい値を設定していません。計測対象は `src/**/*.{ts,tsx}` で、`src/main.tsx`、`src/App.tsx`、`src/pages/TtsTestPage.tsx` は計測対象から除外しています。Backend は CI で `go test ./...` を実行するだけで、coverage は計測していません。
 
 ## 8. 関連ドキュメント
 

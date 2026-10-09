@@ -45,7 +45,9 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
 ```
 
-`OPENAI_MODEL` は Compose で `gpt-4o-mini` が default になっています。`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `docker-compose.yml` が backend に渡していないため、`.env` に書いても Docker Compose で起動した場合は反映されません。
+`.env` を読むのは Docker Compose の変数置換だけで、Backend 自身は `.env` を読み込みません（`backend/main.go` は `os.Getenv` で環境変数を読むだけです）。`docker-compose.yml` は `.env` の値のうち `OPENAI_API_KEY` と `OPENAI_MODEL` を `backend` と `backend-dev` に渡します。`OPENAI_MODEL` は未設定の場合、Compose で `gpt-4o-mini` が渡されます。
+
+`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `docker-compose.yml` が backend に渡していないため、`.env` に書いても、どの起動方法でも反映されません。これらはホスト上で Backend を直接実行する場合に、シェルの環境変数として渡したときだけ反映されます（6 章を参照）。`.env.example` ではこの 3 つをコメントアウトして記載しています。
 
 Image を build します。
 
@@ -53,17 +55,19 @@ Image を build します。
 docker compose build
 ```
 
-通常起動します。
+`frontend` と `backend` を起動します。
 
 ```bash
-docker compose up
+docker compose up frontend backend
 ```
 
 background で起動する場合は次を使います。
 
 ```bash
-docker compose up -d
+docker compose up -d frontend backend
 ```
+
+サービス名を指定せずに `docker compose up` を実行すると、`backend-dev` も build・起動の対象になります。`backend-dev` は `entrypoint: [""]` とイメージ既定の `CMD`（`/bin/sh`）の組み合わせのため、起動してすぐ終了します。`frontend` と `backend` だけを起動したい場合は、上のようにサービス名を指定します。
 
 ## 4. 起動方法
 
@@ -208,7 +212,23 @@ go test ./...
 go build -o /tmp/gotalk-backend .
 ```
 
-Backend は `:8080` で HTTP server を起動します。`OPENAI_API_KEY`、`OPENAI_MODEL`、`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL`、`DEBUG_TRANSLATION` は `backend/main.go` で参照されます。
+Backend は `:8080` で HTTP server を起動します。`OPENAI_API_KEY`、`OPENAI_MODEL`、`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL`、`DEBUG_TRANSLATION` は `backend/main.go` で `os.Getenv` により参照されます。
+
+Backend は `.env` を読み込まないため、ホスト上で Backend を起動する場合は、必要な環境変数をシェルで渡します。
+
+```bash
+cd backend
+export OPENAI_API_KEY=sk-...
+# 必要に応じて設定します（未設定時は Backend の既定値を使います）
+export OPENAI_MODEL=gpt-4o-mini
+export OPENAI_TTS_MODEL=gpt-4o-mini-tts
+export OPENAI_TTS_VOICE=marin
+export WHISPER_MODEL=gpt-4o-transcribe
+export DEBUG_TRANSLATION=true
+go run .
+```
+
+`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` を反映できるのは、この方法で起動した場合だけです。`DEBUG_TRANSLATION` は `true` のときだけ翻訳の debug log を出力し、未設定のときは出力しません。
 
 ## 7. Frontend 開発
 

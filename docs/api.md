@@ -159,7 +159,7 @@ Whisper 経路では `speaker` は使いません。Whisper 経路の処理は�
 2. 判定言語を `whisperLangMatches` で選択言語と照合する。`whisperLangMatches` は `japanese` などの言語名と `ja` などの ISO コードの両方に対応し、`zh` は `zh-CN`、`zh-TW` に一致する
 3. `WHISPER_MODEL`（未設定時は `gpt-4o-transcribe`）に音声を送り、文字起こしする。このとき翻訳元言語 ID の `-` より前の部分（`zh-CN` なら `zh`）を `language` として送り、言語別のプロンプト（`whisperPrompts`）を `prompt` として送る。失敗した場合は HTTP 502 `transcription failed` を返す
 
-どちらの経路でも、翻訳元と翻訳先が決まった後は、翻訳 prompt で翻訳結果のテキストだけを返すよう指示して翻訳し、続けて別 prompt でバックトランスレーションを実行します。通常経路の `ttsText` は `translatedText` と同じです。
+transcript 経路と Whisper 経路のどちらでも、翻訳元と翻訳先が決まった後に固有名詞保護の適用条件を判定します。固有名詞保護を使わない場合（この文書では「保護なし経路」と呼びます）は、翻訳 prompt で翻訳結果のテキストだけを返すよう指示して翻訳し、続けて別 prompt でバックトランスレーションを実行します。保護なし経路の `ttsText` は `translatedText` と同じです。
 
 ### 固有名詞保護との関係
 
@@ -168,7 +168,9 @@ Whisper 経路では `speaker` は使いません。Whisper 経路の処理は�
 - 翻訳元言語が `ja` で、原文に日本語文字が含まれる場合
 - 翻訳先言語が `ja` 以外で、原文に英語自己紹介パターンが含まれる場合
 
-この条件は `/api/translate` の条件とは異なります。保護経路の動作（プレースホルダ化、検証、リトライ、フォールバック）は `/api/translate` と同じです。詳細は [proper-noun-protection.md](proper-noun-protection.md) を参照してください。
+「日本語文字」は、ひらがな、カタカナ、CJK 統合漢字、CJK Extension A のいずれかです（`hasJapaneseChars`）。漢字だけの文も日本語文字を含むと判定されます。
+
+この条件は `/api/translate` の条件とは異なります。保護経路のプレースホルダ化、検証、リトライは `/api/translate` と同じです。固有名詞が 1 件も抽出されなかった場合や Kagome tokenizer の初期化・抽出に失敗した場合に保護なし経路へ進む点も同じですが、進んだ後の処理が異なります。`/api/interpret` は決めた翻訳方向のまま翻訳だけを行い、`language_mismatch` は返しません。`/api/translate` は OpenAI Responses API に翻訳元を判定させるため、`language_mismatch` を返すことがあります。詳細は [proper-noun-protection.md](proper-noun-protection.md) を参照してください。
 
 ## 6. POST /api/translate
 
@@ -229,13 +231,18 @@ Response 例:
 
 `/api/translate` は request で翻訳元を受け取りません。Backend は実行経路に応じて翻訳元を決めます。
 
-| 経路 | 翻訳元の決定 |
-| --- | --- |
-| 固有名詞保護経路で入力に日本語文字を含む | `ja` を翻訳元にする |
-| 固有名詞保護経路で日本語文字を含まず自己紹介パターンを含む | 非日本語側を翻訳元にする。選択言語に `ja` がない場合は `languages[0]` を翻訳元にする |
-| 通常経路 | OpenAI Responses API の JSON 応答から `sourceLanguage` と `targetLanguage` を取得する |
+| 経路 | 条件 | 翻訳元と翻訳先 |
+| --- | --- | --- |
+| 保護経路 | 選択言語に `ja` があり、入力に日本語文字を含む | `ja` を翻訳元、もう一方を翻訳先にする |
+| 保護経路 | 選択言語に `ja` がなく、入力に英語自己紹介パターンと日本語文字を含む | `languages[1]` を翻訳元、`languages[0]` を翻訳先にする |
+| 保護経路 | 選択言語に `ja` がなく、入力に英語自己紹介パターンを含み、日本語文字を含まない | `languages[0]` を翻訳元、`languages[1]` を翻訳先にする |
+| 保護なし経路 | 上記以外、または保護経路で固有名詞が 1 件も抽出されなかった場合や Kagome tokenizer の初期化・抽出に失敗した場合 | OpenAI Responses API の JSON 応答の `sourceLanguage` を翻訳元にし、`lang0`、`lang1` のうち翻訳元でない方を翻訳先にする |
 
-通常経路で OpenAI の判定結果が `unknown`、または選択済み 2 言語のどちらでもない場合は HTTP 422 で `language_mismatch` を返します。
+保護経路の行は、固有名詞が 1 件以上抽出された場合だけに当てはまります。選択言語に `ja` がある場合、保護経路に入るには入力に日本語文字が必要なため、英語自己紹介パターンだけでは保護経路に入りません。
+
+「日本語文字」は、ひらがな、カタカナ、CJK 統合漢字、CJK Extension A のいずれかです（`hasJapaneseChars`）。漢字だけの文も日本語文字を含むと判定されます。たとえば `ja` と `zh-CN` を選択して中国語の文を送り、固有名詞が 1 件以上抽出された場合は、保護経路で `ja` が翻訳元、`zh-CN` が翻訳先になります。この場合は OpenAI による言語判定を行わないため、`language_mismatch` は返りません。
+
+保護なし経路では、OpenAI Responses API の JSON 応答の `targetLanguage` はログに出力するだけで、翻訳先の決定には使いません。OpenAI の判定した `sourceLanguage` が `unknown`、または選択済み 2 言語のどちらでもない場合は HTTP 422 で `language_mismatch` を返します。
 
 ### languages
 
@@ -243,7 +250,7 @@ Response 例:
 
 ### translatedText
 
-`translatedText` は Frontend が翻訳カードに表示する文字列です。固有名詞保護が有効な場合は、翻訳先言語 ID に合わせてプレースホルダ復元した文字列になります。通常経路では OpenAI Responses API の翻訳結果から外側の引用符を除去した文字列になります。
+`translatedText` は Frontend が翻訳カードに表示する文字列です。固有名詞保護が有効な場合は、翻訳先言語 ID に合わせてプレースホルダ復元した文字列になります。保護なし経路では OpenAI Responses API の翻訳結果から外側の引用符を除去した文字列になります。
 
 ### backTranslation
 
@@ -251,7 +258,7 @@ Response 例:
 
 ### ttsText
 
-`ttsText` は Frontend が読み上げ時に `/api/tts` へ送る文字列です。通常経路では `translatedText` と同じです。固有名詞保護が有効な場合は、翻訳結果の raw text を TTS 用に復元した文字列になります。
+`ttsText` は Frontend が読み上げ時に `/api/tts` へ送る文字列です。保護なし経路では `translatedText` と同じです。固有名詞保護が有効な場合は、翻訳結果の raw text を TTS 用に復元した文字列になります。
 
 ### 固有名詞保護との関係
 
@@ -260,9 +267,11 @@ Response 例:
 - 選択言語のどちらかが `ja` で、入力に日本語文字が含まれる場合
 - 選択言語のどちらも `ja` ではなく、英語自己紹介パターンを含む場合
 
+日本語文字には CJK 統合漢字も含まれるため、中国語の文もこの条件に当てはまることがあります（「翻訳方向の決定」を参照）。
+
 保護経路では、固有名詞を `__GT_PROPN_NNN__` 形式のプレースホルダに置き換えて OpenAI Responses API に渡します。翻訳結果とバックトランスレーション結果の両方でプレースホルダを検証し、必要に応じて各段階で 1 回だけリトライします。
 
-固有名詞が抽出されなかった場合、または Kagome tokenizer の初期化・抽出に失敗した場合は、通常翻訳へ進みます。プレースホルダ検証が再試行後も失敗した場合は HTTP 502 で `proper_noun_protection_failed` を返します。
+固有名詞が抽出されなかった場合、または Kagome tokenizer の初期化・抽出に失敗した場合は、保護なし経路へ進みます。プレースホルダ検証が再試行後も失敗した場合は HTTP 502 で `proper_noun_protection_failed` を返します。
 
 ## 7. POST /api/tts
 
@@ -333,7 +342,7 @@ OpenAI Audio Speech API の呼び出しに失敗した場合は HTTP 502 で `tt
 | `languages` が 2 件未満 | 400 | `{"error":"two languages are required"}` |
 | OpenAI Responses API 呼び出し失敗 | 502 | `{"error":"translation failed"}` |
 | OpenAI の JSON 応答 parse 失敗 | 502 | `{"error":"translation failed"}` |
-| 通常経路で翻訳元言語が候補外または `unknown` | 422 | `{"error":"language_mismatch"}` |
+| 保護なし経路で翻訳元言語が候補外または `unknown` | 422 | `{"error":"language_mismatch"}` |
 | 固有名詞保護のプレースホルダ検証が再試行後も失敗 | 502 | `{"error":"proper_noun_protection_failed"}` |
 
 `POST` 以外の 405 は `http.Error` による応答です。それ以外の表内の JSON error は `writeError` による応答です。
@@ -363,7 +372,7 @@ Frontend の API 呼び出しは `frontend/src/pages/InterpreterPage.tsx` に実
 | 原文編集後の再翻訳 | `callTranslateApi` | `POST /api/translate` | `text`、`languages` | 30 秒 |
 | TTS 再生 | `handleSpeak` | `POST /api/tts` | `text: ttsText` | なし |
 
-確定翻訳は、録音を止めたときに `MediaRecorder` の `onstop` から `callInterpretApi(blob)` で実行されます。Frontend はタップされた国旗の言語を `myLanguage` と `speaker`、もう一方の言語を `theirLanguage` として送ります。録音中に `SpeechRecognition` の認識テキストが得られていれば `transcript` として添えます。成功レスポンスから `translatedText`、`backTranslation`、`ttsText` を state に保存し、`transcript` を送らなかった場合は `text` を原文として表示します。`ttsText` がない場合は `translatedText` を読み上げ用テキストとして使います。
+確定翻訳は、録音を止めたときに `MediaRecorder` の `onstop` から `callInterpretApi(blob)` で実行されます。Frontend はタップされた国旗の言語を `myLanguage` と `speaker`、もう一方の言語を `theirLanguage` として送ります。録音中に `SpeechRecognition` の認識テキストが得られていれば `transcript` として添えます。成功レスポンスから `translatedText`、`backTranslation`、`ttsText` を state に保存します。録音中に `SpeechRecognition` の `onresult` が一度も呼ばれなかった場合（`hasLiveTranscriptRef.current` が `false`）は、`text` を原文として表示します。`onresult` は呼ばれたが認識テキストが空だった場合は、`transcript` を送らず、`text` も原文として表示しません。`ttsText` がない場合は `translatedText` を読み上げ用テキストとして使います。
 
 リアルタイム翻訳は録音中に `recognizedText` の変更に対して 800ms のデバウンスで実行されます。成功し、`translatedText` が存在し、`sourceLanguage` が `unknown` でない場合に `liveTranslatedText` を更新します。リアルタイム翻訳中の abort や network error は UI エラーとして表示しません。
 

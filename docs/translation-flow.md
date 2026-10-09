@@ -76,7 +76,7 @@ Frontend の翻訳処理は `frontend/src/pages/InterpreterPage.tsx` に実装�
 | `speaker` | タップされた国旗の言語 ID |
 | `transcript` | `SpeechRecognition` の認識テキスト。認識テキストが得られた場合だけ送信 |
 
-レスポンスから `translatedText`、`backTranslation`、`ttsText` を state に保存し、履歴には原文、翻訳文、バックトランスレーション、`sourceLanguage`、`targetLanguage` を保存します。`transcript` を送らなかった場合は、レスポンスの `text` を原文として表示します。レスポンスの `ttsText` がない場合は `translatedText` を読み上げ用テキストとして使います。タイムアウトは 60 秒です。
+レスポンスから `translatedText`、`backTranslation`、`ttsText` を state に保存し、履歴には原文、翻訳文、バックトランスレーション、`sourceLanguage`、`targetLanguage` を保存します。録音中に `SpeechRecognition` の `onresult` が一度も呼ばれなかった場合（`hasLiveTranscriptRef.current` が `false`）は、レスポンスの `text` を原文として表示します。`onresult` は呼ばれたが認識テキストが空だった場合は、`transcript` を送らず、`text` も原文として表示しません。レスポンスの `ttsText` がない場合は `translatedText` を読み上げ用テキストとして使います。タイムアウトは 60 秒です。
 
 原文を編集して確定した場合、`handleEditConfirm` は `callTranslateApi(trimmed)` を呼び出します。`callTranslateApi` は `/api/translate` に `text` と `languages` を送信し、成功時は `/api/interpret` と同様に state と履歴を更新します。タイムアウトは 30 秒です。
 
@@ -96,7 +96,7 @@ Frontend の翻訳処理は `frontend/src/pages/InterpreterPage.tsx` に実装�
 
 `transcript` がない場合、Backend は録音音声を `whisper-1` に送って言語を判定し、判定言語を `myLanguage`、`theirLanguage` の順に照合して翻訳元と翻訳先を決めます。どちらにも一致しない場合は `language_mismatch` を返します。その後、`WHISPER_MODEL`（未設定時は `gpt-4o-transcribe`）に翻訳元の言語コードと言語別のプロンプトを付けて音声を送り、文字起こし結果を原文として翻訳します。この経路では `speaker` は使いません。
 
-翻訳方向が決まった後、固有名詞保護の適用条件に合う場合は保護経路で翻訳します。それ以外は、翻訳 prompt で翻訳結果のテキストだけを返すよう指示して翻訳し、続けて別 prompt でバックトランスレーションを実行します。通常経路の `ttsText` は `translatedText` です。
+翻訳方向が決まった後、固有名詞保護の適用条件に合う場合は保護経路で翻訳します。固有名詞保護を使わない場合（この文書では「保護なし経路」と呼びます）は、決めた翻訳方向のまま、翻訳 prompt で翻訳結果のテキストだけを返すよう指示して翻訳し、続けて別 prompt でバックトランスレーションを実行します。保護経路で固有名詞が 1 件も抽出されなかった場合や Kagome tokenizer の初期化・抽出に失敗した場合も、保護なし経路に進みます。`/api/interpret` の保護なし経路は OpenAI に言語を判定させないため、`language_mismatch` は返しません。保護なし経路の `ttsText` は `translatedText` です。
 
 レスポンスは `text`、`sourceLanguage`、`targetLanguage`、`translatedText`、`backTranslation`、`ttsText` を JSON で返します。
 
@@ -106,11 +106,18 @@ Frontend の翻訳処理は `frontend/src/pages/InterpreterPage.tsx` に実装�
 
 `/api/translate` は `POST` のみ受け付けます。`OPENAI_API_KEY` が未設定の場合は `translation service unavailable` を返します。request body の JSON decode に失敗した場合は `invalid request body`、`text` が空白のみの場合は `text is required`、`languages` が 2 件未満の場合は `two languages are required` を返します。
 
-`/api/translate` は request で翻訳元を受け取らず、実行経路によって翻訳方向を決めます。固有名詞保護を使う経路では、日本語文字を含む場合は日本語を翻訳元にし、日本語文字を含まない自己紹介パターンの場合は非日本語側を翻訳元にします。通常経路では OpenAI Responses API に候補 2 言語から `sourceLanguage` と `targetLanguage` を判定させ、JSON 応答から `sourceLanguage`、`targetLanguage`、`translatedText` を取り出します。判定結果が `unknown` または候補外の場合は `language_mismatch` を返します。
+`/api/translate` は request で翻訳元を受け取らず、実行経路によって翻訳方向を決めます。保護経路（固有名詞が 1 件以上抽出された場合）では、次のように決めます。
 
-固有名詞保護を使う場合、Backend は入力テキスト内の保護対象をプレースホルダ化し、OpenAI Responses API に翻訳を依頼します。その後、翻訳結果に対してバックトランスレーションを実行し、表示用の `translatedText` / `backTranslation` と読み上げ用の `ttsText` を作成します。保護処理を適用できない場合は通常翻訳へ進むことがあります。
+- 選択言語に `ja` がある場合：保護経路に入るには入力に日本語文字が必要なため、常に `ja` が翻訳元、もう一方が翻訳先になる
+- 選択言語に `ja` がなく、英語自己紹介パターンで保護経路に入った場合：入力に日本語文字を含めば `languages[1]`、含まなければ `languages[0]` が翻訳元になり、もう一方が翻訳先になる
 
-通常経路では翻訳後に別 prompt でバックトランスレーションを行います。通常経路の `ttsText` は `translatedText` です。
+「日本語文字」は、ひらがな、カタカナ、CJK 統合漢字、CJK Extension A のいずれかです（`hasJapaneseChars`）。漢字だけの文も日本語文字を含むと判定されるため、たとえば `ja` と `zh-CN` を選択して中国語の文を送り、固有名詞が 1 件以上抽出された場合は、`ja` が翻訳元、`zh-CN` が翻訳先になります。この場合は OpenAI による言語判定を行わないため、`language_mismatch` は返りません。
+
+保護なし経路では、OpenAI Responses API に候補 2 言語から翻訳元を判定させ、JSON 応答から `sourceLanguage` と `translatedText` を取り出します。翻訳先は、`languages` の先頭 2 件のうち翻訳元でない方です。JSON 応答の `targetLanguage` はログに出力するだけで使いません。判定結果が `unknown` または候補外の場合は `language_mismatch` を返します。
+
+固有名詞保護を使う場合、Backend は入力テキスト内の保護対象をプレースホルダ化し、OpenAI Responses API に翻訳を依頼します。その後、翻訳結果に対してバックトランスレーションを実行し、表示用の `translatedText` / `backTranslation` と読み上げ用の `ttsText` を作成します。固有名詞が 1 件も抽出されなかった場合や Kagome tokenizer の初期化・抽出に失敗した場合は、保護なし経路に進みます。
+
+保護なし経路では翻訳後に別 prompt でバックトランスレーションを行います。保護なし経路の `ttsText` は `translatedText` です。
 
 レスポンスは `sourceLanguage`、`targetLanguage`、`translatedText`、`backTranslation`、`ttsText` を JSON で返します。
 
@@ -120,9 +127,9 @@ Frontend の翻訳処理は `frontend/src/pages/InterpreterPage.tsx` に実装�
 
 | 経路 | API | 翻訳方向の決め方 |
 | --- | --- | --- |
-| 録音終了後の確定翻訳（認識テキストあり） | `/api/interpret` | `speaker`（タップされた国旗の言語）を翻訳元にする |
-| 録音終了後の確定翻訳（認識テキストなし） | `/api/interpret` | `whisper-1` の判定言語が一致した選択言語を翻訳元にする |
-| 録音中のリアルタイム翻訳 | `/api/translate` | 固有名詞保護経路では入力文字種と選択言語から、通常経路では OpenAI Responses API の判定から決める |
+| 録音終了後の確定翻訳（`transcript` あり） | `/api/interpret` | `speaker`（タップされた国旗の言語）を翻訳元にする |
+| 録音終了後の確定翻訳（`transcript` なし） | `/api/interpret` | `whisper-1` の判定言語が一致した選択言語を翻訳元にする |
+| 録音中のリアルタイム翻訳 | `/api/translate` | 保護経路では入力文字種と選択言語から、保護なし経路では OpenAI Responses API が判定した翻訳元から決める |
 | 原文編集後の再翻訳 | `/api/translate` | リアルタイム翻訳と同じ |
 
 ## 6. 固有名詞保護
@@ -143,7 +150,7 @@ Backend は条件に合う場合、固有名詞をプレースホルダに置き
 
 ## 8. TTS
 
-`ttsText` は読み上げに使うテキストです。通常経路では `translatedText` と同じ文字列です。固有名詞保護が有効な場合は、翻訳結果のプレースホルダを読み上げ向けに復元した文字列になります。
+`ttsText` は読み上げに使うテキストです。保護なし経路では `translatedText` と同じ文字列です。固有名詞保護が有効な場合は、翻訳結果のプレースホルダを読み上げ向けに復元した文字列になります。
 
 Frontend は読み上げボタンが押されたときに `/api/tts` へ `{ text: ttsText }` を送信します。Backend の `/api/tts` は `POST` のみ受け付け、`OPENAI_API_KEY`、TTS model、voice を使って OpenAI Audio Speech API を呼び出します。TTS model は `OPENAI_TTS_MODEL`、未設定時は `gpt-4o-mini-tts` です。voice は `OPENAI_TTS_VOICE`、未設定時は `marin` です。
 

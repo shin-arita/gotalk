@@ -101,6 +101,8 @@ cron:
 9. `/home/ubuntu/gotalk` で `docker compose up -d` を実行する
 10. `docker compose ps` と Backend health check を確認する
 
+手順 9 の `docker compose up -d` はサービス名を指定していないため、`backend-dev` も起動の対象になります。`backend-dev` は `entrypoint: [""]` とイメージ既定の `CMD`（`/bin/sh`）の組み合わせのため、起動してすぐ終了します。
+
 Backend health check:
 
 ```bash

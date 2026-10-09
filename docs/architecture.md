@@ -77,7 +77,7 @@ Backend は Go の単一 HTTP サーバーとして動作し、OpenAI API キー
 - OpenAI Audio Transcriptions API、Responses API、Audio Speech API を呼び出す
 - 必要な場合に固有名詞保護を適用し、OpenAI への入力ではプレースホルダを保持させる
 - `/api/interpret` では、`transcript` がある場合は `speaker` に一致する言語を翻訳元にする。`transcript` がない場合は `whisper-1` で判定した言語を選択言語と照合して翻訳元を決め、`WHISPER_MODEL` で文字起こしする
-- `/api/translate` では、固有名詞保護を適用する経路では入力文字種や名前表現と選択言語から翻訳方向を決め、通常経路では OpenAI Responses API で 2 言語候補から翻訳元を判定する
+- `/api/translate` では、固有名詞保護を適用する経路（保護経路）では入力文字種や名前表現と選択言語から翻訳方向を決め、固有名詞保護を使わない経路（保護なし経路）では OpenAI Responses API で 2 言語候補から翻訳元を判定する
 - `language_mismatch`、`translation failed`、`tts failed` などのエラーを JSON で返す
 
 Backend の HTTP client timeout は `main()` で 120 秒に設定されています。
@@ -134,7 +134,7 @@ sequenceDiagram
     WH-->>BE: transcribed text
   end
   BE->>BE: 固有名詞保護の適用判定
-  alt protection applies
+  alt protection applies and proper nouns extracted
     BE->>PN: extract proper nouns and replace placeholders
     PN-->>BE: placeholder text + entries
     BE->>OA: translate placeholder text
@@ -144,7 +144,7 @@ sequenceDiagram
     OA-->>BE: back-translation raw text
     BE->>PN: validate placeholders, retry once if needed
     BE->>PN: restore placeholders for display and TTS
-  else normal path
+  else no protection (incl. 0 proper nouns / Kagome failure)
     BE->>OA: translate text
     OA-->>BE: translated text
     BE->>OA: back-translate translated text
@@ -155,7 +155,7 @@ sequenceDiagram
 
 `/api/interpret` は、`transcript` がある場合は `speaker` に一致する言語を翻訳元、もう一方を翻訳先にします。`transcript` がない場合は `whisper-1` の判定言語が `myLanguage`、`theirLanguage` のどちらに一致するかで翻訳方向を決め、どちらにも一致しない場合は `language_mismatch` を返します。
 
-`/api/translate` は、録音中のリアルタイム翻訳と原文編集後の再翻訳で使います。固有名詞保護を適用する経路では入力文字種や名前表現と選択言語から翻訳方向を決め、通常経路では OpenAI Responses API に 2 言語候補から翻訳元を判定させます。通常経路で候補外または判定不能の場合は `language_mismatch` を返します。
+`/api/translate` は、録音中のリアルタイム翻訳と原文編集後の再翻訳で使います。保護経路では入力文字種や名前表現と選択言語から翻訳方向を決め、保護なし経路では OpenAI Responses API に 2 言語候補から翻訳元を判定させます。保護なし経路で候補外または判定不能の場合は `language_mismatch` を返します。`/api/interpret` の保護なし経路は決めた翻訳方向のまま翻訳するため、`/api/interpret` が `language_mismatch` を返すのは Whisper 経路の言語照合で一致しなかった場合だけです。翻訳方向の詳細は [api.md](api.md) を参照してください。
 
 ## 8. 音声処理フロー
 
@@ -201,7 +201,7 @@ sequenceDiagram
 - 日本語の固有名詞や、条件に合う英語の名前表現を検出する
 - 検出した固有名詞をプレースホルダに置き換えて OpenAI に渡す
 - 翻訳後にプレースホルダを表示用・TTS 用のテキストへ復元する
-- 保護を適用できない場合は通常の翻訳処理へフォールバックする
+- 固有名詞が抽出されない場合や Kagome を使えない場合は、固有名詞保護を使わない翻訳（保護なし経路）へフォールバックする
 
 保護を適用する条件は `/api/interpret` と `/api/translate` で異なります。プレースホルダの形式、適用条件、検証、リトライ、復元ルールの詳細は [proper-noun-protection.md](proper-noun-protection.md) にまとめています。
 
@@ -229,10 +229,10 @@ GitHub Actions は以下の workflow で構成されています。
 | Workflow | Trigger | 概要 |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | `push` to `main`, `pull_request` | Frontend lint / test / coverage / build、Backend vet / test / build |
-| `.github/workflows/cd.yml` | `push` to `main` | `production` Environment 承認後、SSH で VPS に入り `git pull --ff-only` と `docker compose up -d --build` を実行 |
+| `.github/workflows/cd.yml` | `push` to `main` | SSH で VPS に入り `git pull --ff-only` と `docker compose up -d --build` を実行。`production` Environment を指定しており、Required reviewers が設定されている場合は承認後に実行 |
 | `.github/workflows/codex-review-request.yml` | PR comment, PR synchronize | `@codex review` コメントと Bot 結果コメントをもとに `review-pending` / `merge-ready` / `merge-blocked` ラベルを管理 |
 
-CI の実装では Frontend は Node.js 22、Backend は GitHub Actions 上で Go 1.22 をセットアップしています。Docker build では Backend Dockerfile が `golang:1.24-alpine` を使用します。
+CI の実装では Frontend は Node.js 22 をセットアップしています。Backend は `setup-go` で Go 1.22 を指定していますが、`backend/go.mod` の `go` ディレクティブは `1.24.0` のため、toolchain の自動切り替えが有効な場合は 1.24 系の toolchain が使われる可能性があります。CD は CI の完了を条件にしていないため、`main` への push では CI と CD が並行して動きます。Docker build では Backend Dockerfile が `golang:1.24-alpine` を使用します。
 
 CI/CD の詳細は [CI/CD](ci-cd.md) を参照してください。
 
