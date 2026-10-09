@@ -78,7 +78,7 @@ flowchart LR
 - Frontend Unit Test による主要画面、ユーザー操作、UI ロジックの検証
 - Codex Review による差分レビューと品質リスクの確認
 
-テスト方針と現在の coverage は [docs/testing.md](docs/testing.md) を参照してください。CI/CD の詳細は [docs/ci-cd.md](docs/ci-cd.md) にまとめています。
+テスト方針とテスト対象は [docs/testing.md](docs/testing.md) を参照してください。coverage は Frontend だけを CI の `npm run test:coverage` で計測しており、しきい値は設定していません。Backend の coverage は CI では計測していません。CI/CD の詳細は [docs/ci-cd.md](docs/ci-cd.md) にまとめています。
 
 ### Codex Review ラベル運用
 

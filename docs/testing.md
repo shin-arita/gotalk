@@ -165,6 +165,8 @@ Backend:
 - `go test ./...`
 - `go build -o /tmp/gotalk-backend .`
 
+coverage は Frontend だけを計測しています。`npm run test:coverage`（`vitest run --coverage`）が `@vitest/coverage-v8` で計測し、`frontend/vitest.config.ts` ではしきい値を設定していません。Backend は CI で `go test ./...` を実行するだけで、coverage は計測していません。
+
 ## 8. 関連ドキュメント
 
 - [architecture.md](architecture.md)
