@@ -106,7 +106,7 @@ docker compose ps
 
 | ファイル名 | Trigger | 役割 |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | `push` to `main`、`pull_request` | Frontend と Backend の lint / test / coverage / build |
+| `.github/workflows/ci.yml` | `push` to `main`、`pull_request` | Frontend の lint / test / coverage / build、Backend の vet / test / build |
 | `.github/workflows/cd.yml` | `push` to `main` | `production` Environment 承認後、VPS に SSH 接続して Docker Compose で deploy |
 | `.github/workflows/codex-review-request.yml` | `issue_comment` created、`pull_request` synchronize | `@codex review` request と Codex bot result に応じて PR label を更新 |
 
