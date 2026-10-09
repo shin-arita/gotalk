@@ -102,9 +102,9 @@ Backend の HTTP client timeout は `main()` で 120 秒に設定されていま
 | --- | --- | --- | --- | --- |
 | `frontend` | `gotalk-frontend` | `./frontend` | `5173:5173` | Vite dev server |
 | `backend` | `gotalk-backend` | `./backend` | `8080:8080` | Go API server |
-| `backend-dev` | なし | `./backend` + `Dockerfile.dev` | なし | backend 開発用コンテナ |
+| `backend-dev` | なし | `./backend` + `Dockerfile.dev` | なし | backend 開発用コンテナ（`profiles: ["dev"]`） |
 
-`frontend` は `VITE_BACKEND_URL=http://backend:8080` を持ち、Vite proxy 経由で backend service へ接続します。`backend` には `OPENAI_API_KEY`、`OPENAI_MODEL`、`DEBUG_TRANSLATION=true` が渡されます。`backend-dev` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます。
+`frontend` は `VITE_BACKEND_URL=http://backend:8080` を持ち、Vite proxy 経由で backend service へ接続します。`backend` には `OPENAI_API_KEY`、`OPENAI_MODEL`、`DEBUG_TRANSLATION=true` が渡されます。`backend-dev` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます。`backend-dev` は `profiles: ["dev"]` に属しているため、サービス名を指定しない `docker compose up` では起動せず、`docker compose run --rm backend-dev ...` で使います。
 
 Dockerfile の概要:
 
@@ -229,7 +229,7 @@ GitHub Actions は以下の workflow で構成されています。
 | Workflow | Trigger | 概要 |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | `push` to `main`, `pull_request` | Frontend lint / test / coverage / build、Backend vet / test / build |
-| `.github/workflows/cd.yml` | `push` to `main` | SSH で VPS に入り `git pull --ff-only` と `docker compose up -d --build` を実行。`production` Environment を指定しており、Required reviewers が設定されている場合は承認後に実行 |
+| `.github/workflows/cd.yml` | `push` to `main` | SSH で VPS に入り `git pull --ff-only` と `docker compose up -d --build` を実行（`frontend` と `backend` を build・起動）。`production` Environment を指定しており、Required reviewers が設定されている場合は承認後に実行 |
 | `.github/workflows/codex-review-request.yml` | PR comment, PR synchronize | `@codex review` コメントと Bot 結果コメントをもとに `review-pending` / `merge-ready` / `merge-blocked` ラベルを管理 |
 
 CI の実装では Frontend は Node.js 22 をセットアップしています。Backend は `setup-go` で Go 1.22 を指定していますが、`backend/go.mod` の `go` ディレクティブは `1.24.0` のため、toolchain の自動切り替えが有効な場合は 1.24 系の toolchain が使われる可能性があります。CD は CI の完了を条件にしていないため、`main` への push では CI と CD が並行して動きます。Docker build では Backend Dockerfile が `golang:1.24-alpine` を使用します。

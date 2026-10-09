@@ -56,7 +56,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-この `docker compose up -d --build` はサービス名を指定していないため、`backend-dev` も build と起動の対象になり、起動してすぐ終了します。詳細は [ci-cd.md](ci-cd.md) を参照してください。
+この `docker compose up -d --build` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを build・起動します。詳細は [ci-cd.md](ci-cd.md) を参照してください。
 
 ## 4. VPS
 
@@ -103,7 +103,7 @@ cron:
 9. `/home/ubuntu/gotalk` で `docker compose up -d` を実行する
 10. `docker compose ps` と Backend health check を確認する
 
-手順 9 の `docker compose up -d` はサービス名を指定していないため、`backend-dev` も起動の対象になります。`backend-dev` は `entrypoint: [""]` とイメージ既定の `CMD`（`/bin/sh`）の組み合わせのため、起動してすぐ終了します。
+手順 8 の `docker compose build` と手順 9 の `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを build・起動します。
 
 Backend health check:
 

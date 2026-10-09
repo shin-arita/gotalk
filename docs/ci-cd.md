@@ -103,7 +103,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-サービス名を指定しない `docker compose up` では、`backend-dev` も build・起動の対象になります。`backend-dev` は `entrypoint: [""]` とイメージ既定の `CMD`（`/bin/sh`）の組み合わせのため、起動してすぐ終了します。そのため deploy script の `docker compose up -d --build` でも、`backend-dev` は build された後、起動してすぐ終了します。
+deploy script の `docker compose up -d --build` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを build・起動します。
 
 ## 4. GitHub Actions
 

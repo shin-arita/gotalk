@@ -198,7 +198,7 @@ Docker Compose で frontend/backend を起動します。
 docker compose up -d --build frontend backend
 ```
 
-サービス名を指定せずに `docker compose up` を実行すると、`backend-dev` も build・起動の対象になります。`backend-dev` は `entrypoint: [""]` とイメージ既定の `CMD`（`/bin/sh`）の組み合わせのため、起動してすぐ終了します。
+`backend-dev` には `profiles: ["dev"]` が付いているため、サービス名を指定しない `docker compose up` でも build・起動の対象にならず、`frontend` と `backend` だけが起動します。`backend-dev` は `docker compose run --rm backend-dev ...` で使います（`--profile` の指定は不要です）。
 
 | URL | 用途 |
 | --- | --- |
