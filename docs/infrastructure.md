@@ -2,9 +2,9 @@
 
 ## 1. 概要
 
-GoTalk は VPS 上で Docker Compose により `frontend` と `backend` を起動します。GitHub Actions の CD workflow は `main` への push を trigger に起動し、`production` Environment の承認後、SSH で VPS に接続して repository を更新します。
+GoTalk は VPS 上で Docker Compose により `frontend` と `backend` を起動します。GitHub Actions の CD workflow は `main` への push を trigger に起動し、SSH で VPS に接続して repository を更新します。CD の deploy job は `production` Environment を指定しているため、GitHub 側で Required reviewers が設定されている場合は、承認されるまで deploy は実行されません。
 
-Backend は OpenAI API キーをサーバー側で扱い、OpenAI Responses API と OpenAI Audio Speech API へ outbound 接続します。Frontend は Backend の `/api` にリクエストし、Backend が翻訳、バックトランスレーション、TTS を実行します。
+Backend は OpenAI API キーをサーバー側で扱い、OpenAI Audio Transcriptions API、OpenAI Responses API、OpenAI Audio Speech API へ outbound 接続します。Frontend は Backend の `/api` にリクエストし、Backend が文字起こし、翻訳、バックトランスレーション、TTS を実行します。
 
 ## 2. サーバー構成
 
@@ -36,7 +36,7 @@ flowchart LR
   User[User Browser] -->|HTTPS / domain| Public[Public endpoint]
   Public --> Frontend[frontend<br/>gotalk-frontend<br/>5173]
   Frontend -->|/api proxy<br/>http://backend:8080| Backend[backend<br/>gotalk-backend<br/>8080]
-  Backend -->|HTTPS| OpenAI[OpenAI API<br/>Responses API / Audio Speech API]
+  Backend -->|HTTPS| OpenAI[OpenAI API<br/>Responses API / Audio Transcriptions API / Audio Speech API]
 
   subgraph VPS[VPS / Docker Compose]
     Frontend
@@ -80,20 +80,27 @@ docker compose ps
 
 `git pull --ff-only` で `main` の最新状態に更新し、`docker compose up -d --build` で image build と service 更新を行います。最後に `docker compose ps` で service 状態を表示します。
 
+サービス名を指定しない `docker compose up` では、`backend-dev` も build・起動の対象になります。`backend-dev` は `entrypoint: [""]` とイメージ既定の `CMD`（`/bin/sh`）の組み合わせのため、起動してすぐ終了します。そのため deploy script の `docker compose up -d --build` でも、`backend-dev` は build された後、起動してすぐ終了します。
+
 ## 5. 環境変数
 
 現在利用している環境変数は次のとおりです。
 
 | 環境変数 | 設定箇所 | 用途 | 未設定時 |
 | --- | --- | --- | --- |
-| `OPENAI_API_KEY` | `backend`, `backend-dev` | OpenAI API 呼び出し用 API key | Backend API で service unavailable 系の error |
-| `OPENAI_MODEL` | `backend`, `backend-dev` | 翻訳とバックトランスレーションに使う model | Compose では `gpt-4o-mini` |
-| `DEBUG_TRANSLATION` | `backend` | 翻訳 debug log の出力制御 | Compose では `true` |
-| `VITE_BACKEND_URL` | `frontend` | Vite proxy の Backend 接続先 | Compose では `http://backend:8080` |
-| `OPENAI_TTS_MODEL` | Backend 実装 | TTS model | `gpt-4o-mini-tts` |
-| `OPENAI_TTS_VOICE` | Backend 実装 | TTS voice | `marin` |
+| `OPENAI_API_KEY` | Compose が `backend`、`backend-dev` に `${OPENAI_API_KEY}` を渡す | Backend から OpenAI API を呼び出すための API key | `/api/tts`、`/api/interpret` は HTTP 500 `service unavailable`、`/api/translate` は HTTP 500 `translation service unavailable` を返す |
+| `OPENAI_MODEL` | Compose が `backend`、`backend-dev` に `${OPENAI_MODEL:-gpt-4o-mini}` を渡す（`.env` などで未設定なら `gpt-4o-mini`） | 翻訳とバックトランスレーションに使う model | `gpt-4o-mini` |
+| `DEBUG_TRANSLATION` | Compose が `backend` に `true` を渡す（`backend-dev` には渡さない） | 翻訳 debug log の出力制御。`true` のときだけ出力する | debug log を出力しない |
+| `VITE_BACKEND_URL` | Compose が `frontend` に `http://backend:8080` を渡す | Vite proxy の Backend 接続先 | `http://localhost:8080`（`frontend/vite.config.ts`） |
+| `OPENAI_TTS_MODEL` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | TTS model | `gpt-4o-mini-tts` |
+| `OPENAI_TTS_VOICE` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | TTS voice | `marin` |
+| `WHISPER_MODEL` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | `/api/interpret` で音声を文字起こしする model | `gpt-4o-transcribe` |
+
+「未設定時」の列は、アプリケーションが環境変数を受け取らなかったときの動作です。
 
 VPS 側の `.env` には少なくとも `OPENAI_API_KEY` を設定します。`OPENAI_MODEL` は `docker-compose.yml` で default が定義されています。
+
+`.env` を読むのは Docker Compose の変数置換だけで、Backend 自身は `.env` を読み込みません（`backend/main.go` は `os.Getenv` で環境変数を読むだけです）。`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `docker-compose.yml` が backend に渡していないため、`.env` に書いても、どの起動方法でも反映されず、Backend 実装の未設定時の default が使われます。これらはホスト上で Backend を直接実行する場合（開発時）に、シェルの環境変数として渡したときだけ反映されます（[development.md](development.md) を参照）。
 
 ```env
 OPENAI_API_KEY=sk-...

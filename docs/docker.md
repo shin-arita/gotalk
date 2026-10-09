@@ -24,18 +24,18 @@ flowchart LR
     BackendDev[backend-dev<br/>Go development container]
   end
 
-  OpenAI[OpenAI API<br/>Responses API / Audio Speech API]
+  OpenAI[OpenAI API<br/>Responses API / Audio Transcriptions API / Audio Speech API]
 
   Compose --> Frontend
   Compose --> Backend
   Compose --> BackendDev
 
   Frontend -->|VITE_BACKEND_URL=http://backend:8080<br/>/api proxy| Backend
-  Backend -->|translation / back translation / TTS| OpenAI
+  Backend -->|transcription / translation / back translation / TTS| OpenAI
   BackendDev -.->|manual go commands<br/>mounted ./backend| Backend
 ```
 
-`frontend` は `depends_on` で `backend` に依存します。Frontend から Backend への `/api` request は Vite proxy により `VITE_BACKEND_URL` または `http://localhost:8080` へ転送されます。Compose では `frontend` に `VITE_BACKEND_URL=http://backend:8080` を渡しています。
+`frontend` は `depends_on` で `backend` に依存します。Frontend から Backend への `/api` request は Vite proxy により `VITE_BACKEND_URL` へ転送され、`VITE_BACKEND_URL` が未設定の場合は `http://localhost:8080` へ転送されます（`frontend/vite.config.ts`）。Compose では `frontend` に `VITE_BACKEND_URL=http://backend:8080` を渡しています。
 
 ## 3. docker-compose 構成
 
@@ -79,7 +79,7 @@ volumes:
   - /app/node_modules
 ```
 
-`frontend` には `VITE_BACKEND_URL=http://backend:8080` が渡されます。Architecture に記載されているとおり、Vite の開発サーバーでは `/api` request を `VITE_BACKEND_URL` または `http://localhost:8080` に proxy します。
+`frontend` には `VITE_BACKEND_URL=http://backend:8080` が渡されます。`frontend/vite.config.ts` により、Vite の開発サーバーは `/api` request を `VITE_BACKEND_URL` に proxy し、未設定の場合は `http://localhost:8080` に proxy します。
 
 ## 5. backend
 
@@ -108,7 +108,7 @@ environment:
   - DEBUG_TRANSLATION=true
 ```
 
-Backend は OpenAI Responses API で翻訳とバックトランスレーションを行い、OpenAI Audio Speech API で TTS を行います。OpenAI API key は Backend 側の環境変数として扱われます。
+Backend は OpenAI Audio Transcriptions API で言語判定と文字起こしを行い、OpenAI Responses API で翻訳とバックトランスレーションを行い、OpenAI Audio Speech API で TTS を行います。OpenAI API key は Backend 側の環境変数として扱われます。
 
 ## 6. backend-dev
 
@@ -141,14 +141,17 @@ docker compose run --rm backend-dev go test ./...
 
 | 環境変数 | 設定箇所 | 用途 | 未設定時 |
 | --- | --- | --- | --- |
-| `OPENAI_API_KEY` | `backend`, `backend-dev` | Backend から OpenAI API を呼び出すための API key | Backend API で service unavailable 系の error |
-| `OPENAI_MODEL` | `backend`, `backend-dev` | 翻訳とバックトランスレーションに使う model | Compose では `gpt-4o-mini` |
-| `DEBUG_TRANSLATION` | `backend` | 翻訳 debug log の出力制御 | Compose では `true` |
-| `VITE_BACKEND_URL` | `frontend` | Vite proxy の Backend 接続先 | Architecture では `http://localhost:8080` が fallback として記載されている |
-| `OPENAI_TTS_MODEL` | Backend 実装 | TTS model | `gpt-4o-mini-tts` |
-| `OPENAI_TTS_VOICE` | Backend 実装 | TTS voice | `marin` |
+| `OPENAI_API_KEY` | Compose が `backend`、`backend-dev` に `${OPENAI_API_KEY}` を渡す | Backend から OpenAI API を呼び出すための API key | `/api/tts`、`/api/interpret` は HTTP 500 `service unavailable`、`/api/translate` は HTTP 500 `translation service unavailable` を返す |
+| `OPENAI_MODEL` | Compose が `backend`、`backend-dev` に `${OPENAI_MODEL:-gpt-4o-mini}` を渡す（`.env` などで未設定なら `gpt-4o-mini`） | 翻訳とバックトランスレーションに使う model | `gpt-4o-mini` |
+| `DEBUG_TRANSLATION` | Compose が `backend` に `true` を渡す（`backend-dev` には渡さない） | 翻訳 debug log の出力制御。`true` のときだけ出力する | debug log を出力しない |
+| `VITE_BACKEND_URL` | Compose が `frontend` に `http://backend:8080` を渡す | Vite proxy の Backend 接続先 | `http://localhost:8080`（`frontend/vite.config.ts`） |
+| `OPENAI_TTS_MODEL` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | TTS model | `gpt-4o-mini-tts` |
+| `OPENAI_TTS_VOICE` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | TTS voice | `marin` |
+| `WHISPER_MODEL` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | `/api/interpret` で音声を文字起こしする model | `gpt-4o-transcribe` |
 
-`OPENAI_TTS_MODEL` と `OPENAI_TTS_VOICE` は `docker-compose.yml` では定義されていません。Backend 実装では未設定時の default が使われます。
+「未設定時」の列は、アプリケーションが環境変数を受け取らなかったときの動作です。
+
+`.env` を読むのは Docker Compose の変数置換だけで、Backend 自身は `.env` を読み込みません（`backend/main.go` は `os.Getenv` で環境変数を読むだけです）。`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `docker-compose.yml` が backend に渡していないため、`.env` に書いても、どの起動方法でも反映されず、Backend 実装の未設定時の default が使われます。これらはホスト上で Backend を直接実行する場合に、シェルの環境変数として渡したときだけ反映されます（[development.md](development.md) を参照）。言語判定に使う `whisper-1` は Backend 実装で固定されており、環境変数では変更できません。
 
 ## 8. ネットワーク構成
 
@@ -183,10 +186,12 @@ Docker 開発環境の基本的な流れは次のとおりです。
 
 1. 必要な環境変数を shell または `.env` から Compose に渡す
 2. `docker compose build` で image を build する
-3. `docker compose up` で `frontend` と `backend` を起動する
+3. `docker compose up frontend backend` で `frontend` と `backend` を起動する
 4. `http://localhost:5173` で Frontend を確認する
 5. `http://localhost:8080/health` で Backend の health check を確認する
 6. Backend 開発用 command は `docker compose run --rm backend-dev ...` で実行する
+
+サービス名を指定しない `docker compose up` では、`backend-dev` も build・起動の対象になります。`backend-dev` は `entrypoint: [""]` とイメージ既定の `CMD`（`/bin/sh`）の組み合わせのため、起動してすぐ終了します。`frontend` と `backend` だけを起動したい場合は、サービス名を指定して `docker compose up frontend backend` を使います。
 
 詳細な開発手順は [development.md](development.md) を参照してください。
 

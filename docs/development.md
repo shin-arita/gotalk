@@ -7,7 +7,7 @@ GoTalk の標準開発環境は Docker Compose です。`docker-compose.yml` に
 | Service | 役割 | Port | 主な用途 |
 | --- | --- | --- | --- |
 | `frontend` | React / TypeScript / Vite の開発サーバー | `5173:5173` | ブラウザ UI の起動 |
-| `backend` | Go の API server | `8080:8080` | 翻訳、バックトランスレーション、TTS |
+| `backend` | Go の API server | `8080:8080` | 文字起こし、翻訳、バックトランスレーション、TTS |
 | `backend-dev` | Go 開発用コンテナ | なし | `gofmt`、`go test`、`go build` などの Backend 開発コマンド |
 
 通常の動作確認では `frontend` と `backend` を起動します。`backend-dev` は通常運用で常時起動する service ではなく、Backend の開発コマンドを実行するために使います。
@@ -45,7 +45,9 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
 ```
 
-`OPENAI_MODEL` は Compose で `gpt-4o-mini` が default になっています。
+`.env` を読むのは Docker Compose の変数置換だけで、Backend 自身は `.env` を読み込みません（`backend/main.go` は `os.Getenv` で環境変数を読むだけです）。`docker-compose.yml` は `.env` の値のうち `OPENAI_API_KEY` と `OPENAI_MODEL` を `backend` と `backend-dev` に渡します。`OPENAI_MODEL` は未設定の場合、Compose で `gpt-4o-mini` が渡されます。
+
+`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `docker-compose.yml` が backend に渡していないため、`.env` に書いても、どの起動方法でも反映されません。これらはホスト上で Backend を直接実行する場合に、シェルの環境変数として渡したときだけ反映されます（6 章を参照）。`.env.example` ではこの 3 つをコメントアウトして記載しています。
 
 Image を build します。
 
@@ -53,17 +55,19 @@ Image を build します。
 docker compose build
 ```
 
-通常起動します。
+`frontend` と `backend` を起動します。
 
 ```bash
-docker compose up
+docker compose up frontend backend
 ```
 
 background で起動する場合は次を使います。
 
 ```bash
-docker compose up -d
+docker compose up -d frontend backend
 ```
+
+サービス名を指定せずに `docker compose up` を実行すると、`backend-dev` も build・起動の対象になります。`backend-dev` は `entrypoint: [""]` とイメージ既定の `CMD`（`/bin/sh`）の組み合わせのため、起動してすぐ終了します。`frontend` と `backend` だけを起動したい場合は、上のようにサービス名を指定します。
 
 ## 4. 起動方法
 
@@ -141,12 +145,28 @@ curl -s http://localhost:8080/api/translate \
     "languages": [
       { "id": "ja", "label": "Japanese" },
       { "id": "en", "label": "English" }
-    ],
-    "sourceLanguage": "ja"
+    ]
   }'
 ```
 
 `OPENAI_API_KEY` が未設定の場合、翻訳 API は `translation service unavailable` を返します。
+
+### 確定翻訳 API
+
+`/api/interpret` は `multipart/form-data` で録音音声と言語情報を受け取り、原文、翻訳、バックトランスレーション、TTS 用テキストを JSON で返します。`transcript` を付けた場合は、そのテキストを `speaker` の言語から翻訳します。
+
+```bash
+curl -s http://localhost:8080/api/interpret \
+  -F "audio=@recording.webm" \
+  -F 'myLanguage={"id":"ja","label":"Japanese"}' \
+  -F 'theirLanguage={"id":"en","label":"English"}' \
+  -F "speaker=ja" \
+  -F "transcript=こんにちは"
+```
+
+`transcript` を付けない場合は、Backend が `audio` の音声を OpenAI の音声文字起こし API に送り、言語判定と文字起こしを行ってから翻訳します。`audio` は `transcript` の有無にかかわらず必須です。
+
+`OPENAI_API_KEY` が未設定の場合、確定翻訳 API は `service unavailable` を返します。
 
 ### TTS
 
@@ -192,7 +212,23 @@ go test ./...
 go build -o /tmp/gotalk-backend .
 ```
 
-Backend は `:8080` で HTTP server を起動します。`OPENAI_API_KEY`、`OPENAI_MODEL`、`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`DEBUG_TRANSLATION` は `backend/main.go` で参照されます。
+Backend は `:8080` で HTTP server を起動します。`OPENAI_API_KEY`、`OPENAI_MODEL`、`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL`、`DEBUG_TRANSLATION` は `backend/main.go` で `os.Getenv` により参照されます。
+
+Backend は `.env` を読み込まないため、ホスト上で Backend を起動する場合は、必要な環境変数をシェルで渡します。
+
+```bash
+cd backend
+export OPENAI_API_KEY=sk-...
+# 必要に応じて設定します（未設定時は Backend の既定値を使います）
+export OPENAI_MODEL=gpt-4o-mini
+export OPENAI_TTS_MODEL=gpt-4o-mini-tts
+export OPENAI_TTS_VOICE=marin
+export WHISPER_MODEL=gpt-4o-transcribe
+export DEBUG_TRANSLATION=true
+go run .
+```
+
+`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` を反映できるのは、この方法で起動した場合だけです。`DEBUG_TRANSLATION` は `true` のときだけ翻訳の debug log を出力し、未設定のときは出力しません。
 
 ## 7. Frontend 開発
 
@@ -221,10 +257,10 @@ npm run build
 
 ## 8. 注意点
 
-- 音声データは Backend に送信しません。Frontend の `SpeechRecognition` / `webkitSpeechRecognition` が音声をテキスト化し、Backend には認識済みテキストを送ります。
-- Backend API は `/health`、`/api/translate`、`/api/tts` です。
+- 録音音声は録音終了のたびに Backend の `/api/interpret` に送信します。Frontend の `SpeechRecognition` / `webkitSpeechRecognition` の認識テキストが得られた場合は `transcript` として同じリクエストに添え、Backend はそのテキストを翻訳します。得られなかった場合は Backend が OpenAI の音声文字起こし API で文字起こしします。
+- Backend API は `/health`、`/api/tts`、`/api/interpret`、`/api/translate` の 4 本です。
 - TTS は Backend の `/api/tts` から OpenAI Audio Speech API を呼び出し、`audio/mpeg` を返します。
-- `http://localhost:5173/#tts-test` を開くと TTS テスト専用の `TtsTestPage` が表示されます。通常の利用画面とは独立した開発確認用ページです。
+- `http://localhost:5173/#tts-test` を開くと `TtsTestPage` が表示されます。ブラウザの `speechSynthesis`（Web Speech API の音声合成）で日本語とタイ語の発声、`getVoices()` の一覧、発声イベントのログを確認するための開発確認用ページです。Backend の `/api/tts` は使いません。通常の利用画面とは独立しています。
 
 ## 関連ドキュメント
 

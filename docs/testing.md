@@ -4,9 +4,9 @@
 
 GoTalk のテストは Backend と Frontend を分けて実行します。
 
-Backend は Go 標準の `go test` で、HTTP handler、OpenAI API 呼び出し wrapper、固有名詞保護、`sourceLanguage`、バックトランスレーション、TTS、API エラーを検証します。外部 API へ実通信しないよう、テストでは `http.DefaultClient.Transport` を mock transport に差し替えます。
+Backend は Go 標準の `go test` で、HTTP handler、OpenAI API 呼び出し wrapper（文字起こし、翻訳、TTS）、言語判定結果の照合、固有名詞保護、バックトランスレーション、API エラーを検証します。外部 API へ実通信しないよう、テストでは `http.DefaultClient.Transport` を mock transport に差し替えます。
 
-Frontend は Vitest、Testing Library、jsdom で、言語選択、`SpeechRecognition` を使う音声入力フロー、リアルタイム翻訳、`sourceLanguage` 送信、翻訳結果表示、バックトランスレーション表示、TTS、状態遷移、エラー処理を検証します。
+Frontend は Vitest、Testing Library、jsdom で、言語選択、国旗ボタンによる録音フロー、`/api/interpret` への送信内容、翻訳結果表示、バックトランスレーション表示、再翻訳、TTS、状態遷移、エラー処理を検証します。
 
 ## 2. Backend テスト
 
@@ -14,8 +14,8 @@ Backend のテストファイルは次のとおりです。
 
 | ファイル | 主な対象 |
 | --- | --- |
-| `backend/main_test.go` | 共通 helper、health、CORS、固有名詞抽出補助 |
-| `backend/main_handlers_test.go` | `/api/translate`、`/api/tts`、OpenAI 呼び出し、固有名詞保護、`sourceLanguage` |
+| `backend/main_test.go` | `whisperLangMatches`、共通 helper、health、CORS、固有名詞抽出補助 |
+| `backend/main_handlers_test.go` | `/api/interpret`、`/api/translate`、`/api/tts`、OpenAI 呼び出し、固有名詞保護 |
 
 実行コマンド:
 
@@ -30,20 +30,25 @@ go test ./...
 - `writeError` が JSON error response を返すこと
 - CORS middleware が通常 request と `OPTIONS` request を処理すること
 - `extractJSON` が OpenAI response から JSON 部分を取り出すこと
+- `whisperLangMatches` が言語名（`japanese` など）と ISO コード（`ja` など）の両方で選択言語と照合できること（`TestWhisperLangMatches`）
+- `callWhisper` が `whisper-1` と `gpt-4o-transcribe` の正常系、非 200、invalid JSON、transport error を扱うこと（`TestCallWhisper_*` 5 件）
 - `callOpenAI` が transport error、非 200、invalid JSON、空 output、空 content、正常系を扱うこと
+- `/api/interpret` が method、API key 未設定、invalid multipart、`audio` なし、`myLanguage` / `theirLanguage` の不正と空 ID、言語判定エラー、判定言語が空、`language_mismatch`、文字起こしエラー、翻訳エラー、`myLanguage` / `theirLanguage` それぞれに一致した場合の正常系を扱うこと
+- `/api/interpret` が OpenAI のプレーンテキストの翻訳結果（JSON でない文字列）をそのまま `translatedText` として受け付け、HTTP 200 を返すこと（`TestInterpretHandler_InvalidTranslationJSON`）
+- `/api/interpret` の transcript 経路で、翻訳 prompt が speech recognition error の補正や固有名詞の生成を禁止する文言を含むこと（`TestInterpretHandler_TranscriptPath_PromptForbidsSpeechCorrection`）
+- `/api/translate`（`en` と `ja` を選択）と `/api/interpret`（`en` から `ja` への翻訳）で、英語の自己紹介に続く名前が placeholder にならず、そのまま OpenAI への翻訳 prompt に含まれること（`TestTranslateHandler_EnglishIntroName`、`TestInterpretHandler_EnglishIntroName`）
 - `/api/translate` が method、API key 未設定、invalid JSON、空 text、`languages` 不足、OpenAI error、invalid translation JSON、`language_mismatch`、正常系を扱うこと
-- `sourceLanguage` が不正な場合に 400 を返し、OpenAI を呼ばないこと
-- `sourceLanguage` が指定された場合に翻訳方向を固定すること
-- `sourceLanguage` 指定時にも固有名詞保護経路が動くこと
-- 翻訳 prompt が speech recognition error や固有名詞の過剰補正を禁止する文言を含むこと
-- 固有名詞保護で博多、博多駅、有田シン、ドン・キホーテなどが placeholder 化され、翻訳結果と `ttsText` に復元されること
+- `/api/translate` の翻訳 prompt が speech recognition error や固有名詞の過剰補正を禁止する文言を含むこと
+- 固有名詞保護で「博多駅」の「博多」、「有田シン」（姓と短いカタカナの名を 1 つの placeholder にまとめる）、「ドン・キホーテ」が placeholder 化され、翻訳結果と `ttsText` にローマ字で復元されること。「博多駅」の「駅」は placeholder にならず、OpenAI が翻訳します
 - placeholder が翻訳時に欠落した場合、1 回 retry して成功または 502 になること
 - placeholder がバックトランスレーション時に欠落した場合、retry すること
 - 英語自己紹介名の抽出条件と intro pattern 判定
 - `/api/tts` が method、API key 未設定、invalid JSON、空 text、OpenAI error、非 200、正常系を扱うこと
 - `callOpenAITTS` が正常系、transport error、非 200 を扱うこと
 
-バックトランスレーションは `/api/translate` の中で翻訳後に別 OpenAI call として実行されます。テストでは mock transport の call count や返却値を使い、翻訳 call とバックトランスレーション call の両方を検証します。
+`TestInterpretHandler_` で始まるテスト関数は、`TestInterpretHandler_TranscriptPath_PromptForbidsSpeechCorrection` と `TestInterpretHandler_EnglishIntroName` を含めて 18 件です。
+
+バックトランスレーションは `/api/interpret` と `/api/translate` の中で翻訳後に別 OpenAI call として実行されます。テストでは mock transport の call count や返却値を使い、言語判定 call、文字起こし call、翻訳 call、バックトランスレーション call を検証します。
 
 ## 3. Frontend テスト
 
@@ -53,7 +58,7 @@ Frontend のテストファイルは次のとおりです。
 | --- | --- |
 | `frontend/src/languages.test.ts` | 言語定義 |
 | `frontend/src/pages/LanguageSelectPage.test.tsx` | 言語選択画面 |
-| `frontend/src/pages/InterpreterPage.test.tsx` | 通訳画面、音声入力、翻訳、TTS、状態遷移 |
+| `frontend/src/pages/InterpreterPage.test.tsx` | 通訳画面、録音、確定翻訳、再翻訳、TTS、状態遷移 |
 
 実行コマンド:
 
@@ -66,22 +71,30 @@ npm test
 
 - `LANGUAGES` が 7 件で、各言語の `id`、`speechCode`、`label` が定義されていること
 - 言語 ID が一意であること
-- 言語選択画面が全言語カードを表示すること
+- 言語選択画面が全言語カードとアプリ名を表示し、下部のマイクボタンを表示しないこと
+- 選択中の言語カードは `aria-pressed="true"`、未選択の言語カードは `aria-pressed="false"` になること
 - 言語カードの選択、解除、3 言語目を追加しない制御
-- 2 言語目選択時の navigation callback
-- `SpeechRecognition` / `webkitSpeechRecognition` mock を使った音声入力開始・停止
-- 国旗ボタンごとの音声入力開始、反対側の国旗の disabled、音声入力完了後の再有効化
-- 空 transcript の場合に `/api/translate` を呼ばず、エラーを表示すること
-- 音声入力終了後に `/api/translate` へ transcript、`languages`、`sourceLanguage` を送ること
-- 右側の国旗で音声入力した場合に、その言語 ID を `sourceLanguage` として送ること
-- 音声入力中リアルタイム翻訳 request に `sourceLanguage` を含めること
-- 翻訳成功時に `translatedText`、`backTranslation`、読み上げボタン、履歴を表示すること
-- `/api/translate` が 422 `language_mismatch` を返した場合のエラー表示と状態 reset
-- `/api/translate` が 500 を返した場合のエラー表示
-- 手入力再翻訳 flow と再翻訳失敗時の扱い
+- 2 言語目選択時の navigation callback（`onSelectionChange` の後に `onNavigate` を呼ぶこと、1 言語目の選択や選択解除では呼ばないこと）
+- 言語選択画面を unmount しても例外が発生しないこと
+- 国旗ボタンが選択言語ごとに表示されること
+- 選択言語が 2 未満の場合は国旗バーを表示しないこと
+- 通訳画面に下部のマイクボタンがないこと
+- `MediaRecorder` と `getUserMedia` の mock を使った、国旗タップによる録音開始・停止
+- 録音中の反対側の国旗の disabled、録音完了後の再有効化
+- 同じ国旗の再タップで録音を停止し、`/api/interpret` を呼ぶこと
+- 左右どちらの国旗で録音したかに応じて、その言語を `speaker` と `myLanguage`、もう一方を `theirLanguage` として送ること
+- `getUserMedia` が失敗した場合にマイクアクセスのエラーを表示すること
+- `/api/interpret` が 422 `language_mismatch` を返した場合に、選択言語ごとの言語不明メッセージを表示し、翻訳文を空にして `idle` に戻すこと（3 件）
+- 確定翻訳の成功時に `translatedText`、`backTranslation`、読み上げボタン、履歴を表示すること
+- 履歴は展開ボタンなしで全件を表示すること
+- `/api/interpret` が 500 を返した場合のエラー表示
+- 再翻訳で `/api/translate` が 422 `language_mismatch` を返した場合のエラー表示
+- 再翻訳で `/api/translate` が 500 を返した場合のエラー表示と、直前の翻訳文と読み上げボタンが残ること
 - `/api/tts` に `ttsText` を送ること
 - TTS fetch 中の button disabled、audio `onended` 後の復帰、TTS 失敗後の復帰
-- `recording` 中は翻訳カードを隠し、音声入力終了後に表示すること
+- `recording` 中は翻訳カードを隠し、録音終了後に表示すること
+
+`/api/interpret` の結果表示やエラー処理のテストの多くは、`InterpreterPage` の `pendingAudio` prop に `Blob` を渡して `callInterpretApi` を起動します。国旗タップのテストでは `MediaRecorder` と `navigator.mediaDevices.getUserMedia` を mock します。`SpeechRecognition` は mock していないため、これらのテストでは `transcript` は送られません。
 
 Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeObjectURL` を mock します。API 呼び出しは `fetch` mock で検証します。
 
@@ -91,14 +104,15 @@ Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeOb
 
 | 領域 | 対象 |
 | --- | --- |
-| Backend API | `/health`、`/api/translate`、`/api/tts` |
+| Backend API | `/health`、`/api/interpret`、`/api/translate`、`/api/tts` |
+| 文字起こし | OpenAI Audio Transcriptions API wrapper、言語判定結果の照合、`language_mismatch` |
 | 翻訳 | OpenAI Responses API wrapper、翻訳 prompt、JSON response parse |
-| 翻訳方向 | `sourceLanguage` 指定、未指定時の `language_mismatch` |
+| 翻訳方向 | `/api/interpret` の判定言語による方向決定、`/api/translate` の `language_mismatch` |
 | 固有名詞保護 | Kagome 抽出、英語自己紹介 pattern、placeholder、retry、復元、`ttsText` |
 | バックトランスレーション | 翻訳後の back-translation call、placeholder 検証と retry |
 | TTS | OpenAI Audio Speech API wrapper、`audio/mpeg` response、TTS error |
-| Frontend 音声 | `SpeechRecognition` / `webkitSpeechRecognition`、国旗ボタン音声入力フロー |
-| Frontend API 利用 | `/api/translate`、`/api/tts`、`sourceLanguage`、`language_mismatch` |
+| Frontend 録音 | `MediaRecorder`、`getUserMedia`、国旗ボタンによる録音フロー |
+| Frontend API 利用 | `/api/interpret`（`speaker`、`myLanguage`、`theirLanguage`）、`/api/translate`、`/api/tts`、`language_mismatch` |
 | Frontend UI | 翻訳結果、バックトランスレーション、履歴、読み上げボタン、エラー表示 |
 
 ## 5. ビルド確認
@@ -160,13 +174,9 @@ Backend:
 - `go test ./...`
 - `go build -o /tmp/gotalk-backend .`
 
-## 8. 削除された旧テスト
+coverage は Frontend だけを計測しています。`npm run test:coverage`（`vitest run --coverage`）が `@vitest/coverage-v8` で計測し、`frontend/vitest.config.ts` ではしきい値を設定していません。計測対象は `src/**/*.{ts,tsx}` で、`src/main.tsx`、`src/App.tsx`、`src/pages/TtsTestPage.tsx` は計測対象から除外しています。Backend は CI で `go test ./...` を実行するだけで、coverage は計測していません。
 
-現在の実装では、Backend が音声データを受け取って文字起こしする経路はありません。そのため、この文書では現行の `/api/translate`、`/api/tts`、`SpeechRecognition` に関するテスト項目だけを扱います。
-
-音声のテキスト化は Frontend の `SpeechRecognition` / `webkitSpeechRecognition` が担当します。Backend は音声データではなく、認識済みテキストを `/api/translate` で受け取ります。
-
-## 9. 関連ドキュメント
+## 8. 関連ドキュメント
 
 - [architecture.md](architecture.md)
 - [translation-flow.md](translation-flow.md)

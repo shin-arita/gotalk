@@ -10,7 +10,7 @@ GoTalk は GitHub Actions で CI、CD、Codex Review ラベル運用を行いま
 - `.github/workflows/cd.yml`
 - `.github/workflows/codex-review-request.yml`
 
-Pull Request では CI とレビューを行い、`main` へ merge された変更は `push` to `main` として CD workflow に流れます。CD は GitHub Environment `production` の承認を通過してから VPS へ SSH 接続し、Docker Compose で更新します。
+Pull Request では CI とレビューを行い、`main` へ merge された変更は `push` to `main` として CD workflow に流れます。`main` への push では CI も起動しますが、CD は CI の完了を条件にしていない（`needs` や `workflow_run` による依存がない）ため、CI と CD は並行して動きます。CD の deploy job は GitHub Environment `production` を指定しているため、GitHub 側で Required reviewers が設定されている場合は、承認されるまで VPS への SSH 接続と Docker Compose による更新は実行されません。
 
 ```mermaid
 flowchart LR
@@ -25,8 +25,9 @@ flowchart LR
   Codex --> Blocked[merge-blocked]
   Ready --> Merge[merge to main]
   CI --> Merge
+  Merge --> CIMain[CI<br/>push to main]
   Merge --> CD[CD<br/>push to main]
-  CD --> Approval[production approval]
+  CD --> Approval[production Environment<br/>Required reviewers 設定時は承認待ち]
   Approval --> VPS[VPS deploy<br/>docker compose up -d --build]
 ```
 
@@ -61,11 +62,13 @@ Backend job は `backend` directory で実行されます。
 | 項目 | 内容 |
 | --- | --- |
 | runner | `ubuntu-latest` |
-| Go | `1.22` |
+| Go | `setup-go` の `go-version` は `"1.22"`（下記参照） |
 | cache | `backend/go.sum` |
 | vet | `go vet ./...` |
 | test | `go test ./...` |
 | build | `go build -o /tmp/gotalk-backend .` |
+
+`setup-go` で指定している Go のバージョンは `1.22` ですが、`backend/go.mod` の `go` ディレクティブは `1.24.0` です。Go 1.21 以降の toolchain の自動切り替え（`GOTOOLCHAIN`）が有効な場合、`go` コマンドは `go.mod` の指定を満たす 1.24 系の toolchain を取得して使う可能性があります。そのため、CI の Backend のテストが Go 1.22 で実行されているとは限りません。実際に使われるバージョンは CI のログで確認してください。
 
 ## 3. CD
 
@@ -100,14 +103,16 @@ docker compose up -d --build
 docker compose ps
 ```
 
+サービス名を指定しない `docker compose up` では、`backend-dev` も build・起動の対象になります。`backend-dev` は `entrypoint: [""]` とイメージ既定の `CMD`（`/bin/sh`）の組み合わせのため、起動してすぐ終了します。そのため deploy script の `docker compose up -d --build` でも、`backend-dev` は build された後、起動してすぐ終了します。
+
 ## 4. GitHub Actions
 
 現在存在する workflow は次のとおりです。
 
 | ファイル名 | Trigger | 役割 |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | `push` to `main`、`pull_request` | Frontend と Backend の lint / test / coverage / build |
-| `.github/workflows/cd.yml` | `push` to `main` | `production` Environment 承認後、VPS に SSH 接続して Docker Compose で deploy |
+| `.github/workflows/ci.yml` | `push` to `main`、`pull_request` | Frontend の lint / test / coverage / build、Backend の vet / test / build |
+| `.github/workflows/cd.yml` | `push` to `main` | VPS に SSH 接続して Docker Compose で deploy。`production` Environment を指定しており、Required reviewers が設定されている場合は承認後に実行 |
 | `.github/workflows/codex-review-request.yml` | `issue_comment` created、`pull_request` synchronize | `@codex review` request と Codex bot result に応じて PR label を更新 |
 
 `codex-review-request.yml` は次の label を扱います。
@@ -133,8 +138,8 @@ docker compose ps
 7. PR comment で `@codex review` を依頼する
 8. Codex Review の結果に応じて `merge-ready` または `merge-blocked` label が付く
 9. CI と review 結果を確認して merge する
-10. `main` への push を trigger に CD が起動する
-11. `production` Environment の承認後、VPS に deploy する
+10. `main` への push を trigger に CI と CD が並行して起動する
+11. `production` Environment に Required reviewers が設定されている場合は承認後に、VPS に deploy する
 
 ## 6. 品質保証
 
