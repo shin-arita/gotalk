@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -568,4 +569,50 @@ func TestReadOpenAIErrorDetail_AtLimit(t *testing.T) {
 	if !strings.HasPrefix(got, "type=server_error code=none, body ") || strings.Contains(got, "SECRET") {
 		t.Errorf("unexpected detail: %q", got)
 	}
+}
+
+// failingReader returns data and then fails, like a connection reset while reading an error body.
+type failingReader struct {
+	data []byte
+	err  error
+}
+
+func (f *failingReader) Read(p []byte) (int, error) {
+	if len(f.data) == 0 {
+		return 0, f.err
+	}
+	n := copy(p, f.data)
+	f.data = f.data[n:]
+	return n, nil
+}
+
+func (f *failingReader) Close() error { return nil }
+
+// A read error part way through an OpenAI error body is reported as a fixed string with the
+// number of bytes read and the error type, without decoding the partial body.
+func TestReadOpenAIErrorDetail_ReadError(t *testing.T) {
+	partial := `{"error":{"message":"SECRETPART`
+	got := readOpenAIErrorDetail(&failingReader{data: []byte(partial), err: syscall.ECONNRESET})
+	want := fmt.Sprintf("body read error after %d bytes (syscall.Errno)", len(partial))
+	if got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+	if strings.Contains(got, "SECRETPART") || strings.Contains(got, "connection reset") {
+		t.Errorf("must not include the body or the error message: %q", got)
+	}
+
+	// The same through a handler: the log reports the read error and not the body.
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("DEBUG_TRANSLATION", "")
+	logs := captureLog(t)
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		body := &failingReader{data: []byte(`{"error":{"message":"SECRETPART","type":"server_error"`), err: syscall.ECONNRESET}
+		return &http.Response{StatusCode: http.StatusInternalServerError, Body: body, Header: make(http.Header)}, nil
+	})
+	rec := postTranslate(t, "the secret plan is ready", `[{"id":"en","label":"English"},{"id":"ko","label":"Korean"}]`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	assertLogIncludes(t, logs.String(), "OpenAI error: OpenAI API returned status 500 (body read error after ")
+	assertLogExcludes(t, logs.String(), "SECRETPART", "server_error", "secret plan")
 }

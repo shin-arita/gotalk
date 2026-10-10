@@ -100,11 +100,17 @@ func jsonErrSummary(err error) string {
 const maxErrorBodyBytes = 64 << 10
 
 // readOpenAIErrorDetail reads at most maxErrorBodyBytes+1 bytes of an OpenAI error response body
-// and summarizes it with openAIErrorDetail. When the body is larger than maxErrorBodyBytes,
-// it is not decoded and only "body over N bytes (truncated)" is reported; otherwise
-// "body N bytes" is the size of the whole body.
+// and summarizes it with openAIErrorDetail. When reading fails part way, the partial body is not
+// decoded and only "body read error after N bytes (<error type>)" is reported. When the body is
+// larger than maxErrorBodyBytes, it is not decoded and only "body over N bytes (truncated)" is
+// reported; otherwise "body N bytes" is the size of the whole body.
 func readOpenAIErrorDetail(r io.Reader) string {
-	body, _ := io.ReadAll(io.LimitReader(r, maxErrorBodyBytes+1))
+	body, err := io.ReadAll(io.LimitReader(r, maxErrorBodyBytes+1))
+	if err != nil {
+		// Only the error type is logged; network error messages do not contain the body,
+		// but the type is enough to tell that the connection failed while reading.
+		return fmt.Sprintf("body read error after %d bytes (%T)", len(body), err)
+	}
 	if len(body) > maxErrorBodyBytes {
 		return fmt.Sprintf("body over %d bytes (truncated)", maxErrorBodyBytes)
 	}
