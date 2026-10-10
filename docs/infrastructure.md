@@ -45,7 +45,7 @@ nginx の転送先は `127.0.0.1` で、Docker Compose の `ports` も `127.0.0.
 ```mermaid
 flowchart LR
   User[User Browser] -->|HTTPS / domain| Nginx[nginx<br/>HTTPS 終端]
-  Internet[Internet] -.->|:5173 / :8080 直接は届かない<br/>Docker Engine 28.0.0 以上が前提| VPSHost[VPS の外向きアドレス]
+  Internet[Internet] -.->|:5173 / :8080 直接は届かない<br/>Docker Engine 28.3.3 以上が前提| VPSHost[VPS の外向きアドレス]
   Nginx -->|/ → http://127.0.0.1:5173| Frontend[frontend<br/>gotalk-frontend<br/>127.0.0.1:5173]
   Nginx -->|/api/ → http://127.0.0.1:8080/api/| Backend[backend<br/>gotalk-backend<br/>127.0.0.1:8080]
   Frontend -->|/api proxy<br/>http://backend:8080| Backend
@@ -71,10 +71,15 @@ Backend は OpenAI API へ HTTPS で outbound 接続します。
 
 | 前提 | 内容 |
 | --- | --- |
-| Docker Engine が 28.0.0 以上であること | Docker のドキュメント（Port publishing and mapping）には、28.0.0 より前のリリースでは、同じ L2 のセグメントにあるホスト（同じネットワークスイッチにつながったホストなど）から、localhost に公開したポートに届く、という警告があります（[moby/moby#45610](https://github.com/moby/moby/issues/45610)）。VPS では、VPS の事業者のネットワーク上の他のホストがこれに当たる可能性があります。28.0.0 より前のバージョンの場合は、Docker Engine を更新するか、ホストの firewall（Docker の `DOCKER-USER` チェーンなど）で `5173` と `8080` への外からのアクセスを塞ぐ必要があります |
+| Docker Engine が 28.3.3 以上であること | Docker のドキュメント（Port publishing and mapping）には、28.0.0 より前のリリースでは、同じ L2 のセグメントにあるホスト（同じネットワークスイッチにつながったホストなど）から、localhost に公開したポートに届く、という警告があります（[moby/moby#45610](https://github.com/moby/moby/issues/45610)）。VPS では、VPS の事業者のネットワーク上の他のホストがこれに当たる可能性があります。この問題は 28.0.0 で修正されました（Docker Engine 28 のリリースノートの 28.0.0「Fix a security issue that was allowing neighbor hosts to connect to ports mapped on a loopback address.」、[moby/moby#49325](https://github.com/moby/moby/pull/49325)）。ただし、firewalld を使っているホストでは、28.3.3 より前のバージョンで firewalld を reload した後に、同じ問題が再び起きます（28.3.3 のリリースノート、[CVE-2025-54388](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2025-54388)、[moby/moby#50506](https://github.com/moby/moby/pull/50506)）。VPS で firewalld を使っているかどうかはリポジトリからは確認できないため、28.3.3 以上を前提にしています。28.3.3 より前のバージョンの場合は、Docker Engine を更新するか、ホストの firewall で `5173` と `8080` への外からのアクセスを塞ぐ必要があります。firewall の backend が iptables（既定）の場合は、Docker の `DOCKER-USER` チェーンに規則を加えます。nftables の場合は、Docker の nftables の実装には `DOCKER-USER` チェーンがないため、独自の table と chain で対策します（Docker のドキュメント「[Docker with nftables](https://docs.docker.com/engine/network/firewall-nftables/)」の「Migrating `DOCKER-USER`」を参照） |
 | `docker-compose.yml` の `ports` に `127.0.0.1` を指定していること | 外からのアクセスを塞いでいるのは、この `127.0.0.1` の指定です。ufw ではありません（次の段落） |
 
-VPS の Docker Engine の現在のバージョンは、リポジトリからは確認できません。VPS で `docker version` を実行して確認します。
+VPS の Docker Engine の現在のバージョン、firewall の backend（iptables か nftables か）、firewalld を使っているかどうかは、リポジトリからは確認できません。VPS で `docker version` を実行してバージョンを確認します。Docker Engine 28.0.0 以上では、localhost に公開したポートに外から届かないよう、Docker が規則を追加します。この規則があるかどうかで、対策が入っていることを VPS 上で直接確認できます。
+
+| firewall の backend | 確認のコマンド | 期待する結果 |
+| --- | --- | --- |
+| iptables | `sudo iptables -t raw -S PREROUTING \| grep 127.0.0.1` | `5173` と `8080` について、`-d 127.0.0.1/32 ! -i lo ... -j DROP` の規則がある |
+| nftables | `sudo nft list table ip docker-bridges \| grep 'DROP REMOTE LOOPBACK'` | `5173` と `8080` について、`iifname != "lo" ip daddr 127.0.0.1 ... drop` の規則がある |
 
 Docker のドキュメント（Packet filtering and firewalls の「Docker and ufw」）にあるとおり、Docker が公開したポートへの通信は `nat` テーブルで転送されます。そのため、ufw が使う `INPUT` と `OUTPUT` のチェーンに届く前に処理され、ufw の規則は効きません。以前、外から `5173` と `8080` に直接届いていたのも、`ports` が `0.0.0.0` と `[::]` に公開していたためで、ufw の設定にかかわらず届いていたと考えられます。VPS の ufw の現在の設定は、リポジトリからは確認できません。`ports` を変更するときは、ufw で塞いでいるつもりでも外に公開されることがあるため、`127.0.0.1` の指定を外さないよう注意してください。
 

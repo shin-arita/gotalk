@@ -33,6 +33,7 @@ cloudflared は、コンテナではなくホスト上で動かしてくださ�
 - URL を知っている人は、誰でも開発サーバーにアクセスできます。`/api` も Vite の proxy で `backend` に転送されるため、開発者の `OPENAI_API_KEY` を使う Backend にも届きます。URL が漏れると、第三者のリクエストで OpenAI の利用料が発生する可能性があります。URL を共有しないでください
 - 確認が終わったら、`cloudflared` を止めてください。Cloudflare のドキュメントにあるとおり、`cloudflared` のプロセスを止めると URL は使えなくなります
 - アクセスできる人を制限したい場合は、Cloudflare のドキュメント（Quick Tunnels の「Restrict access by email」）にある `--allowed-mail` を使えます。指定したメールアドレスに届くワンタイム PIN で認証した人だけがアクセスできます。`--allowed-mail` をくり返し指定すると複数のアドレスを、`*@example.com` の形でドメインのすべてのアドレスを許可できます。この認証は対話的なブラウザでのアクセスが前提です
+- `--allowed-mail` は cloudflared 2026.9.2 以降で使えます。Cloudflare のドキュメントには最低バージョンが書かれていませんが、cloudflared の `RELEASE_NOTES` の 2026.9.2 に「chore: Enable --allowed-mail flag and mac runners」とあります。また、2026.10.0 には「VULN-141859: Normalize request path when using access rules」（アクセスの規則を使うときのリクエストのパスの正規化）の修正が入っています。そのため、アクセスの制限に使う場合は 2026.10.0 以降を使ってください。`cloudflared --version` でバージョンを確認できます
 
 ```bash
 cloudflared tunnel --url http://127.0.0.1:5173 --allowed-mail you@example.com
