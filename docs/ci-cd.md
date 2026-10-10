@@ -76,10 +76,14 @@ Go のバージョンは次のように決まります。
 | 対象 | 指定 | 使われる Go |
 | --- | --- | --- |
 | CI | `setup-go` の `go-version: "1.24"` と `check-latest: true` | CI の実行時点での 1.24 系の最新パッチ |
-| Docker build（本番を含む） | `backend/Dockerfile` の `golang:1.24-alpine` | build の時点で `golang:1.24-alpine` が指している 1.24 系の最新パッチ |
+| 本番の Docker build（CD） | `backend/Dockerfile` の `golang:1.24-alpine` | VPS にある `golang:1.24-alpine` の image（最後に pull した時点のパッチ）。VPS に image がない場合は、build の時点で pull したもの |
 | `backend/go.mod` | `go 1.24.0` | 必要な最低バージョン。CI と Docker のどちらのパッチもこれを満たす |
 
-CI と本番の Docker build は、どちらも 1.24 系の最新パッチを使います。ただし、CI の実行と本番の build の時点が異なる場合や、`golang:1.24-alpine` の更新が新しいパッチのリリースより遅れる場合は、CI と本番でパッチバージョンが一時的に異なることがあります。
+CI は実行のたびに 1.24 系の最新パッチをセットアップします。一方、CD の deploy script は `docker compose up -d --build` を `--pull` なしで実行し、`docker-compose.yml` の `build` にも `pull: true` は指定されていません。Docker の build は、`--pull` を指定しない場合、ローカルにある base image を使います。そのため、本番の build では VPS にキャッシュされている `golang:1.24-alpine`（最後に pull した時点のパッチ）が使われ、`golang:1.24-alpine` が新しいパッチに更新されても、自動では反映されないと考えられます。
+
+このため、CI と本番の Go のパッチの差は、一時的なものとは限りません。VPS にどのパッチの image がキャッシュされているかは、リポジトリからは確認できません。差をなくすには、VPS で `docker pull golang:1.24-alpine` を実行してから build するか、`--pull` を付けて build する必要があります。
+
+Backend の実行用 image の `alpine:3.22`（`backend/Dockerfile`）と、Frontend の `node:22-alpine`（`frontend/Dockerfile`）も同じ Dockerfile の `FROM` で指定されているため、同じ仕組みで VPS にキャッシュされている image が使われると考えられます。
 
 `ci.yml` の各 action（`actions/checkout@v7`、`actions/setup-node@v7`、`actions/setup-go@v7`）は、Node.js 24 で動くメジャーバージョンです。
 
