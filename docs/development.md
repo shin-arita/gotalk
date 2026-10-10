@@ -253,11 +253,36 @@ export OPENAI_MODEL=gpt-4o-mini
 export OPENAI_TTS_MODEL=gpt-4o-mini-tts
 export OPENAI_TTS_VOICE=marin
 export WHISPER_MODEL=gpt-4o-transcribe
-export DEBUG_TRANSLATION=true
+# 翻訳の debug log が必要なときだけ設定します（下の「Backend の debug log」を参照）
+# export DEBUG_TRANSLATION=true
 go run .
 ```
 
-`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` を反映できるのは、この方法で起動した場合だけです。`DEBUG_TRANSLATION` は `true` のときだけ翻訳の debug log を出力し、未設定のときは出力しません。
+`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` を反映できるのは、この方法で起動した場合だけです。
+
+### Backend の debug log
+
+`DEBUG_TRANSLATION=true` のときだけ、Backend は翻訳処理の debug log（`[DEBUG_TRANSLATION]` で始まる行）を出力します。未設定や `true` 以外の値のときは出力しません。
+
+debug log には、受信したテキスト、翻訳 prompt、OpenAI の応答、固有名詞の保護マップなど、発話の内容がそのまま含まれます。ローカルでの調査のときだけ使い、本番では有効にしないでください。通常のログに出力する情報は [infrastructure.md](infrastructure.md) の「Backend のログに出力する情報」を参照してください。
+
+`docker-compose.yml` は `DEBUG_TRANSLATION` を `backend` に渡していません。そのため、`.env` に `DEBUG_TRANSLATION=true` を書いても `backend` には渡らず、debug log は出力されません。ローカルで有効にする方法は次のどちらかです。
+
+1. ホストで Backend を直接実行する場合は、上の例のように、シェルで `export DEBUG_TRANSLATION=true` を設定してから `go run .` を実行します
+2. Docker Compose で動かす場合は、リポジトリにコミットしない一時的な override ファイルで渡します
+
+```bash
+cat > /tmp/gotalk-debug.yml <<'YAML'
+services:
+  backend:
+    environment:
+      - DEBUG_TRANSLATION=true
+YAML
+docker compose -f docker-compose.yml -f /tmp/gotalk-debug.yml up -d
+docker compose logs -f backend
+```
+
+調査が終わったら、override ファイルを付けずに `docker compose up -d` を実行して `backend` を作り直し、debug log を止めます。override ファイルの `backend` は通常どおり `frontend` の Vite の proxy から届くため、画面からの操作で debug log を確認できます。
 
 ## 7. Frontend 開発
 

@@ -191,7 +191,7 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
 ```
 
-`.env` を読むのは Docker Compose の変数置換だけで、Backend 自身は `.env` を読み込みません。`docker-compose.yml` は `.env` の値のうち `OPENAI_API_KEY` と `OPENAI_MODEL` を backend に渡します（`DEBUG_TRANSLATION=true` は `docker-compose.yml` に直接書かれています）。`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `.env` に書いても、どの起動方法でも反映されません。これらはホスト上で Backend を直接実行する場合に、シェルの環境変数として渡したときだけ反映されます。未設定時は Backend の既定値（`gpt-4o-mini-tts`、`marin`、`gpt-4o-transcribe`）が使われます。`.env.example` ではこの 3 つをコメントアウトして記載しています。
+`.env` を読むのは Docker Compose の変数置換だけで、Backend 自身は `.env` を読み込みません。`docker-compose.yml` は `.env` の値のうち `OPENAI_API_KEY` と `OPENAI_MODEL` を backend に渡します。翻訳の debug log を出す `DEBUG_TRANSLATION` は `docker-compose.yml` で渡していないため、本番を含む Compose の起動では debug log は出力されません（ローカルで有効にする方法は [docs/development.md](docs/development.md) を参照）。`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `.env` に書いても、どの起動方法でも反映されません。これらはホスト上で Backend を直接実行する場合に、シェルの環境変数として渡したときだけ反映されます。未設定時は Backend の既定値（`gpt-4o-mini-tts`、`marin`、`gpt-4o-transcribe`）が使われます。`.env.example` ではこの 3 つをコメントアウトして記載しています。
 
 Docker Compose で frontend/backend を起動します。
 
