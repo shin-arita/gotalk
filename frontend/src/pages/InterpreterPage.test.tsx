@@ -167,6 +167,7 @@ afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
   delete (globalThis as Record<string, unknown>).MediaRecorder
+  delete (window as unknown as Record<string, unknown>).SpeechRecognition
 })
 
 // ============================================================
@@ -688,6 +689,48 @@ describe('InterpreterPage flag-tap recording', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
     expect(screen.getByRole('alert').textContent).toContain('マイクへのアクセスが許可されていません')
+  })
+
+  it('sends the live SpeechRecognition transcript and keeps it as the source text', async () => {
+    const recognition = {
+      lang: '',
+      interimResults: false,
+      continuous: false,
+      onresult: null as ((e: { results: { transcript: string }[][] }) => void) | null,
+      onerror: null as (() => void) | null,
+      onend: null as (() => void) | null,
+      start: vi.fn(),
+      stop: vi.fn(),
+    }
+    Object.defineProperty(window, 'SpeechRecognition', {
+      value: vi.fn(function () { return recognition }),
+      writable: true,
+      configurable: true,
+    })
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeOkResponse(makeInterpretResponse({ text: 'Whisper text', translatedText: 'Hello' })),
+    )
+    renderPage([ja, en])
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
+    })
+    expect(recognition.lang).toBe(ja.speechCode)
+    expect(recognition.start).toHaveBeenCalled()
+    act(() => { recognition.onresult?.({ results: [[{ transcript: 'こんにちは' }]] }) })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
+    })
+
+    const [url, options] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/interpret')
+    expect(((options as RequestInit).body as FormData).get('transcript')).toBe('こんにちは')
+    await waitFor(() =>
+      expect(screen.getByText('Hello', { selector: '.translation-card__text' })).toBeInTheDocument(),
+    )
+    expect(screen.getByText('こんにちは', { selector: '.source-card__text' })).toBeInTheDocument()
+    expect(screen.queryByText('Whisper text', { selector: '.source-card__text' })).not.toBeInTheDocument()
   })
 
   it('translation result and history are added after flag-tap recording', async () => {
