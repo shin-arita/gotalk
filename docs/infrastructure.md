@@ -22,25 +22,42 @@ Docker Compose の主な service は次のとおりです。
 
 | Service | Container | Port | 役割 |
 | --- | --- | --- | --- |
-| `frontend` | `gotalk-frontend` | `5173:5173` | Vite dev server |
-| `backend` | `gotalk-backend` | `8080:8080` | Go API server |
+| `frontend` | `gotalk-frontend` | `127.0.0.1:5173:5173` | Vite dev server |
+| `backend` | `gotalk-backend` | `127.0.0.1:8080:8080` | Go API server |
+
+`frontend` と `backend` の `ports` は、VPS の loopback アドレス（`127.0.0.1`）だけに公開しています。VPS の外から `5173` と `8080` に直接は接続できません。
 
 `docker-compose.yml` には `backend-dev` も定義されていますが、これは Backend 開発用 container です。通常運用で公開 port を持つ service ではありません。`backend-dev` には `profiles: ["dev"]` が付いているため、サービス名を指定しない `docker compose up` では起動しません。
 
 ## 3. ネットワーク構成
 
-公開環境では HTTPS で GoTalk にアクセスできる状態です。ドメインと HTTPS の終端設定は repository の `docker-compose.yml` には含まれていません。運用上の関連設定はバックアップ対象として `/etc/nginx` と `/etc/letsencrypt` に含まれます。
+公開環境では HTTPS で GoTalk にアクセスできる状態です。ドメインと HTTPS の終端設定は repository の `docker-compose.yml` には含まれていません。HTTPS は VPS 上の nginx が終端します。nginx の設定はリポジトリの外（VPS の `/etc/nginx`）にあり、運用上の関連設定はバックアップ対象として `/etc/nginx` と `/etc/letsencrypt` に含まれます。
+
+VPS の nginx の設定で確認している転送先は次のとおりです。
+
+| nginx の location | 転送先 |
+| --- | --- |
+| `/` | `http://127.0.0.1:5173`（`frontend`） |
+| `/api/` | `http://127.0.0.1:8080/api/`（`backend`） |
+
+nginx の転送先は `127.0.0.1` で、Docker Compose の `ports` も `127.0.0.1` だけに公開しています。そのため、外からは HTTPS の nginx 経由でだけ GoTalk に届き、`5173` と `8080` に直接は届きません。
 
 ```mermaid
 flowchart LR
-  User[User Browser] -->|HTTPS / domain| Public[Public endpoint]
-  Public --> Frontend[frontend<br/>gotalk-frontend<br/>5173]
-  Frontend -->|/api proxy<br/>http://backend:8080| Backend[backend<br/>gotalk-backend<br/>8080]
+  User[User Browser] -->|HTTPS / domain| Nginx[nginx<br/>HTTPS 終端]
+  Internet[Internet] -.->|:5173 / :8080 直接は届かない| VPSHost[VPS の外向きアドレス]
+  Nginx -->|/ → http://127.0.0.1:5173| Frontend[frontend<br/>gotalk-frontend<br/>127.0.0.1:5173]
+  Nginx -->|/api/ → http://127.0.0.1:8080/api/| Backend[backend<br/>gotalk-backend<br/>127.0.0.1:8080]
+  Frontend -->|/api proxy<br/>http://backend:8080| Backend
   Backend -->|HTTPS| OpenAI[OpenAI API<br/>Responses API / Audio Transcriptions API / Audio Speech API]
 
-  subgraph VPS[VPS / Docker Compose]
-    Frontend
-    Backend
+  subgraph VPS[VPS]
+    Nginx
+    VPSHost
+    subgraph Compose[Docker Compose]
+      Frontend
+      Backend
+    end
   end
 ```
 

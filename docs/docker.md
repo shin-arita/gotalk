@@ -19,8 +19,8 @@ flowchart LR
   Compose[Docker Compose]
 
   subgraph Services[Compose services]
-    Frontend[frontend<br/>Vite dev server<br/>5173:5173]
-    Backend[backend<br/>Go API server<br/>8080:8080]
+    Frontend[frontend<br/>Vite dev server<br/>127.0.0.1:5173:5173]
+    Backend[backend<br/>Go API server<br/>127.0.0.1:8080:8080]
     BackendDev[backend-dev<br/>Go development container<br/>profile: dev]
   end
 
@@ -43,8 +43,8 @@ flowchart LR
 
 | Service | profiles | image | build | ports | environment | volumes | network |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `frontend` | 定義なし | 定義なし | `context: ./frontend` | `5173:5173` | `VITE_BACKEND_URL=http://backend:8080` | `./frontend:/app`, `/app/node_modules` | Compose default network |
-| `backend` | 定義なし | 定義なし | `context: ./backend` | `8080:8080` | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}`, `DEBUG_TRANSLATION=true` | 定義なし | Compose default network |
+| `frontend` | 定義なし | 定義なし | `context: ./frontend` | `127.0.0.1:5173:5173` | `VITE_BACKEND_URL=http://backend:8080` | `./frontend:/app`, `/app/node_modules` | Compose default network |
+| `backend` | 定義なし | 定義なし | `context: ./backend` | `127.0.0.1:8080:8080` | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}`, `DEBUG_TRANSLATION=true` | 定義なし | Compose default network |
 | `backend-dev` | `["dev"]` | 定義なし | `context: ./backend`, `dockerfile: Dockerfile.dev` | 定義なし | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}` | `./backend:/app` | Compose default network |
 
 `frontend` には `depends_on: backend` が設定されています。`backend-dev` には `profiles: ["dev"]` と `entrypoint: [""]` が設定されています。
@@ -66,11 +66,11 @@ flowchart LR
 | exposed port | `5173` |
 | command | `npm run dev -- --host` |
 
-Compose では host の `5173` を container の `5173` に bind します。
+Compose では host の `127.0.0.1:5173` を container の `5173` に bind します。host の loopback アドレス（`127.0.0.1`）だけに公開するため、host の外（LAN やインターネット）からは `5173` に接続できません。
 
 ```yaml
 ports:
-  - "5173:5173"
+  - "127.0.0.1:5173:5173"
 ```
 
 開発中の source は `./frontend:/app` で mount されます。`/app/node_modules` は anonymous volume として定義され、container 内の `node_modules` を使います。
@@ -94,11 +94,11 @@ volumes:
 | builder | `golang:1.24-alpine` | `go.mod` を copy し、`go mod download` 後に source を copy して `go build -o server .` を実行する |
 | runtime | `alpine:3.22` | builder stage の `/app/server` を copy して `./server` を実行する |
 
-runtime stage の working directory は `/app` です。`EXPOSE 8080` が定義され、Compose では host の `8080` を container の `8080` に bind します。
+runtime stage の working directory は `/app` です。`EXPOSE 8080` が定義され、Compose では host の `127.0.0.1:8080` を container の `8080` に bind します。`frontend` と同じく、host の外からは `8080` に接続できません。
 
 ```yaml
 ports:
-  - "8080:8080"
+  - "127.0.0.1:8080:8080"
 ```
 
 `backend` には OpenAI API 呼び出しに使う環境変数が渡されます。
@@ -164,11 +164,11 @@ docker compose run --rm backend-dev go test ./...
 
 ```mermaid
 flowchart LR
-  Browser[Browser]
+  Browser[Browser on host]
 
   subgraph Compose[Docker Compose default network]
-    Frontend[frontend<br/>gotalk-frontend<br/>5173]
-    Backend[backend<br/>gotalk-backend<br/>8080]
+    Frontend[frontend<br/>gotalk-frontend<br/>127.0.0.1:5173]
+    Backend[backend<br/>gotalk-backend<br/>127.0.0.1:8080]
     BackendDev[backend-dev<br/>manual development commands]
   end
 
@@ -183,7 +183,11 @@ flowchart LR
 
 `frontend` と `backend` は Compose default network 上で service 名により接続します。`frontend` から見た Backend の URL は `http://backend:8080` です。
 
-host からは `frontend` が `localhost:5173`、`backend` が `localhost:8080` で到達できます。`backend` は OpenAI API へ outbound 接続します。
+`ports` は `127.0.0.1` だけに公開しているため、host からは `frontend` が `localhost:5173`（`127.0.0.1:5173`）、`backend` が `localhost:8080`（`127.0.0.1:8080`）で到達できます。host の LAN 側のアドレスなど、host の外からは到達できません。`backend` は OpenAI API へ outbound 接続します。
+
+macOS などで `localhost` が IPv6 の `::1` に先に解決される環境でも、curl やブラウザは `::1` への接続に失敗した後に `127.0.0.1` へ接続し直すため、`http://localhost:5173` と `http://localhost:8080` はこれまでどおり使えます。`http://[::1]:8080` のように IPv6 のアドレスを直接指定した場合は接続できません。`localhost` を IPv4 にフォールバックしないツールでは、`127.0.0.1` を指定してください。
+
+本番の VPS では、host 上の nginx が HTTPS を終端し、`127.0.0.1:5173` と `127.0.0.1:8080` に転送します。外からは HTTPS の nginx 経由でだけ GoTalk に届きます（[infrastructure.md](infrastructure.md) を参照）。
 
 `backend-dev` は同じ Compose project の service ですが、port は公開していません。`dev` profile に属しているため、サービス名を指定しない `docker compose up` では container が作られず、`docker compose run` で実行したときに作られます。Backend source を mount した開発用 container として使います。
 

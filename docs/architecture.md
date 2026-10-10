@@ -100,11 +100,11 @@ Backend の HTTP client timeout は `main()` で 120 秒に設定されていま
 
 | Service | Container | Build context | Port | 主な用途 |
 | --- | --- | --- | --- | --- |
-| `frontend` | `gotalk-frontend` | `./frontend` | `5173:5173` | Vite dev server |
-| `backend` | `gotalk-backend` | `./backend` | `8080:8080` | Go API server |
+| `frontend` | `gotalk-frontend` | `./frontend` | `127.0.0.1:5173:5173` | Vite dev server |
+| `backend` | `gotalk-backend` | `./backend` | `127.0.0.1:8080:8080` | Go API server |
 | `backend-dev` | なし | `./backend` + `Dockerfile.dev` | なし | backend 開発用コンテナ（`profiles: ["dev"]`） |
 
-`frontend` は `VITE_BACKEND_URL=http://backend:8080` を持ち、Vite proxy 経由で backend service へ接続します。`backend` には `OPENAI_API_KEY`、`OPENAI_MODEL`、`DEBUG_TRANSLATION=true` が渡されます。`backend-dev` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます。`backend-dev` は `profiles: ["dev"]` に属しているため、サービス名を指定しない `docker compose up` では起動せず、`docker compose run --rm backend-dev ...` で使います。
+`frontend` と `backend` の `ports` は host の `127.0.0.1` だけに公開しています。本番の VPS では、HTTPS を終端する nginx が `127.0.0.1:5173` と `127.0.0.1:8080` に転送するため、外からは nginx 経由でだけ届きます（[infrastructure.md](infrastructure.md) を参照）。`frontend` は `VITE_BACKEND_URL=http://backend:8080` を持ち、Vite proxy 経由で backend service へ接続します。`backend` には `OPENAI_API_KEY`、`OPENAI_MODEL`、`DEBUG_TRANSLATION=true` が渡されます。`backend-dev` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます。`backend-dev` は `profiles: ["dev"]` に属しているため、サービス名を指定しない `docker compose up` では起動せず、`docker compose run --rm backend-dev ...` で使います。
 
 Dockerfile の概要:
 

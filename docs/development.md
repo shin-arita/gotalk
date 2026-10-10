@@ -6,11 +6,13 @@ GoTalk の標準開発環境は Docker Compose です。`docker-compose.yml` に
 
 | Service | 役割 | Port | 主な用途 |
 | --- | --- | --- | --- |
-| `frontend` | React / TypeScript / Vite の開発サーバー | `5173:5173` | ブラウザ UI の起動 |
-| `backend` | Go の API server | `8080:8080` | 文字起こし、翻訳、バックトランスレーション、TTS |
+| `frontend` | React / TypeScript / Vite の開発サーバー | `127.0.0.1:5173:5173` | ブラウザ UI の起動 |
+| `backend` | Go の API server | `127.0.0.1:8080:8080` | 文字起こし、翻訳、バックトランスレーション、TTS |
 | `backend-dev` | Go 開発用コンテナ（`profiles: ["dev"]`） | なし | `gofmt`、`go test`、`go build` などの Backend 開発コマンド |
 
 通常の動作確認では `frontend` と `backend` を起動します。`backend-dev` は通常運用で常時起動する service ではなく、Backend の開発コマンドを実行するために使います。
+
+`frontend` と `backend` の `ports` は host の `127.0.0.1` だけに公開しています。開発中のマシンからは `http://localhost:5173` と `http://localhost:8080` でアクセスできますが、同じ LAN の別の端末（スマートフォンなど）から、開発中のマシンの LAN 側のアドレスで接続することはできません。macOS などで `localhost` が IPv6 の `::1` に先に解決される環境でも、curl やブラウザは `::1` への接続に失敗した後に `127.0.0.1` へ接続し直すため、`http://localhost:5173` と `http://localhost:8080` はこれまでどおり使えます。`http://[::1]:8080` のように IPv6 のアドレスを直接指定した場合は接続できません。`localhost` を IPv4 にフォールバックしないツールでは、`127.0.0.1` を指定してください。
 
 `frontend` には `VITE_BACKEND_URL=http://backend:8080` が設定されます。Vite の proxy により、Frontend からの `/api` request は Backend service に転送されます。
 
