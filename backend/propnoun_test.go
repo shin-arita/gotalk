@@ -26,7 +26,7 @@ func TestValidatePlaceholders(t *testing.T) {
 		{name: "concatenated sharing underscores", output: "__GT_PROPN_000___GT_PROPN_001__", wantErr: "overlapping placeholder"},
 		{name: "missing", output: "__GT_PROPN_000__ met someone.", wantErr: "expected 1 occurrences, got 0"},
 		{name: "too many", output: "__GT_PROPN_000__ met __GT_PROPN_001__ and __GT_PROPN_001__.", wantErr: "expected 1 occurrences, got 2"},
-		{name: "unknown placeholder", output: "__GT_PROPN_000__ met __GT_PROPN_001__ at __GT_PROPN_002__.", wantErr: "unknown placeholder at byte"},
+		{name: "unknown placeholder", output: "__GT_PROPN_000__ met __GT_PROPN_001__ at __GT_PROPN_002__.", wantErr: "unknown placeholder __GT_PROPN_002__ at byte"},
 		{name: "unknown non-numeric placeholder", output: "__GT_PROPN_000__ met __GT_PROPN_001__ at __GT_PROPN_X__.", wantErr: "unknown placeholder at byte"},
 		{name: "malformed placeholder without closing", output: "__GT_PROPN_000__ met __GT_PROPN_001__ at __GT_PROPN_002", wantErr: "malformed placeholder at byte"},
 		{name: "malformed placeholder broken in the middle", output: "__GT_PROPN_000__ met __GT_PROPN_001__ at __GT_PROPN_0 02__.", wantErr: "unknown placeholder at byte"},
