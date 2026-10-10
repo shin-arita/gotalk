@@ -232,7 +232,7 @@ GitHub Actions は以下の workflow で構成されています。
 | `.github/workflows/cd.yml` | `push` to `main` | SSH で VPS に入り `git pull --ff-only` と `docker compose up -d --build` を実行（`frontend` と `backend` を build・起動）。`production` Environment を指定しており、Required reviewers が設定されている場合は承認後に実行 |
 | `.github/workflows/codex-review-request.yml` | PR comment, PR synchronize | `@codex review` コメントと Bot 結果コメントをもとに `review-pending` / `merge-ready` / `merge-blocked` ラベルを管理 |
 
-CI の実装では Frontend は Node.js 22 をセットアップしています。Backend は `setup-go` の `go-version-file` で `backend/go.mod` を参照し、`go` ディレクティブ（`1.24.0`）に合わせた Go をセットアップします。Backend job は `go vet` の前に `gofmt -l .` で整形されていないファイルがないことを確認します。CD は CI の完了を条件にしていないため、`main` への push では CI と CD が並行して動きます。Docker build では Backend Dockerfile が `golang:1.24-alpine` を使用します。
+CI の実装では Frontend は Node.js 22 をセットアップしています。Backend は `setup-go` の `go-version: "1.24"` と `check-latest: true` で、1.24 系の最新パッチをセットアップします。`backend/go.mod` の `go 1.24.0` は必要な最低バージョンです。Backend job は `go vet` の前に `gofmt -l .` で整形されていないファイルがないことを確認します。CD は CI の完了を条件にしていないため、`main` への push では CI と CD が並行して動きます。Docker build では Backend Dockerfile が `golang:1.24-alpine` を使用し、build の時点での 1.24 系の最新パッチになります。CI と本番の build の時点が異なる場合は、パッチバージョンが一時的に異なることがあります（[ci-cd.md](ci-cd.md) を参照）。
 
 CI/CD の詳細は [CI/CD](ci-cd.md) を参照してください。
 

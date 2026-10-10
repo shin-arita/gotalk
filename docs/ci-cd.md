@@ -47,6 +47,7 @@ Frontend job は `frontend` directory で実行されます。
 | 項目 | 内容 |
 | --- | --- |
 | runner | `ubuntu-latest` |
+| action | `actions/checkout@v7`、`actions/setup-node@v7` |
 | Node.js | `22` |
 | cache | `npm`、`frontend/package-lock.json` |
 | install | `npm ci` |
@@ -62,14 +63,25 @@ Backend job は `backend` directory で実行されます。
 | 項目 | 内容 |
 | --- | --- |
 | runner | `ubuntu-latest` |
-| Go | `setup-go` の `go-version-file: backend/go.mod`（`go.mod` の `go` ディレクティブに合わせる） |
+| action | `actions/checkout@v7`、`actions/setup-go@v7` |
+| Go | `setup-go` の `go-version: "1.24"` と `check-latest: true`（1.24 系の最新パッチ） |
 | cache | `backend/go.sum` |
 | gofmt | `gofmt -l .` の結果が空でなければ失敗 |
 | vet | `go vet ./...` |
 | test | `go test ./...` |
 | build | `go build -o /tmp/gotalk-backend .` |
 
-Go のバージョンは `setup-go` の `go-version-file` で `backend/go.mod` から決まります。`go.mod` の `go` ディレクティブは `1.24.0` で、Backend の Dockerfile が使う `golang:1.24-alpine` と同じ 1.24 系です。
+Go のバージョンは次のように決まります。
+
+| 対象 | 指定 | 使われる Go |
+| --- | --- | --- |
+| CI | `setup-go` の `go-version: "1.24"` と `check-latest: true` | CI の実行時点での 1.24 系の最新パッチ |
+| Docker build（本番を含む） | `backend/Dockerfile` の `golang:1.24-alpine` | build の時点で `golang:1.24-alpine` が指している 1.24 系の最新パッチ |
+| `backend/go.mod` | `go 1.24.0` | 必要な最低バージョン。CI と Docker のどちらのパッチもこれを満たす |
+
+CI と本番の Docker build は、どちらも 1.24 系の最新パッチを使います。ただし、CI の実行と本番の build の時点が異なる場合や、`golang:1.24-alpine` の更新が新しいパッチのリリースより遅れる場合は、CI と本番でパッチバージョンが一時的に異なることがあります。
+
+`ci.yml` の各 action（`actions/checkout@v7`、`actions/setup-node@v7`、`actions/setup-go@v7`）は、Node.js 24 で動くメジャーバージョンです。
 
 `go vet` の前に gofmt の確認 step を実行します。`gofmt -l .` が整形されていないファイルを 1 件でも表示した場合は、そのファイル名を出力して job を失敗させます。
 
