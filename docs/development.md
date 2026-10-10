@@ -12,7 +12,7 @@ GoTalk の標準開発環境は Docker Compose です。`docker-compose.yml` に
 
 通常の動作確認では `frontend` と `backend` を起動します。`backend-dev` は通常運用で常時起動する service ではなく、Backend の開発コマンドを実行するために使います。
 
-`frontend` と `backend` の `ports` は host の `127.0.0.1` だけに公開しています。開発中のマシンからは `http://localhost:5173` と `http://localhost:8080` でアクセスできますが、同じ LAN の別の端末（スマートフォンなど）から、開発中のマシンの LAN 側のアドレスで接続することはできません。macOS などで `localhost` が IPv6 の `::1` に先に解決される環境でも、curl やブラウザは `::1` への接続に失敗した後に `127.0.0.1` へ接続し直すため、`http://localhost:5173` と `http://localhost:8080` はこれまでどおり使えます。`http://[::1]:8080` のように IPv6 のアドレスを直接指定した場合は接続できません。`localhost` を IPv4 にフォールバックしないツールでは、`127.0.0.1` を指定してください。
+`frontend` と `backend` の `ports` は host の `127.0.0.1` だけに公開しています。開発中のマシンからは `http://localhost:5173` と `http://localhost:8080` でアクセスできますが、同じ LAN の別の端末（スマートフォンなど）から、開発中のマシンの LAN 側のアドレスで接続することはできません（Docker Engine のバージョンなどの前提は [infrastructure.md の「ポートの公開範囲の前提」](infrastructure.md#ポートの公開範囲の前提) を参照）。macOS などで `localhost` が IPv6 の `::1` に先に解決される環境でも、curl やブラウザは `::1` への接続に失敗した後に `127.0.0.1` へ接続し直すため、`http://localhost:5173` と `http://localhost:8080` はこれまでどおり使えます。`http://[::1]:8080` のように IPv6 のアドレスを直接指定した場合は接続できません。`localhost` を IPv4 にフォールバックしないツールでは、`127.0.0.1` を指定してください。
 
 ### 実機（スマートフォンなど）での確認
 
