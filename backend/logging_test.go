@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -692,12 +694,22 @@ func TestReadOpenAIErrorDetail_RealConnectionErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// done is closed when the subtest ends, so the handler stops waiting; started is closed
 			// when the handler runs, and exited when it has returned and closed the hijacked connection.
+			// started and exited are closed through sync.Once, so a second call never closes them twice.
 			done := make(chan struct{})
 			started := make(chan struct{})
 			exited := make(chan struct{})
+			var startedOnce, exitedOnce sync.Once
+			var calls atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				close(started)
-				defer close(exited)
+				// Only the first request plays the scripted response. Any later request (for example,
+				// if the transport retried or reused a connection) returns at once without hijacking
+				// or waiting, so it cannot block the cleanup; the cleanup reports it as an error.
+				if calls.Add(1) > 1 {
+					http.Error(w, "unexpected extra request", http.StatusInternalServerError)
+					return
+				}
+				startedOnce.Do(func() { close(started) })
+				defer exitedOnce.Do(func() { close(exited) })
 				conn, buf, err := w.(http.Hijacker).Hijack()
 				if err != nil {
 					t.Errorf("hijack: %v", err)
@@ -729,6 +741,9 @@ func TestReadOpenAIErrorDetail_RealConnectionErrors(t *testing.T) {
 				}
 				srv.Close()
 				transport.CloseIdleConnections()
+				if n := calls.Load(); n > 1 {
+					t.Errorf("server handler was called %d times, want 1", n)
+				}
 			})
 
 			client := &http.Client{Timeout: tt.timeout, Transport: transport}
