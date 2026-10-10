@@ -131,6 +131,8 @@ Backend は OpenAI Audio Transcriptions API で言語判定と文字起こしを
 
 `backend-dev` は `profiles: ["dev"]` に属しているため、サービス名を指定しない `docker compose up` では起動しません。`docker compose run` でサービス名を指定すると、`--profile dev` を付けなくても実行できます。
 
+`backend-dev` は `entrypoint: [""]` を指定しており、Compose で `entrypoint` を指定するとイメージ既定の `CMD` も使われないため、既定のコマンドを持ちません。そのため `docker compose run` では必ず実行するコマンドを指定してください。コマンドなしの `docker compose run --rm backend-dev` や、サービス名を指定した `docker compose up backend-dev` は、`no command specified` でコンテナを作成できずに失敗します。
+
 利用例:
 
 ```bash
