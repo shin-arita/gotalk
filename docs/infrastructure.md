@@ -65,6 +65,24 @@ Compose 内では `frontend` と `backend` が default network 上で service �
 
 Backend は OpenAI API へ HTTPS で outbound 接続します。
 
+### レート制限と timeout
+
+OpenAI の利用料を守るためのレート制限の設計は [rate-limit-design.md](rate-limit-design.md) にあります。3つの PR に分けて実装します。今は1つ目（1回あたりの費用の上限、キャンセルの伝播、CORS の整理）までが入っています。入力の上限とエラーの応答は [api.md](api.md) の「3. 共通仕様」を参照してください。
+
+`/api/interpret` の timeout は、Backend、nginx、Frontend の3層を `Backend < nginx < Frontend` の順に長くしています（[rate-limit-design.md](rate-limit-design.md) の 5.11）。
+
+| 層 | `/api/interpret` | `/api/translate` | `/api/tts` |
+| --- | --- | --- | --- |
+| Backend の処理の deadline | 55 秒 | 25 秒 | 25 秒 |
+| nginx の `proxy_read_timeout`（設定していないので既定の 60 秒） | 60 秒 | 60 秒 | 60 秒 |
+| Frontend の timeout | 65 秒 | 30 秒 | 30 秒 |
+
+Backend の deadline を 60 秒より長くする場合は、nginx の `proxy_read_timeout` も合わせて変える必要があります（sudo が必要です）。nginx の `client_max_body_size` は既定の 1m のままなので、`/api/interpret` の body は Backend の上限（1.5 MiB）より先に nginx の 1 MiB で制限されます。これは安全側ですが、仕様と実環境が一致していません。第2段階で、nginx の設定を Backend の上限に合わせます。
+
+Backend は CORS のヘッダを付けません。本番は nginx、開発環境は Vite の proxy を通るので、ブラウザから見て Frontend と API は同じオリジンです。
+
+Backend は `SIGTERM` を受けると、処理中のリクエストを最大 25 秒待ってから終了します（graceful shutdown）。`docker-compose.yml` の `backend` には、これより長い `stop_grace_period: 30s` を設定しています。
+
 ### ポートの公開範囲の前提
 
 `5173` と `8080` に外から直接届かないことは、次の 2 点を前提にしています。
@@ -202,6 +220,7 @@ Backend のログには、利用者の発話の内容を出力しません。障
 | 言語 | 選択言語、翻訳元と翻訳先、文字起こしで判定した言語。`frontend/src/languages.ts` にある言語 ID（と `unknown`）以外は `other` と出力し、文字起こしで判定した言語は、Whisper が対応する言語の名前（`japanese` など）と言語コード（`ja` など）の許可リスト（`backend/whisperlangs.go`。openai/whisper の `whisper/tokenizer.py` の `LANGUAGES` から作成）にない値を `other` と出力する |
 | テキストの長さ | 文字起こしや翻訳の対象のテキストの文字数（rune の数）。例：`translate: text runes=7 lang0=ja lang1=en` |
 | リクエストの概要 | `speaker`（選択言語のどちらかに一致する場合だけその言語、それ以外は `invalid`）、音声のファイルの拡張子（`.webm`、`.mp4`、`.ogg` 以外は `other`）、音声のサイズ、`transcript` の有無 |
+| 制限とキャンセル | 入力の上限を超えた、クライアントが切断した、処理の deadline に達した、OpenAI のエラーを変換した場合に、`endpoint`、`limit_type`（`input_size`、`canceled`、`timeout`、`service_unavailable`、`upstream_busy`）、返した status（応答を書かない `canceled` は `none`）を出力する。例：`limit: endpoint=/api/translate limit_type=input_size status=400` |
 | エラーの種類 | OpenAI API の HTTP status、エラー応答の `error.type` と `error.code`（英小文字、数字、`_` だけの 64 文字以下の値の場合だけ。null や欠落は `none`、それ以外は `invalid`）、エラー応答の本文のバイト数（エラー応答の本文は 64 KiB までしか読まず、それを超える場合は `body over 65536 bytes (truncated)`、読み取りが途中で失敗した場合は `body read error after N bytes (<原因>)` と出力する。原因は、接続が途中で切れた場合は `unexpected EOF`、タイムアウトの場合は `timeout`、それ以外はエラーの型。失敗する前に完全なエラーの JSON を受け取れていた場合は、`type=server_error code=none, body read error after 64 bytes (unexpected EOF)` のように `type` と `code` も添える）、JSON のデコードエラーの種類と位置（`EOF` と `unexpected EOF` を区別する）、固有名詞保護の検証エラーの種類。例：`OpenAI error: OpenAI API returned status 429 (type=insufficient_quota code=insufficient_quota, body 312 bytes)` |
 
 出力しないものは次のとおりです。
@@ -209,6 +228,7 @@ Backend のログには、利用者の発話の内容を出力しません。障
 - 文字起こしのテキスト、翻訳の対象と結果、バックトランスレーション、固有名詞、プレースホルダの対応、翻訳 prompt
 - OpenAI API の応答の本文（エラー応答の `error.message` を含む。エラー応答からは `error.type` と `error.code` だけを、上の条件を満たす場合に出力します）
 - クライアントから送られる任意の文字列（`speaker` の任意の値、音声のファイル名、選択肢にない言語 ID）
+- クライアントの IP アドレス
 
 `DEBUG_TRANSLATION=true` の場合だけ、Backend は翻訳処理の debug log（`[DEBUG_TRANSLATION]` で始まる行）を出力します。debug log には、受信したテキスト、翻訳 prompt、OpenAI の応答、固有名詞の保護マップなど、発話の内容がそのまま含まれます。`docker-compose.yml` では `DEBUG_TRANSLATION` を渡していないため、本番では debug log は出力されません。本番では有効にしないでください。ローカルで調査に使う方法は [development.md](development.md) の「Backend の debug log」を参照してください。
 
@@ -218,3 +238,4 @@ Backend のログには、利用者の発話の内容を出力しません。障
 - [docker.md](docker.md)
 - [ci-cd.md](ci-cd.md)
 - [backup.md](backup.md)
+- [rate-limit-design.md](rate-limit-design.md)

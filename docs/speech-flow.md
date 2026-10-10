@@ -134,7 +134,7 @@ stateDiagram-v2
 
 `recognizedText` は `SpeechRecognition.onresult` から更新される表示用の認識テキストです。`recognizedTextRef` は、録音終了時に最新の認識テキストを同期的に参照するために使われます。
 
-`useEffect` は、`status !== 'recording'` または `recognizedText` が空の場合は何もしません。条件を満たす場合、800ms の `setTimeout` で `/api/translate` を呼び出します。cleanup では `clearTimeout` と `AbortController.abort()` を実行するため、`recognizedText` が短時間で更新されると前のリクエスト準備は取り消されます。
+`useEffect` は、`status !== 'recording'` または `recognizedText` が空の場合は何もしません。条件を満たす場合、800ms の `setTimeout` で `/api/translate` を呼び出します。cleanup では `clearTimeout` と `AbortController.abort()` を実行するため、`recognizedText` が短時間で更新されると前のリクエスト準備は取り消されます。送信中の `fetch` も、`recognizedText` が変わったときや録音を止めて `status` が変わったときに abort されます。`fetch` には 30 秒のタイムアウトもあり、タイムアウトになったら abort します。
 
 送信する JSON は以下です。
 
@@ -175,7 +175,7 @@ stateDiagram-v2
 - `speaker`：タップされた国旗の言語 ID
 - `transcript`：`SpeechRecognition` の認識テキスト。認識テキストが得られた場合だけ送信
 
-タイムアウトは 60 秒です。`processing` 中の翻訳カードには、話者側と相手側の両言語の「翻訳中」と「お待ちください」のメッセージを 1.2 秒ごとに切り替えて表示します。
+タイムアウトは 65 秒で、タイムアウトになったら `AbortController` で `fetch` を abort します。`processing` 中の翻訳カードには、話者側と相手側の両言語の「翻訳中」と「お待ちください」のメッセージを 1.2 秒ごとに切り替えて表示します。
 
 確定翻訳の成功時、Frontend はレスポンスから以下を state に保存します。
 
@@ -203,7 +203,7 @@ Backend の `/api/tts` は `POST` のみ受け付けます。`OPENAI_API_KEY` �
 
 TTS model は `OPENAI_TTS_MODEL` を使い、未設定時は `gpt-4o-mini-tts` です。voice は `OPENAI_TTS_VOICE` を使い、未設定時は `marin` です。Backend は OpenAI Audio Speech API に `model`、`input`、`voice` を送信し、成功時は `audio/mpeg` を Frontend に返します。
 
-Frontend は返却された音声からオブジェクト URL を作成し、`Audio` で再生します。再生終了時または再生エラー時は URL を解放し、`audioRef` を `null` にして `status` を `ready` に戻します。`/api/tts` の呼び出しまたは `audio.play()` に失敗した場合も `ready` に戻します。
+`/api/tts` のタイムアウトは 30 秒で、タイムアウトになったら `AbortController` で `fetch` を abort します。Frontend は返却された音声からオブジェクト URL を作成し、`Audio` で再生します。再生終了時または再生エラー時は URL を解放し、`audioRef` を `null` にして `status` を `ready` に戻します。`/api/tts` の呼び出しまたは `audio.play()` に失敗した場合も `ready` に戻します。
 
 ## 9. エラー処理
 
@@ -213,8 +213,8 @@ Frontend は返却された音声からオブジェクト URL を作成し、`Au
 - `SpeechRecognition` に対応していない場合や `recognition.start()` に失敗した場合、エラーは表示せずに録音を継続します。この場合 `transcript` は送られず、Backend が録音音声から文字起こしします。
 - `/api/interpret` または `/api/translate`（再翻訳）が `422` で `language_mismatch` を返した場合、Frontend は選択言語ごとの言語不明メッセージを表示し、`idle` に戻します。
 - `/api/interpret` または `/api/translate`（再翻訳）がタイムアウトした場合、Frontend は「通信がタイムアウトしました。もう一度お試しください。」を表示し、`idle` に戻します。
-- それ以外で確定翻訳または再翻訳が失敗した場合、Frontend は `HTTP 500` のような status 表示などのエラー内容を表示して `idle` に戻します。
-- TTS が失敗した場合、Frontend は `ready` に戻します。Backend では OpenAI Audio Speech API の呼び出し失敗時に `tts failed` を返します。
+- それ以外で確定翻訳または再翻訳が失敗した場合、エラーの応答の `code` が `input_too_large`、`service_unavailable`、`upstream_busy`、`timeout` の場合は、それぞれ「入力が長すぎます。短くしてもう一度お試しください」「現在サービスを利用できません」「混み合っています。しばらくしてからお試しください」「処理に時間がかかっています。もう一度お試しください」を表示します（[api.md](api.md) の「9. Frontend からの利用」）。それ以外の `code` では、Frontend は `HTTP 500` のような status 表示などのエラー内容を表示して `idle` に戻します。
+- TTS が失敗した場合、Frontend は `ready` に戻します。`code` が上の4つのどれかの場合は、その表示も出します。Backend では OpenAI Audio Speech API の呼び出し失敗時に `tts failed` を返します。
 
 ## 10. 関連ドキュメント
 

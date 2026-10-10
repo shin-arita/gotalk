@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -115,7 +116,7 @@ func TestLogging_TranslateDoesNotLogUtterance(t *testing.T) {
 			langs:    `[{"id":"en","label":"English"},{"id":"ko","label":"Korean"}]`,
 			replies:  []string{`{"error":{"message":"SECRETBODY the secret plan is ready","type":"insufficient_quota","param":null,"code":"insufficient_quota"}}`},
 			status:   http.StatusTooManyRequests,
-			wantCode: http.StatusBadGateway,
+			wantCode: http.StatusServiceUnavailable,
 			wantLog:  "OpenAI error: OpenAI API returned status 429 (type=insufficient_quota code=insufficient_quota, body ",
 			secrets:  []string{"secret plan", "SECRETBODY"},
 		},
@@ -524,15 +525,15 @@ func TestErrorBodyReadIsLimited(t *testing.T) {
 	const size = 2 << 20 // 2 MiB
 	calls := map[string]func() error{
 		"callOpenAI": func() error {
-			_, err := callOpenAI("test-key", "test-model", "prompt")
+			_, err := callOpenAI(context.Background(), "test-key", "test-model", "prompt")
 			return err
 		},
 		"callOpenAITTS": func() error {
-			_, err := callOpenAITTS("test-key", "test-model", "voice", "text")
+			_, err := callOpenAITTS(context.Background(), "test-key", "test-model", "voice", "text")
 			return err
 		},
 		"callWhisper": func() error {
-			_, _, err := callWhisper("test-key", "whisper-1", []byte("audio"), "recording.webm", "", "")
+			_, _, err := callWhisper(context.Background(), "test-key", "whisper-1", []byte("audio"), "recording.webm", "", "")
 			return err
 		},
 	}

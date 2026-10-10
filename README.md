@@ -131,6 +131,7 @@ CD は、`main` への push で起動した CI が成功した場合だけ起動
 - Uptime Kuma による公開環境の監視
 - Discord Webhook による障害通知
 - 本番 VPS 設定の毎日バックアップ
+- OpenAI の利用料を守るための入力の上限、1リクエストあたりの OpenAI の呼び出しの回数の上限、処理の timeout とキャンセル
 
 インフラ構成の詳細は [docs/infrastructure.md](docs/infrastructure.md) を参照してください。
 
@@ -177,6 +178,7 @@ GoTalk では、公開環境の死活監視と障害通知のために Uptime Ku
 - [CI/CD](docs/ci-cd.md)
 - [インフラ構成](docs/infrastructure.md)
 - [バックアップ](docs/backup.md)
+- [レート制限と CORS の設計](docs/rate-limit-design.md)
 
 ## ローカル起動
 

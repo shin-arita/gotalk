@@ -4,7 +4,7 @@
 
 GoTalk のテストは Backend と Frontend を分けて実行します。
 
-Backend は Go 標準の `go test` で、HTTP handler、OpenAI API 呼び出し wrapper（文字起こし、翻訳、TTS）、言語判定結果の照合、固有名詞保護、バックトランスレーション、API エラーを検証します。外部 API へ実通信しないよう、テストでは `http.DefaultClient.Transport` を mock transport に差し替えます。
+Backend は Go 標準の `go test` で、HTTP handler、OpenAI API 呼び出し wrapper（文字起こし、翻訳、TTS）、言語判定結果の照合、固有名詞保護、バックトランスレーション、API エラーを検証します。外部 API へ実通信しないよう、テストでは OpenAI 用の `http.Client`（`openAIClient`）の `Transport` を mock transport に差し替えます。
 
 Frontend は Vitest、Testing Library、jsdom で、言語選択、国旗ボタンによる録音フロー、`/api/interpret` への送信内容、翻訳結果表示、バックトランスレーション表示、再翻訳、TTS、状態遷移、エラー処理を検証します。
 
@@ -14,9 +14,10 @@ Backend のテストファイルは次のとおりです。
 
 | ファイル | 主な対象 |
 | --- | --- |
-| `backend/main_test.go` | `whisperLangMatches`、共通 helper、health、CORS、固有名詞抽出補助 |
+| `backend/main_test.go` | `whisperLangMatches`、共通 helper、health、固有名詞抽出補助 |
 | `backend/main_handlers_test.go` | `/api/interpret`、`/api/translate`、`/api/tts`、OpenAI 呼び出し、固有名詞保護 |
 | `backend/propnoun_test.go` | `validatePlaceholders`、`buildRetryPrompt`、`runProtectedTranslation` |
+| `backend/limits_test.go` | 入力の上限、`max_output_tokens`、OpenAI の呼び出しの最大回数、OpenAI のエラーの変換、キャンセルと deadline、CORS のヘッダがないこと、HTTP サーバーの設定と graceful shutdown |
 
 実行コマンド:
 
@@ -28,8 +29,16 @@ go test ./...
 主な検証対象:
 
 - `/health` が JSON で `{"status":"ok"}` を返すこと
-- `writeError` が JSON error response を返すこと
-- CORS middleware が通常 request と `OPTIONS` request を処理すること
+- `writeError` が `{"error","code"}` の JSON error response を返すこと
+- 応答に `Access-Control-Allow-*` のヘッダが付かず、`/api/*` の `OPTIONS` が 405 になること（`TestNoCORSHeaders`）
+- 501 文字のテキストや transcript が 400 `input_too_large`、上限を超える body や音声が 413 `input_too_large` になり、OpenAI を呼ばないこと。JSON の未知のフィールドと 2つ目の値が 400 になること。Frontend が送るフィールドを構造体が受け付けること（`TestInputLimits_*`）
+- Responses API のすべての呼び出しに `max_output_tokens: 1024` が付き、`status` が `incomplete` などの応答が失敗になること（`TestResponsesAPI_MaxOutputTokensOnEveryCall`、`TestCallOpenAI_IncompleteIsFailure`）
+- 500 文字の入力で、Responses API に送る入力全体が上限のバイト数に収まること（`TestResponsesAPI_InputSizeFor500Characters`）
+- 経路ごとの OpenAI の呼び出しの回数が最大回数の定数と一致し、それを超えて呼ばないこと（`TestMaxOpenAICalls`）
+- OpenAI の支出上限とクレジットの枯渇が 503 `service_unavailable`、それ以外の 429 が 503 `upstream_busy`（`Retry-After` は 60 秒以下だけ渡す）になり、再試行しないこと（`TestOpenAIErrors_Conversion`、`TestParseRetryAfter`）
+- 処理の途中で context をキャンセルすると、それ以降の OpenAI の呼び出しをせず、応答を書かないこと（`TestCancellation_StopsFurtherOpenAICalls`）。deadline に達すると 504 `timeout` を返すこと（`TestDeadline_Returns504`）
+- OpenAI の呼び出しが `http.DefaultClient` ではなく `openAIClient` を使い、deadline 付きの context で送られること（`TestOpenAIClient`）
+- `http.Server` の timeout の設定と、graceful shutdown で処理中のリクエストを待つこと、待つ時間を超えたら接続を閉じること（`TestNewServer`、`TestRunServer_GracefulShutdown`）
 - `extractJSON` が OpenAI response から JSON 部分を取り出すこと
 - `whisperLangMatches` が言語名（`japanese` など）と ISO コード（`ja` など）の両方で選択言語と照合できること（`TestWhisperLangMatches`）
 - `callWhisper` が `whisper-1` と `gpt-4o-transcribe` の正常系、非 200、invalid JSON、transport error を扱うこと（`TestCallWhisper_*` 5 件）
@@ -64,6 +73,7 @@ Frontend のテストファイルは次のとおりです。
 | ファイル | 主な対象 |
 | --- | --- |
 | `frontend/src/languages.test.ts` | 言語定義 |
+| `frontend/src/api.test.ts` | API の timeout の値、エラーの `code` ごとの表示 |
 | `frontend/src/pages/LanguageSelectPage.test.tsx` | 言語選択画面 |
 | `frontend/src/pages/InterpreterPage.test.tsx` | 通訳画面、録音、確定翻訳、再翻訳、TTS、状態遷移 |
 
@@ -101,6 +111,10 @@ npm test
 - `/api/tts` に `ttsText` を送ること
 - TTS fetch 中の button disabled、audio `onended` 後の復帰、TTS 失敗後の復帰
 - `recording` 中は翻訳カードを隠し、録音終了後に表示すること
+- すべての `fetch`（`/api/interpret`、リアルタイム翻訳と再翻訳の `/api/translate`、`/api/tts`）に `AbortSignal` が渡され、Backend が受け付けるフィールドだけを送ること
+- `/api/interpret` は 65 秒、`/api/translate` と `/api/tts` は 30 秒で `fetch` が abort されること
+- リアルタイム翻訳の `fetch` が、認識テキストが変わったときと録音を止めたときに abort されること
+- エラーの応答の `code`（`input_too_large`、`service_unavailable`、`upstream_busy`、`timeout`）に応じた表示をし、それ以外の `code` では OpenAI の内部のエラーコードを表示しないこと
 
 `/api/interpret` の結果表示やエラー処理のテストは、`MediaRecorder` と `navigator.mediaDevices.getUserMedia` を mock し、実際の操作と同じく国旗をタップして録音を開始し、同じ国旗をタップして停止することで `/api/interpret` を呼びます（共通の手順は helper `renderAndInterpret` にまとめています）。これらのテストでは `SpeechRecognition` を mock していないため、`transcript` は送られません。`transcript` の送信は、`SpeechRecognition` を mock した国旗タップのテスト 1 件で検証します。
 
@@ -119,6 +133,7 @@ Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeOb
 | 固有名詞保護 | Kagome 抽出、英語自己紹介 pattern、placeholder、retry、復元、`ttsText` |
 | バックトランスレーション | 翻訳後の back-translation call、placeholder 検証と retry |
 | TTS | OpenAI Audio Speech API wrapper、`audio/mpeg` response、TTS error |
+| 費用の上限とキャンセル | 入力の上限、`max_output_tokens`、OpenAI の呼び出しの最大回数、OpenAI のエラーの変換、deadline とキャンセル、Frontend の timeout |
 | Frontend 録音 | `MediaRecorder`、`getUserMedia`、国旗ボタンによる録音フロー |
 | Frontend API 利用 | `/api/interpret`（`speaker`、`myLanguage`、`theirLanguage`）、`/api/translate`、`/api/tts`、`language_mismatch` |
 | Frontend UI | 翻訳結果、バックトランスレーション、履歴、読み上げボタン、エラー表示 |

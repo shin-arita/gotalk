@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"regexp"
@@ -730,9 +731,10 @@ func buildRetryPrompt(basePrompt string, missingPlaceholders []string) string {
 // 1. Extract proper nouns
 // 2. Replace with placeholders (and validate the replaced text itself)
 // 3. Call translate
-// 4. Validate (retry once on failure)
+// 4. Validate (retry once on failure; maxTranslationRetries)
 // 5. Call back-translate
-// 6. Validate (retry once on failure)
+// 6. Validate (retry once on failure; maxTranslationRetries)
+// So it makes at most maxTranslationCalls OpenAI calls, all with ctx.
 // Returns translatedRaw (with placeholders), backTranslationRaw (with placeholders), entries, error.
 // On success: returns (translatedRaw, backTranslationRaw, entries, nil).
 // If text already contains "__GT_PROPN_", no proper noun is extracted, or the replaced text fails
@@ -742,6 +744,7 @@ func buildRetryPrompt(basePrompt string, missingPlaceholders []string) string {
 // On placeholder validation failure after the retry: returns ("", "", entries, err) whose message
 // contains the "proper_noun_protection_failed" sentinel.
 func runProtectedTranslation(
+	ctx context.Context,
 	apiKey, model string,
 	text string,
 	translatePromptFn func(placeholderText string) string,
@@ -789,7 +792,7 @@ func runProtectedTranslation(
 	txPrompt := translatePromptFn(placeholderText)
 	debugLog("翻訳プロンプト:\n%s", txPrompt)
 	debugLog("OpenAI 翻訳対象テキスト: %q", placeholderText)
-	translatedRaw, err = callOpenAI(apiKey, model, txPrompt)
+	translatedRaw, err = callOpenAI(ctx, apiKey, model, txPrompt)
 	if err != nil {
 		return "", "", entries, fmt.Errorf("translation failed: %w", err)
 	}
@@ -798,7 +801,7 @@ func runProtectedTranslation(
 		missing := collectMissingPlaceholders(translatedRaw, expected)
 		debugLog("プレースホルダ欠落 (翻訳): %v — 再翻訳します", missing)
 		retryPrompt := buildRetryPrompt(txPrompt, missing)
-		translatedRaw, err = callOpenAI(apiKey, model, retryPrompt)
+		translatedRaw, err = callOpenAI(ctx, apiKey, model, retryPrompt)
 		if err != nil {
 			return "", "", entries, fmt.Errorf("translation retry failed: %w", err)
 		}
@@ -813,7 +816,7 @@ func runProtectedTranslation(
 	debugLog("バックトランスレーション入力: %q", translatedRaw)
 	btPrompt := backTranslatePromptFn(translatedRaw)
 	debugLog("バックトランスレーション プロンプト:\n%s", btPrompt)
-	backTranslationRaw, err = callOpenAI(apiKey, model, btPrompt)
+	backTranslationRaw, err = callOpenAI(ctx, apiKey, model, btPrompt)
 	if err != nil {
 		return "", "", entries, fmt.Errorf("back-translation failed: %w", err)
 	}
@@ -822,7 +825,7 @@ func runProtectedTranslation(
 		missing := collectMissingPlaceholders(backTranslationRaw, expected)
 		debugLog("プレースホルダ欠落 (バックトランスレーション): %v — 再翻訳します", missing)
 		retryBtPrompt := buildRetryPrompt(btPrompt, missing)
-		backTranslationRaw, err = callOpenAI(apiKey, model, retryBtPrompt)
+		backTranslationRaw, err = callOpenAI(ctx, apiKey, model, retryBtPrompt)
 		if err != nil {
 			return "", "", entries, fmt.Errorf("back-translation retry failed: %w", err)
 		}
