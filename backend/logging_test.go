@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
@@ -478,5 +480,92 @@ func TestLogHelpers(t *testing.T) {
 	}
 	if n := logRunes("秘密の会議"); n != 5 {
 		t.Errorf("logRunes=%d want 5", n)
+	}
+}
+
+// countingReader serves size bytes (an error JSON prefix containing a secret, then padding)
+// and records how many bytes were read, so tests can check that error bodies are read only
+// up to maxErrorBodyBytes.
+type countingReader struct {
+	data []byte
+	pos  int
+	read int
+}
+
+func newCountingReader(size int) *countingReader {
+	prefix := `{"error":{"message":"SECRETBIG","type":"server_error","code":null},"pad":"`
+	data := make([]byte, size)
+	copy(data, prefix)
+	for i := len(prefix); i < size; i++ {
+		data[i] = 'x'
+	}
+	return &countingReader{data: data}
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	if c.pos >= len(c.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, c.data[c.pos:])
+	c.pos += n
+	c.read += n
+	return n, nil
+}
+
+func (c *countingReader) Close() error { return nil }
+
+// OpenAI error bodies larger than maxErrorBodyBytes must be read only up to the limit,
+// reported as truncated, and never logged.
+func TestErrorBodyReadIsLimited(t *testing.T) {
+	const size = 2 << 20 // 2 MiB
+	calls := map[string]func() error{
+		"callOpenAI": func() error {
+			_, err := callOpenAI("test-key", "test-model", "prompt")
+			return err
+		},
+		"callOpenAITTS": func() error {
+			_, err := callOpenAITTS("test-key", "test-model", "voice", "text")
+			return err
+		},
+		"callWhisper": func() error {
+			_, _, err := callWhisper("test-key", "whisper-1", []byte("audio"), "recording.webm", "", "")
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			body := newCountingReader(size)
+			setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusInternalServerError, Body: body, Header: make(http.Header)}, nil
+			})
+			err := call()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if body.read > maxErrorBodyBytes+1 {
+				t.Errorf("read %d bytes, want at most %d", body.read, maxErrorBodyBytes+1)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, fmt.Sprintf("body over %d bytes (truncated)", maxErrorBodyBytes)) {
+				t.Errorf("error should report truncation: %q", msg)
+			}
+			if strings.Contains(msg, "SECRETBIG") || strings.Contains(msg, "server_error") {
+				t.Errorf("error must not include the body: %q", msg)
+			}
+		})
+	}
+}
+
+func TestReadOpenAIErrorDetail_AtLimit(t *testing.T) {
+	// A body of exactly maxErrorBodyBytes is read whole and reported with its size.
+	body := newCountingReader(maxErrorBodyBytes)
+	got := readOpenAIErrorDetail(body)
+	if want := fmt.Sprintf("body %d bytes", maxErrorBodyBytes); got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+	// A small error body is decoded as before.
+	got = readOpenAIErrorDetail(strings.NewReader(`{"error":{"message":"SECRET","type":"server_error","code":null}}`))
+	if !strings.HasPrefix(got, "type=server_error code=none, body ") || strings.Contains(got, "SECRET") {
+		t.Errorf("unexpected detail: %q", got)
 	}
 }

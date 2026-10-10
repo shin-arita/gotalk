@@ -2,7 +2,9 @@ package main
 
 // whisperLanguages maps the language codes Whisper supports to the lowercase language names
 // it reports (for example, "ja" → "japanese"). Copied from LANGUAGES in openai/whisper
-// (whisper/tokenizer.py). It is used only to decide which detected-language values are safe to log.
+// (whisper/tokenizer.py) at openai/whisper@c5d42560760a05584c1c79546a098287e5a771eb
+// (2023-11-06, "large-v3 (#1761)"), the latest commit that changed tokenizer.py.
+// It is used only to decide which detected-language values are safe to log.
 var whisperLanguages = map[string]string{
 	"en": "english", "zh": "chinese", "de": "german", "es": "spanish",
 	"ru": "russian", "ko": "korean", "fr": "french", "ja": "japanese",

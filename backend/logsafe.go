@@ -94,6 +94,23 @@ func jsonErrSummary(err error) string {
 	}
 }
 
+// maxErrorBodyBytes is the most bytes read from an OpenAI error response body.
+// OpenAI error bodies are a small JSON object ({"error":{"message","type","param","code"}}),
+// a few hundred bytes in practice, so 64 KiB leaves ample room while bounding memory use.
+const maxErrorBodyBytes = 64 << 10
+
+// readOpenAIErrorDetail reads at most maxErrorBodyBytes+1 bytes of an OpenAI error response body
+// and summarizes it with openAIErrorDetail. When the body is larger than maxErrorBodyBytes,
+// it is not decoded and only "body over N bytes (truncated)" is reported; otherwise
+// "body N bytes" is the size of the whole body.
+func readOpenAIErrorDetail(r io.Reader) string {
+	body, _ := io.ReadAll(io.LimitReader(r, maxErrorBodyBytes+1))
+	if len(body) > maxErrorBodyBytes {
+		return fmt.Sprintf("body over %d bytes (truncated)", maxErrorBodyBytes)
+	}
+	return openAIErrorDetail(body)
+}
+
 // openAIErrorTokenRe matches the error type and code values that are safe to log
 // (for example, "insufficient_quota" or "invalid_request_error").
 var openAIErrorTokenRe = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
