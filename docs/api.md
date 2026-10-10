@@ -170,7 +170,7 @@ transcript 経路と Whisper 経路のどちらでも、翻訳元と翻訳先が
 
 「日本語文字」は、ひらがな、カタカナ、CJK 統合漢字、CJK Extension A のいずれかです（`hasJapaneseChars`）。漢字だけの文も日本語文字を含むと判定されます。
 
-この条件は `/api/translate` の条件とは異なります。保護経路のプレースホルダ化、検証、リトライは `/api/translate` と同じです。固有名詞が 1 件も抽出されなかった場合や Kagome tokenizer の初期化・抽出に失敗した場合に保護なし経路へ進む点も同じですが、進んだ後の処理が異なります。`/api/interpret` は決めた翻訳方向のまま翻訳だけを行い、`language_mismatch` は返しません。`/api/translate` は OpenAI Responses API に翻訳元を判定させるため、`language_mismatch` を返すことがあります。詳細は [proper-noun-protection.md](proper-noun-protection.md) を参照してください。
+この条件は `/api/translate` の条件とは異なります。保護経路のプレースホルダ化、検証、リトライは `/api/translate` と同じです。固有名詞が 1 件も抽出されなかった場合や Kagome tokenizer の初期化・抽出に失敗した場合、入力テキストに `__GT_PROPN_` が含まれる場合、プレースホルダ化したテキストがプレースホルダ検証に通らない場合に保護なし経路へ進む点も同じですが、進んだ後の処理が異なります。`/api/interpret` は決めた翻訳方向のまま翻訳だけを行い、`language_mismatch` は返しません。`/api/translate` は OpenAI Responses API に翻訳元を判定させるため、`language_mismatch` を返すことがあります。詳細は [proper-noun-protection.md](proper-noun-protection.md) を参照してください。
 
 ## 6. POST /api/translate
 
@@ -236,7 +236,7 @@ Response 例:
 | 保護経路 | 選択言語に `ja` があり、入力に日本語文字を含む | `ja` を翻訳元、もう一方を翻訳先にする |
 | 保護経路 | 選択言語に `ja` がなく、入力に英語自己紹介パターンと日本語文字を含む | `languages[1]` を翻訳元、`languages[0]` を翻訳先にする |
 | 保護経路 | 選択言語に `ja` がなく、入力に英語自己紹介パターンを含み、日本語文字を含まない | `languages[0]` を翻訳元、`languages[1]` を翻訳先にする |
-| 保護なし経路 | 上記以外、または保護経路で固有名詞が 1 件も抽出されなかった場合や Kagome tokenizer の初期化・抽出に失敗した場合 | OpenAI Responses API の JSON 応答の `sourceLanguage` を翻訳元にし、`lang0`、`lang1` のうち翻訳元でない方を翻訳先にする |
+| 保護なし経路 | 上記以外、または保護経路で固有名詞が 1 件も抽出されなかった場合、Kagome tokenizer の初期化・抽出に失敗した場合、入力テキストに `__GT_PROPN_` が含まれる場合、プレースホルダ化したテキストがプレースホルダ検証に通らない場合 | OpenAI Responses API の JSON 応答の `sourceLanguage` を翻訳元にし、`lang0`、`lang1` のうち翻訳元でない方を翻訳先にする |
 
 保護経路の行は、固有名詞が 1 件以上抽出された場合だけに当てはまります。選択言語に `ja` がある場合、保護経路に入るには入力に日本語文字が必要なため、英語自己紹介パターンだけでは保護経路に入りません。
 
@@ -271,7 +271,7 @@ Response 例:
 
 保護経路では、固有名詞を `__GT_PROPN_NNN__` 形式のプレースホルダに置き換えて OpenAI Responses API に渡します。翻訳結果とバックトランスレーション結果の両方でプレースホルダを検証し、必要に応じて各段階で 1 回だけリトライします。
 
-固有名詞が抽出されなかった場合、または Kagome tokenizer の初期化・抽出に失敗した場合は、保護なし経路へ進みます。プレースホルダ検証が再試行後も失敗した場合は HTTP 502 で `proper_noun_protection_failed` を返します。
+固有名詞が抽出されなかった場合、Kagome tokenizer の初期化・抽出に失敗した場合、入力テキストに `__GT_PROPN_` が含まれる場合、またはプレースホルダ化したテキストがプレースホルダ検証に通らない場合は、保護なし経路へ進みます。プレースホルダ検証が再試行後も失敗した場合は HTTP 502 で `proper_noun_protection_failed` を返します。
 
 ## 7. POST /api/tts
 

@@ -47,6 +47,7 @@ Frontend job は `frontend` directory で実行されます。
 | 項目 | 内容 |
 | --- | --- |
 | runner | `ubuntu-latest` |
+| action | `actions/checkout@v7`、`actions/setup-node@v7` |
 | Node.js | `22` |
 | cache | `npm`、`frontend/package-lock.json` |
 | install | `npm ci` |
@@ -62,13 +63,31 @@ Backend job は `backend` directory で実行されます。
 | 項目 | 内容 |
 | --- | --- |
 | runner | `ubuntu-latest` |
-| Go | `setup-go` の `go-version` は `"1.22"`（下記参照） |
+| action | `actions/checkout@v7`、`actions/setup-go@v7` |
+| Go | `setup-go` の `go-version: "1.24"` と `check-latest: true`（1.24 系の最新パッチ） |
 | cache | `backend/go.sum` |
+| gofmt | `gofmt -l .` の結果が空でなければ失敗 |
 | vet | `go vet ./...` |
 | test | `go test ./...` |
 | build | `go build -o /tmp/gotalk-backend .` |
 
-`setup-go` で指定している Go のバージョンは `1.22` ですが、`backend/go.mod` の `go` ディレクティブは `1.24.0` です。Go 1.21 以降の toolchain の自動切り替え（`GOTOOLCHAIN`）が有効な場合、`go` コマンドは `go.mod` の指定を満たす 1.24 系の toolchain を取得して使う可能性があります。そのため、CI の Backend のテストが Go 1.22 で実行されているとは限りません。実際に使われるバージョンは CI のログで確認してください。
+Go のバージョンは次のように決まります。
+
+| 対象 | 指定 | 使われる Go |
+| --- | --- | --- |
+| CI | `setup-go` の `go-version: "1.24"` と `check-latest: true` | CI の実行時点での 1.24 系の最新パッチ |
+| 本番の Docker build（CD） | `backend/Dockerfile` の `golang:1.24-alpine` | VPS にある `golang:1.24-alpine` の image（最後に pull した時点のパッチ）。VPS に image がない場合は、build の時点で pull したもの |
+| `backend/go.mod` | `go 1.24.0` | 必要な最低バージョン。CI と Docker のどちらのパッチもこれを満たす |
+
+CI は実行のたびに 1.24 系の最新パッチをセットアップします。一方、CD の deploy script は `docker compose up -d --build` を `--pull` なしで実行し、`docker-compose.yml` の `build` にも `pull: true` は指定されていません。Docker の build は、`--pull` を指定しない場合、ローカルにある base image を使います。そのため、本番の build では VPS にキャッシュされている `golang:1.24-alpine`（最後に pull した時点のパッチ）が使われ、`golang:1.24-alpine` が新しいパッチに更新されても、自動では反映されないと考えられます。
+
+このため、CI と本番の Go のパッチの差は、一時的なものとは限りません。VPS にどのパッチの image がキャッシュされているかは、リポジトリからは確認できません。差をなくすには、VPS で `docker pull golang:1.24-alpine` を実行してから build するか、`--pull` を付けて build する必要があります。
+
+Backend の実行用 image の `alpine:3.22`（`backend/Dockerfile`）と、Frontend の `node:22-alpine`（`frontend/Dockerfile`）も同じ Dockerfile の `FROM` で指定されているため、同じ仕組みで VPS にキャッシュされている image が使われると考えられます。
+
+`ci.yml` の各 action（`actions/checkout@v7`、`actions/setup-node@v7`、`actions/setup-go@v7`）は、Node.js 24 で動くメジャーバージョンです。
+
+`go vet` の前に gofmt の確認 step を実行します。`gofmt -l .` が整形されていないファイルを 1 件でも表示した場合は、そのファイル名を出力して job を失敗させます。
 
 ## 3. CD
 
@@ -111,7 +130,7 @@ deploy script の `docker compose up -d --build` はサービス名を指定し�
 
 | ファイル名 | Trigger | 役割 |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | `push` to `main`、`pull_request` | Frontend の lint / test / coverage / build、Backend の vet / test / build |
+| `.github/workflows/ci.yml` | `push` to `main`、`pull_request` | Frontend の lint / test / coverage / build、Backend の gofmt / vet / test / build |
 | `.github/workflows/cd.yml` | `push` to `main` | VPS に SSH 接続して Docker Compose で deploy。`production` Environment を指定しており、Required reviewers が設定されている場合は承認後に実行 |
 | `.github/workflows/codex-review-request.yml` | `issue_comment` created、`pull_request` synchronize | `@codex review` request と Codex bot result に応じて PR label を更新 |
 
