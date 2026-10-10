@@ -136,8 +136,10 @@ GitHub のドキュメントでは、Environment を参照する job は、す�
 
 | 状況 | 動き | 運用 |
 | --- | --- | --- |
-| 古いコミットの `deploy` job が承認待ちのまま、新しいコミットの `deploy` job が来た | 新しい job は pending になり、古い job が承認または Reject されるまで待つ（承認待ちの上限の時間は、GitHub のドキュメントでは確認できていない） | 古い job を承認すると、古いコミットが deploy される。その後、pending の新しい job が動き出し、もう一度承認を求める。最新のコミットだけを deploy したい場合は、古い job を Reject してよい（Reject した run は失敗として終わる） |
+| 古いコミットの `deploy` job が承認待ちのまま、新しいコミットの `deploy` job が来た | 新しい job は pending になり、古い job が承認または Reject されるまで待つ（GitHub のドキュメント「Actions limits」では、Environment の承認待ちの上限は 30 日、run 全体の上限は待ち時間を含めて 35 日で、上限に達した run はキャンセルされる。承認されないまま残った古い job は、それまで group を占有しうる） | 古い job を承認すると、古いコミットが deploy される。その後、pending の新しい job が動き出し、もう一度承認を求める。最新のコミットだけを deploy したい場合は、古い job を Reject してよい（Reject した run は失敗として終わる） |
 | pending の job がある状態で、さらに新しいコミットの `deploy` job が来た | pending の古い job はキャンセルされ、新しい job に置き換わる | 対応は不要。最新の job だけが残る |
+
+concurrency と承認待ちのどちらが先に効くかは、GitHub のドキュメントでは確定できません。上の表は承認待ちの job が group を占有する場合の動きです。承認が先に効く場合は、複数の `deploy` job が同時に承認待ちになり、承認した後に pending の段階で新しい job に置き換えられてキャンセルされることもありえます。どちらの場合も、次に書く VPS 側の確認により、古いコミットへ戻すことはありません。
 
 GitHub のドキュメントでは、concurrency group の中での実行順は保証されないとされています。そのため、deploy script でも、VPS の現在のコミット（`HEAD`）が deploy するコミットの祖先であることを確認します。新しいコミットがすでに反映されている状態で古いコミットの deploy が来た場合は、`git merge-base --is-ancestor` の確認で失敗し、古いコミットへ戻しません。
 
@@ -167,7 +169,7 @@ deploy script は `set -e` で実行するため、途中のコマンドが失�
 
 VPS が同じコミットのままでも deploy script はそのまま実行できるため、再 deploy では base image の pull、build、service の更新がもう一度行われます。VPS ですでに新しいコミットが反映されている場合に、それより古いコミットを指定すると、上の祖先の確認で失敗します。古いコミットへの切り戻しは、この workflow ではできません。
 
-VPS への SSH 接続には `appleboy/ssh-action@v1.2.2` を使います。参照する GitHub Secrets は次のとおりです。
+VPS への SSH 接続には `appleboy/ssh-action` の v1.2.2 を使います。この job は VPS の SSH 秘密鍵を扱うため、action はタグではなくコミットの SHA（`2ead5e36573f08b82fbfce1504f1a4b05a647c6f`）で固定しています。参照する GitHub Secrets は次のとおりです。
 
 | Secret | 用途 |
 | --- | --- |

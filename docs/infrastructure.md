@@ -58,7 +58,7 @@ CD は `.github/workflows/cd.yml` で定義されています。
 | GitHub Environment | `production` |
 | concurrency | `deploy` job に group `cd-production`（deploy を同時に実行しない） |
 | 接続方式 | SSH |
-| GitHub Action | `appleboy/ssh-action@v1.2.2` |
+| GitHub Action | `appleboy/ssh-action` v1.2.2（コミットの SHA `2ead5e36573f08b82fbfce1504f1a4b05a647c6f` で固定） |
 | Deploy target | VPS |
 
 CD workflow は次の GitHub Secrets を使います。
