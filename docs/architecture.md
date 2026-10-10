@@ -229,10 +229,10 @@ GitHub Actions は以下の workflow で構成されています。
 | Workflow | Trigger | 概要 |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | `push` to `main`, `pull_request` | Frontend lint / test / coverage / build、Backend gofmt / vet / test / build |
-| `.github/workflows/cd.yml` | `push` to `main` | SSH で VPS に入り `git pull --ff-only` と `docker compose up -d --build` を実行（`frontend` と `backend` を build・起動）。`production` Environment を指定しており、Required reviewers が設定されている場合は承認後に実行 |
+| `.github/workflows/cd.yml` | `workflow_run`（`CI` の完了、`main`）、`workflow_dispatch` | `push` to `main` の CI が成功した場合だけ、SSH で VPS に入り、CI が検証したコミットへ fast-forward してから `docker compose build --pull` と `docker compose up -d` を実行（`frontend` と `backend` を pull・build・起動）。`production` Environment を指定しており、Required reviewers が設定されている場合は承認後に実行 |
 | `.github/workflows/codex-review-request.yml` | PR comment, PR synchronize | `@codex review` コメントと Bot 結果コメントをもとに `review-pending` / `merge-ready` / `merge-blocked` ラベルを管理 |
 
-CI の実装では Frontend は Node.js 22 をセットアップしています。Backend は `setup-go` の `go-version: "1.24"` と `check-latest: true` で、1.24 系の最新パッチをセットアップします。`backend/go.mod` の `go 1.24.0` は必要な最低バージョンです。Backend job は `go vet` の前に `gofmt -l .` で整形されていないファイルがないことを確認します。CD は CI の完了を条件にしていないため、`main` への push では CI と CD が並行して動きます。Docker build では Backend Dockerfile が `golang:1.24-alpine` を使用します。CD は `--pull` を付けずに build するため、本番では VPS にキャッシュされている `golang:1.24-alpine`（最後に pull した時点のパッチ）が使われると考えられ、CI との Go のパッチの差は一時的なものとは限りません（[ci-cd.md](ci-cd.md) を参照）。
+CI の実装では Frontend は Node.js 22 をセットアップしています。Backend は `setup-go` の `go-version: "1.24"` と `check-latest: true` で、1.24 系の最新パッチをセットアップします。`backend/go.mod` の `go 1.24.0` は必要な最低バージョンです。Backend job は `go vet` の前に `gofmt -l .` で整形されていないファイルがないことを確認します。CD は `main` への push で起動した CI が成功した場合だけ起動し、その CI が検証したコミットを deploy します。CD の run は `concurrency` で直列化され、手動での再 deploy には Re-run と `workflow_dispatch` を使えます。Docker build では Backend Dockerfile が `golang:1.24-alpine` を使用します。CD は `docker compose build --pull` で base image を pull してから build するため、本番の Go は deploy の時点で `golang:1.24-alpine` が指しているパッチになります（[ci-cd.md](ci-cd.md) を参照）。
 
 CI/CD の詳細は [CI/CD](ci-cd.md) を参照してください。
 
