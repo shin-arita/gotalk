@@ -14,6 +14,20 @@ GoTalk の標準開発環境は Docker Compose です。`docker-compose.yml` に
 
 `frontend` と `backend` の `ports` は host の `127.0.0.1` だけに公開しています。開発中のマシンからは `http://localhost:5173` と `http://localhost:8080` でアクセスできますが、同じ LAN の別の端末（スマートフォンなど）から、開発中のマシンの LAN 側のアドレスで接続することはできません。macOS などで `localhost` が IPv6 の `::1` に先に解決される環境でも、curl やブラウザは `::1` への接続に失敗した後に `127.0.0.1` へ接続し直すため、`http://localhost:5173` と `http://localhost:8080` はこれまでどおり使えます。`http://[::1]:8080` のように IPv6 のアドレスを直接指定した場合は接続できません。`localhost` を IPv4 にフォールバックしないツールでは、`127.0.0.1` を指定してください。
 
+### 実機（スマートフォンなど）での確認
+
+LAN の `http://<開発中のマシンの IP>:5173` は、もともと音声機能の確認には使えませんでした。マイク（`getUserMedia`）は secure context（HTTPS か `localhost`）でしか使えず、LAN の IP アドレスへの HTTP は secure context にならないためです。
+
+実機で音声機能を確認する場合は、開発中のマシン（ホスト）で cloudflared の tunnel を動かし、`127.0.0.1:5173` を origin にする方法が使えます。
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:5173
+```
+
+表示された `https://<ランダムな名前>.trycloudflare.com` を実機のブラウザで開きます。HTTPS なのでマイクを使えます。`frontend/vite.config.ts` の `server.allowedHosts` に `.trycloudflare.com` が設定されているため、Vite の開発サーバーはこの host 名でのアクセスを受け付けます。`/api` は Vite の proxy で `backend` に転送されます。
+
+cloudflared は、コンテナではなくホスト上で動かしてください。コンテナの中では `127.0.0.1` がそのコンテナ自身を指すため、ホストの `127.0.0.1:5173` には届きません。
+
 `frontend` には `VITE_BACKEND_URL=http://backend:8080` が設定されます。Vite の proxy により、Frontend からの `/api` request は Backend service に転送されます。
 
 ## 2. 必要ソフトウェア

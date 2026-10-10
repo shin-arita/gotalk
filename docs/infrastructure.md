@@ -25,7 +25,7 @@ Docker Compose の主な service は次のとおりです。
 | `frontend` | `gotalk-frontend` | `127.0.0.1:5173:5173` | Vite dev server |
 | `backend` | `gotalk-backend` | `127.0.0.1:8080:8080` | Go API server |
 
-`frontend` と `backend` の `ports` は、VPS の loopback アドレス（`127.0.0.1`）だけに公開しています。VPS の外から `5173` と `8080` に直接は接続できません。
+`frontend` と `backend` の `ports` は、VPS の IPv4 の loopback アドレス（`127.0.0.1`）だけに公開しています。IPv4 と IPv6 のすべてのアドレス（`0.0.0.0` と `[::]`）には公開せず、IPv6 のアドレスにも公開しません。そのため、VPS の外から `5173` と `8080` には直接接続できない構成です。ただし、これには Docker Engine のバージョンの前提があります（3 章の「ポートの公開範囲の前提」を参照）。
 
 `docker-compose.yml` には `backend-dev` も定義されていますが、これは Backend 開発用 container です。通常運用で公開 port を持つ service ではありません。`backend-dev` には `profiles: ["dev"]` が付いているため、サービス名を指定しない `docker compose up` では起動しません。
 
@@ -40,12 +40,12 @@ VPS の nginx の設定で確認している転送先は次のとおりです。
 | `/` | `http://127.0.0.1:5173`（`frontend`） |
 | `/api/` | `http://127.0.0.1:8080/api/`（`backend`） |
 
-nginx の転送先は `127.0.0.1` で、Docker Compose の `ports` も `127.0.0.1` だけに公開しています。そのため、外からは HTTPS の nginx 経由でだけ GoTalk に届き、`5173` と `8080` に直接は届きません。
+nginx の転送先は `127.0.0.1` で、Docker Compose の `ports` も `127.0.0.1` だけに公開しています。そのため、外からは HTTPS の nginx 経由でだけ GoTalk に届き、`5173` と `8080` に直接は届かない構成です（下の「ポートの公開範囲の前提」の条件を満たす場合）。
 
 ```mermaid
 flowchart LR
   User[User Browser] -->|HTTPS / domain| Nginx[nginx<br/>HTTPS 終端]
-  Internet[Internet] -.->|:5173 / :8080 直接は届かない| VPSHost[VPS の外向きアドレス]
+  Internet[Internet] -.->|:5173 / :8080 直接は届かない<br/>Docker Engine 28.0.0 以上が前提| VPSHost[VPS の外向きアドレス]
   Nginx -->|/ → http://127.0.0.1:5173| Frontend[frontend<br/>gotalk-frontend<br/>127.0.0.1:5173]
   Nginx -->|/api/ → http://127.0.0.1:8080/api/| Backend[backend<br/>gotalk-backend<br/>127.0.0.1:8080]
   Frontend -->|/api proxy<br/>http://backend:8080| Backend
@@ -64,6 +64,19 @@ flowchart LR
 Compose 内では `frontend` と `backend` が default network 上で service 名により接続します。`frontend` には `VITE_BACKEND_URL=http://backend:8080` が設定され、Vite proxy 経由で Backend に接続します。
 
 Backend は OpenAI API へ HTTPS で outbound 接続します。
+
+### ポートの公開範囲の前提
+
+`5173` と `8080` に外から直接届かないことは、次の 2 点を前提にしています。
+
+| 前提 | 内容 |
+| --- | --- |
+| Docker Engine が 28.0.0 以上であること | Docker のドキュメント（Port publishing and mapping）には、28.0.0 より前のリリースでは、同じ L2 のセグメントにあるホスト（同じネットワークスイッチにつながったホストなど）から、localhost に公開したポートに届く、という警告があります（[moby/moby#45610](https://github.com/moby/moby/issues/45610)）。VPS では、VPS の事業者のネットワーク上の他のホストがこれに当たる可能性があります。28.0.0 より前のバージョンの場合は、Docker Engine を更新するか、ホストの firewall（Docker の `DOCKER-USER` チェーンなど）で `5173` と `8080` への外からのアクセスを塞ぐ必要があります |
+| `docker-compose.yml` の `ports` に `127.0.0.1` を指定していること | 外からのアクセスを塞いでいるのは、この `127.0.0.1` の指定です。ufw ではありません（次の段落） |
+
+VPS の Docker Engine の現在のバージョンは、リポジトリからは確認できません。VPS で `docker version` を実行して確認します。
+
+Docker のドキュメント（Packet filtering and firewalls の「Docker and ufw」）にあるとおり、Docker が公開したポートへの通信は `nat` テーブルで転送されます。そのため、ufw が使う `INPUT` と `OUTPUT` のチェーンに届く前に処理され、ufw の規則は効きません。以前、外から `5173` と `8080` に直接届いていたのも、`ports` が `0.0.0.0` と `[::]` に公開していたためで、ufw の設定にかかわらず届いていたと考えられます。VPS の ufw の現在の設定は、リポジトリからは確認できません。`ports` を変更するときは、ufw で塞いでいるつもりでも外に公開されることがあるため、`127.0.0.1` の指定を外さないよう注意してください。
 
 ## 4. デプロイ構成
 

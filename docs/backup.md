@@ -129,7 +129,7 @@ Backend health check（VPS 上で実行します）:
 curl http://localhost:8080/health
 ```
 
-`backend` の `ports` は VPS の `127.0.0.1` だけに公開しているため、この確認は VPS 上で実行します。VPS の外から `http://<VPS のアドレス>:8080/health` には届きません。外からの確認は、HTTPS の nginx 経由（`https://<ドメイン>/api/...`）で行います。
+`backend` の `ports` は VPS の `127.0.0.1` だけに公開しているため、この確認は VPS 上で実行します。VPS の外から `http://<VPS のアドレス>:8080/health` には届きません（前提は [infrastructure.md の「ポートの公開範囲の前提」](infrastructure.md#ポートの公開範囲の前提) を参照）。外からの確認は、HTTPS の nginx 経由（`https://<ドメイン>/api/...`）で行います。
 
 期待 response:
 
