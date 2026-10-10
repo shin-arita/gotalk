@@ -57,6 +57,10 @@ func TestBuildRetryPrompt(t *testing.T) {
 		if !strings.Contains(got, "omitted the following placeholder(s)") || !strings.Contains(got, "  __GT_PROPN_000__\n") {
 			t.Errorf("prompt should list omitted placeholders: %q", got)
 		}
+		if !strings.Contains(got, "Do NOT invent placeholders that are not in the input") ||
+			!strings.Contains(got, "exactly as many times as it appears in the input") {
+			t.Errorf("prompt should forbid inventing placeholders and require exact counts: %q", got)
+		}
 	})
 	t.Run("no missing placeholders", func(t *testing.T) {
 		got := buildRetryPrompt("base", nil)

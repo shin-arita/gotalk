@@ -714,6 +714,7 @@ func buildRetryPrompt(basePrompt string, missingPlaceholders []string) string {
 	for _, ph := range missingPlaceholders {
 		sb.WriteString("  " + ph + "\n")
 	}
+	sb.WriteString("Do NOT invent placeholders that are not in the input, and include each placeholder from the input verbatim exactly as many times as it appears in the input.\n")
 	return sb.String()
 }
 
