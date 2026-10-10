@@ -117,9 +117,9 @@ func callOpenAITTS(apiKey, model, voice, text string) ([]byte, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// The response body is not included in the error so that it never reaches the logs.
+		// Only the error type and code are included, so that the response body never reaches the logs.
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("OpenAI TTS API returned status %d (body %d bytes)", resp.StatusCode, len(body))
+		return nil, fmt.Errorf("OpenAI TTS API returned status %d (%s)", resp.StatusCode, openAIErrorDetail(body))
 	}
 
 	return io.ReadAll(resp.Body)
@@ -204,7 +204,9 @@ func callOpenAI(apiKey, model, prompt string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("OpenAI API returned status %d", resp.StatusCode)
+		// Only the error type and code are included, so that the response body never reaches the logs.
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("OpenAI API returned status %d (%s)", resp.StatusCode, openAIErrorDetail(body))
 	}
 
 	var result respBody
@@ -318,9 +320,9 @@ func callWhisper(apiKey, model string, audioData []byte, filename, language, pro
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// The response body is not included in the error so that it never reaches the logs.
+		// Only the error type and code are included, so that the response body never reaches the logs.
 		body, _ := io.ReadAll(resp.Body)
-		return "", "", fmt.Errorf("Whisper API status %d (body %d bytes)", resp.StatusCode, len(body))
+		return "", "", fmt.Errorf("Whisper API status %d (%s)", resp.StatusCode, openAIErrorDetail(body))
 	}
 
 	var result struct {

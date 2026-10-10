@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -36,16 +38,25 @@ func logSpeaker(speaker string, myLang, theirLang LangInfo) string {
 	return "invalid"
 }
 
-// detectedLangRe matches the language returned by the transcription API
-// (a lowercase name such as "japanese" or an ISO 639-1 code such as "ja").
-var detectedLangRe = regexp.MustCompile(`^[a-z]{2,20}$`)
+// whisperLanguageNames is the set of language names in whisperLanguages.
+var whisperLanguageNames = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(whisperLanguages))
+	for _, name := range whisperLanguages {
+		m[name] = struct{}{}
+	}
+	return m
+}()
 
-// logDetectedLang returns the detected language when it has the expected form, otherwise "invalid".
+// logDetectedLang returns the language detected by the transcription API when it is a language
+// name or code Whisper supports (for example, "japanese" or "ja"), otherwise "other".
 func logDetectedLang(lang string) string {
-	if detectedLangRe.MatchString(lang) {
+	if _, ok := whisperLanguages[lang]; ok {
 		return lang
 	}
-	return "invalid"
+	if _, ok := whisperLanguageNames[lang]; ok {
+		return lang
+	}
+	return "other"
 }
 
 // logFileExt returns the audio file extension when it is one the frontend sends, otherwise "other".
@@ -66,6 +77,13 @@ func logRunes(s string) int {
 // jsonErrSummary describes a JSON decoding error without the text of the input.
 // (*json.SyntaxError).Error() quotes the offending character, so only the offset is used.
 func jsonErrSummary(err error) string {
+	// An empty body (EOF) and a truncated body (unexpected EOF) are reported as fixed strings.
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return "json decode error: unexpected EOF"
+	}
+	if errors.Is(err, io.EOF) {
+		return "json decode error: EOF"
+	}
 	switch e := err.(type) {
 	case *json.SyntaxError:
 		return fmt.Sprintf("json syntax error at offset %d", e.Offset)
@@ -74,4 +92,41 @@ func jsonErrSummary(err error) string {
 	default:
 		return fmt.Sprintf("json decode error (%T)", err)
 	}
+}
+
+// openAIErrorTokenRe matches the error type and code values that are safe to log
+// (for example, "insufficient_quota" or "invalid_request_error").
+var openAIErrorTokenRe = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+
+// openAIErrorDetail summarizes an OpenAI error response body for logs, for example
+// "type=insufficient_quota code=insufficient_quota, body 312 bytes".
+// Only error.type and error.code are included, and only when they match openAIErrorTokenRe;
+// error.message is never included because it can quote the request input.
+// A missing or null value is reported as "none", any other value as "invalid".
+// When the body is not an OpenAI error object, only the body size is reported.
+func openAIErrorDetail(body []byte) string {
+	var resp struct {
+		Error *struct {
+			Type json.RawMessage `json:"type"`
+			Code json.RawMessage `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil || resp.Error == nil {
+		return fmt.Sprintf("body %d bytes", len(body))
+	}
+	return fmt.Sprintf("type=%s code=%s, body %d bytes",
+		openAIErrorToken(resp.Error.Type), openAIErrorToken(resp.Error.Code), len(body))
+}
+
+// openAIErrorToken returns a raw JSON value when it is a string matching openAIErrorTokenRe,
+// "none" when it is missing or null, and "invalid" otherwise.
+func openAIErrorToken(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "none"
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil || !openAIErrorTokenRe.MatchString(s) {
+		return "invalid"
+	}
+	return s
 }
