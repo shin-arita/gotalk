@@ -169,7 +169,7 @@ deploy script は `set -e` で実行するため、途中のコマンドが失�
 
 VPS が同じコミットのままでも deploy script はそのまま実行できるため、再 deploy では base image の pull、build、service の更新がもう一度行われます。VPS ですでに新しいコミットが反映されている場合に、それより古いコミットを指定すると、上の祖先の確認で失敗します。古いコミットへの切り戻しは、この workflow ではできません。
 
-VPS への SSH 接続には `appleboy/ssh-action` の v1.2.2 を使います。この job は VPS の SSH 秘密鍵を扱うため、action はタグではなくコミットの SHA（`2ead5e36573f08b82fbfce1504f1a4b05a647c6f`）で固定しています。参照する GitHub Secrets は次のとおりです。
+VPS への SSH 接続には `appleboy/ssh-action` の v1.2.2 を使います。この job は VPS の SSH 秘密鍵を扱うため、action はタグではなくコミットの SHA（`2ead5e36573f08b82fbfce1504f1a4b05a647c6f`）で固定しています。固定されるのは action のコード（`action.yml` と `entrypoint.sh`）です。action が実行時に取得する drone-ssh のバイナリ（v1.8.1）は、実行のたびに GitHub Releases から取得され、checksum は検証されません。参照する GitHub Secrets は次のとおりです。
 
 | Secret | 用途 |
 | --- | --- |
