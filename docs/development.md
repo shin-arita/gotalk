@@ -101,7 +101,7 @@ docker compose logs -f
 
 `backend-dev` は Backend 開発コマンド用です。`./backend` が container の `/app` に mount されます。`backend-dev` は `profiles: ["dev"]` に属していますが、`docker compose run` でサービス名を指定すれば `--profile` を付けずに実行できます。
 
-`backend-dev` は `entrypoint: [""]` を指定しており、Compose で `entrypoint` を指定するとイメージ既定の `CMD` も使われないため、既定のコマンドを持ちません。そのため `docker compose run` では必ず実行するコマンドを指定してください。コマンドなしの `docker compose run --rm backend-dev` や、サービス名を指定した `docker compose up backend-dev` は、`no command specified` でコンテナを作成できずに失敗します。
+`backend-dev` は既定のコマンドを持たないため、`docker compose run` では必ず実行するコマンドを指定してください。`docker compose up` では使えません（`--profile dev` を付けた場合や `COMPOSE_PROFILES=dev` を設定した場合も含めて失敗します）。理由と失敗する操作の詳細は [docker.md](docker.md) の「6. backend-dev」を参照してください。
 
 ```bash
 docker compose run --rm backend-dev gofmt -w .
