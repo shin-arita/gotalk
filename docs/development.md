@@ -282,6 +282,8 @@ docker compose -f docker-compose.yml -f /tmp/gotalk-debug.yml up -d
 docker compose logs -f backend
 ```
 
+override ファイルは、`docker-compose.override.yml` などの名前でリポジトリのディレクトリ（`docker-compose.yml` と同じディレクトリ）に置かないでください。Compose は、`-f` を指定しない場合、`docker-compose.yml` と同じディレクトリにある override ファイルを自動で読み込みます（Docker のドキュメント「Merge Compose files」。手元の Docker Compose v5.1.0 では、`docker-compose.override.yml`、`docker-compose.override.yaml`、`compose.override.yml`、`compose.override.yaml` のどれも自動で読み込まれることを確認しました）。消し忘れると、`DEBUG_TRANSLATION` が有効なまま起動します。これらのファイル名は `.gitignore` にも入っていないため、コミットされるおそれもあります。本番の CD も VPS の作業ツリー（`~/gotalk`）で `docker compose` を実行するため、そこに置いた override ファイルも同じく読み込まれます。
+
 調査が終わったら、override ファイルを付けずに `docker compose up -d` を実行して `backend` を作り直し、debug log を止めます。override ファイルの `backend` は通常どおり `frontend` の Vite の proxy から届くため、画面からの操作で debug log を確認できます。
 
 ## 7. Frontend 開発

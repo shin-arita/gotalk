@@ -199,15 +199,15 @@ Backend のログには、利用者の発話の内容を出力しません。障
 | 出力するもの | 例 |
 | --- | --- |
 | 処理の種類と結果 | `translate result: ja -> en`、`interpret result: en -> ja` |
-| 言語 | 選択言語、翻訳元と翻訳先、文字起こしで判定した言語。`frontend/src/languages.ts` にある言語 ID（と `unknown`）以外は `other` と出力し、判定した言語は英小文字の名前やコード以外は `invalid` と出力する |
+| 言語 | 選択言語、翻訳元と翻訳先、文字起こしで判定した言語。`frontend/src/languages.ts` にある言語 ID（と `unknown`）以外は `other` と出力し、文字起こしで判定した言語は、Whisper が対応する言語の名前（`japanese` など）と言語コード（`ja` など）の許可リスト（`backend/whisperlangs.go`。openai/whisper の `whisper/tokenizer.py` の `LANGUAGES` から作成）にない値を `other` と出力する |
 | テキストの長さ | 文字起こしや翻訳の対象のテキストの文字数（rune の数）。例：`translate: text runes=7 lang0=ja lang1=en` |
 | リクエストの概要 | `speaker`（選択言語のどちらかに一致する場合だけその言語、それ以外は `invalid`）、音声のファイルの拡張子（`.webm`、`.mp4`、`.ogg` 以外は `other`）、音声のサイズ、`transcript` の有無 |
-| エラーの種類 | OpenAI API の HTTP status、エラー応答の本文のバイト数、JSON のデコードエラーの種類と位置、固有名詞保護の検証エラーの種類 |
+| エラーの種類 | OpenAI API の HTTP status、エラー応答の `error.type` と `error.code`（英小文字、数字、`_` だけの 64 文字以下の値の場合だけ。null や欠落は `none`、それ以外は `invalid`）、エラー応答の本文のバイト数、JSON のデコードエラーの種類と位置（`EOF` と `unexpected EOF` を区別する）、固有名詞保護の検証エラーの種類。例：`OpenAI error: OpenAI API returned status 429 (type=insufficient_quota code=insufficient_quota, body 312 bytes)` |
 
 出力しないものは次のとおりです。
 
 - 文字起こしのテキスト、翻訳の対象と結果、バックトランスレーション、固有名詞、プレースホルダの対応、翻訳 prompt
-- OpenAI API の応答の本文（エラー応答の本文を含む）
+- OpenAI API の応答の本文（エラー応答の `error.message` を含む。エラー応答からは `error.type` と `error.code` だけを、上の条件を満たす場合に出力します）
 - クライアントから送られる任意の文字列（`speaker` の任意の値、音声のファイル名、選択肢にない言語 ID）
 
 `DEBUG_TRANSLATION=true` の場合だけ、Backend は翻訳処理の debug log（`[DEBUG_TRANSLATION]` で始まる行）を出力します。debug log には、受信したテキスト、翻訳 prompt、OpenAI の応答、固有名詞の保護マップなど、発話の内容がそのまま含まれます。`docker-compose.yml` では `DEBUG_TRANSLATION` を渡していないため、本番では debug log は出力されません。本番では有効にしないでください。ローカルで調査に使う方法は [development.md](development.md) の「Backend の debug log」を参照してください。
