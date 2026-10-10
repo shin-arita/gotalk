@@ -2,14 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -51,31 +55,22 @@ type InterpretResponse struct {
 	TtsText         string `json:"ttsText"`
 }
 
+// ErrorResponse is the body of every error response: a message for people and a code for
+// programs (docs/rate-limit-design.md 5.7). The frontend checks "error" for language_mismatch,
+// as before, and "code" for the others.
 type ErrorResponse struct {
 	Error string `json:"error"`
+	Code  string `json:"code"`
 }
 
 type TTSRequest struct {
 	Text string `json:"text"`
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
+func writeError(w http.ResponseWriter, status int, code, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(ErrorResponse{Error: msg})
+	json.NewEncoder(w).Encode(ErrorResponse{Error: msg, Code: code})
 }
 
 // debugLog writes detailed translation logs only when DEBUG_TRANSLATION=true.
@@ -92,7 +87,10 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // callOpenAITTS calls the OpenAI Speech API and returns raw audio bytes (audio/mpeg).
-func callOpenAITTS(apiKey, model, voice, text string) ([]byte, error) {
+func callOpenAITTS(ctx context.Context, apiKey, model, voice, text string) ([]byte, error) {
+	if err := beginOpenAICall(ctx); err != nil {
+		return nil, err
+	}
 	type reqBody struct {
 		Model string `json:"model"`
 		Input string `json:"input"`
@@ -103,14 +101,14 @@ func callOpenAITTS(apiKey, model, voice, text string) ([]byte, error) {
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, openAITTSURL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openAITTSURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := openAIClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -118,13 +116,14 @@ func callOpenAITTS(apiKey, model, voice, text string) ([]byte, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		// Only the error type and code are included, so that the response body never reaches the logs.
-		return nil, fmt.Errorf("OpenAI TTS API returned status %d (%s)", resp.StatusCode, readOpenAIErrorDetail(resp.Body))
+		return nil, newOpenAIStatusError("OpenAI TTS API returned status", resp)
 	}
 
 	return io.ReadAll(resp.Body)
 }
 
 func ttsHandler(w http.ResponseWriter, r *http.Request) {
+	const endpoint = "/api/tts"
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -132,7 +131,7 @@ func ttsHandler(w http.ResponseWriter, r *http.Request) {
 
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
-		writeError(w, http.StatusInternalServerError, "service unavailable")
+		writeError(w, http.StatusInternalServerError, codeInternalError, "service unavailable")
 		return
 	}
 
@@ -145,21 +144,34 @@ func ttsHandler(w http.ResponseWriter, r *http.Request) {
 		voice = defaultTTSVoice
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req TTSRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if err := decodeJSONBody(r, &req); err != nil {
+		if isMaxBytesError(err) {
+			writeBodyTooLarge(w, endpoint)
+			return
+		}
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid request body")
 		return
 	}
 
 	if strings.TrimSpace(req.Text) == "" {
-		writeError(w, http.StatusBadRequest, "text is required")
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "text is required")
+		return
+	}
+	if textTooLong(req.Text) {
+		writeTextTooLong(w, endpoint)
 		return
 	}
 
-	audio, err := callOpenAITTS(apiKey, model, voice, req.Text)
+	ctx, cancel := context.WithTimeout(r.Context(), ttsDeadline)
+	defer cancel()
+	ctx = withCallBudget(ctx, maxTTSRequestCalls)
+
+	audio, err := callOpenAITTS(ctx, apiKey, model, voice, req.Text)
 	if err != nil {
 		log.Printf("TTS error: %v", err)
-		writeError(w, http.StatusBadGateway, "tts failed")
+		writeUpstreamError(w, ctx, endpoint, err, "tts failed")
 		return
 	}
 
@@ -168,10 +180,16 @@ func ttsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // callOpenAI sends a single prompt to the OpenAI Responses API and returns the text output.
-func callOpenAI(apiKey, model, prompt string) (string, error) {
+// Every call sets max_output_tokens; a response that is not "completed" (for example "incomplete"
+// because max_output_tokens was reached) is treated as a failure.
+func callOpenAI(ctx context.Context, apiKey, model, prompt string) (string, error) {
+	if err := beginOpenAICall(ctx); err != nil {
+		return "", err
+	}
 	type reqBody struct {
-		Model string `json:"model"`
-		Input string `json:"input"`
+		Model           string `json:"model"`
+		Input           string `json:"input"`
+		MaxOutputTokens int    `json:"max_output_tokens"`
 	}
 	type contentItem struct {
 		Type string `json:"type"`
@@ -181,22 +199,26 @@ func callOpenAI(apiKey, model, prompt string) (string, error) {
 		Content []contentItem `json:"content"`
 	}
 	type respBody struct {
+		Status            string `json:"status"`
+		IncompleteDetails *struct {
+			Reason json.RawMessage `json:"reason"`
+		} `json:"incomplete_details"`
 		Output []outputItem `json:"output"`
 	}
 
-	payload, err := json.Marshal(reqBody{Model: model, Input: prompt})
+	payload, err := json.Marshal(reqBody{Model: model, Input: prompt, MaxOutputTokens: maxOutputTokens})
 	if err != nil {
 		return "", err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, openAIResponsesURL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openAIResponsesURL, bytes.NewReader(payload))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := openAIClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -204,12 +226,25 @@ func callOpenAI(apiKey, model, prompt string) (string, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		// Only the error type and code are included, so that the response body never reaches the logs.
-		return "", fmt.Errorf("OpenAI API returned status %d (%s)", resp.StatusCode, readOpenAIErrorDetail(resp.Body))
+		return "", newOpenAIStatusError("OpenAI API returned status", resp)
 	}
 
 	var result respBody
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", fmt.Errorf("decode OpenAI response: %s", jsonErrSummary(err))
+	}
+
+	// A missing status is accepted; any status other than "completed" is a failure.
+	if result.Status != "" && result.Status != "completed" {
+		reason := "none"
+		if result.IncompleteDetails != nil {
+			reason = openAIErrorToken(result.IncompleteDetails.Reason)
+		}
+		status := "invalid"
+		if openAIErrorTokenRe.MatchString(result.Status) {
+			status = result.Status
+		}
+		return "", fmt.Errorf("%w (status=%s reason=%s)", errResponseIncomplete, status, reason)
 	}
 
 	if len(result.Output) == 0 || len(result.Output[0].Content) == 0 {
@@ -271,7 +306,10 @@ var whisperPrompts = map[string]string{
 // callWhisper transcribes audio via OpenAI and returns the text and detected language.
 // whisper-1 supports verbose_json (includes language); gpt-4o-transcribe only supports json (no language field).
 // Pass language (ISO 639-1, e.g. "ja") and prompt to improve accuracy; empty string skips the field.
-func callWhisper(apiKey, model string, audioData []byte, filename, language, prompt string) (text, lang string, err error) {
+func callWhisper(ctx context.Context, apiKey, model string, audioData []byte, filename, language, prompt string) (text, lang string, err error) {
+	if err := beginOpenAICall(ctx); err != nil {
+		return "", "", err
+	}
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 
@@ -304,14 +342,14 @@ func callWhisper(apiKey, model string, audioData []byte, filename, language, pro
 	}
 	mw.Close()
 
-	req, err := http.NewRequest(http.MethodPost, whisperURL, &buf)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, whisperURL, &buf)
 	if err != nil {
 		return "", "", err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := openAIClient.Do(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -319,7 +357,7 @@ func callWhisper(apiKey, model string, audioData []byte, filename, language, pro
 
 	if resp.StatusCode != http.StatusOK {
 		// Only the error type and code are included, so that the response body never reaches the logs.
-		return "", "", fmt.Errorf("Whisper API status %d (%s)", resp.StatusCode, readOpenAIErrorDetail(resp.Body))
+		return "", "", newOpenAIStatusError("Whisper API status", resp)
 	}
 
 	var result struct {
@@ -366,6 +404,7 @@ func whisperLangMatches(whisperLang, appLangID string) bool {
 }
 
 func interpretHandler(w http.ResponseWriter, r *http.Request) {
+	const endpoint = "/api/interpret"
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -373,7 +412,7 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
-		writeError(w, http.StatusInternalServerError, "service unavailable")
+		writeError(w, http.StatusInternalServerError, codeInternalError, "service unavailable")
 		return
 	}
 	model := os.Getenv("OPENAI_MODEL")
@@ -381,35 +420,56 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 		model = defaultModel
 	}
 
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid multipart form")
+	// The whole body is limited before parsing, and the whole form is kept in memory
+	// (maxMemory equals the body limit), so nothing is written to temporary files.
+	r.Body = http.MaxBytesReader(w, r.Body, maxInterpretBodyBytes)
+	if err := r.ParseMultipartForm(maxInterpretBodyBytes); err != nil {
+		if isMaxBytesError(err) {
+			writeBodyTooLarge(w, endpoint)
+			return
+		}
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid multipart form")
 		return
 	}
+	defer r.MultipartForm.RemoveAll()
 
 	file, fileHeader, err := r.FormFile("audio")
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "audio is required")
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "audio is required")
 		return
 	}
 	defer file.Close()
+	if fileHeader.Size > maxAudioBytes {
+		writeBodyTooLarge(w, endpoint)
+		return
+	}
 
 	audioData, err := io.ReadAll(file)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read audio")
+		writeError(w, http.StatusInternalServerError, codeInternalError, "failed to read audio")
 		return
 	}
 
 	var myLang, theirLang LangInfo
 	if err := json.Unmarshal([]byte(r.FormValue("myLanguage")), &myLang); err != nil || myLang.ID == "" {
-		writeError(w, http.StatusBadRequest, "invalid myLanguage")
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid myLanguage")
 		return
 	}
 	if err := json.Unmarshal([]byte(r.FormValue("theirLanguage")), &theirLang); err != nil || theirLang.ID == "" {
-		writeError(w, http.StatusBadRequest, "invalid theirLanguage")
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid theirLanguage")
 		return
 	}
 	speaker := r.FormValue("speaker")
 	clientTranscript := strings.TrimSpace(r.FormValue("transcript"))
+	if textTooLong(clientTranscript) {
+		writeTextTooLong(w, endpoint)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), interpretDeadline)
+	defer cancel()
+	ctx = withCallBudget(ctx, maxInterpretRequestCalls)
+
 	log.Printf("interpret: myLang=%s theirLang=%s speaker=%s fileExt=%s size=%d hasTranscript=%v",
 		logLang(myLang.ID), logLang(theirLang.ID), logSpeaker(speaker, myLang, theirLang),
 		logFileExt(fileHeader.Filename), len(audioData), clientTranscript != "")
@@ -426,7 +486,7 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 		case theirLang.ID:
 			srcLang, tgtLang = theirLang, myLang
 		default:
-			writeError(w, http.StatusBadRequest, "invalid speaker")
+			writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid speaker")
 			return
 		}
 		transcribedText = clientTranscript
@@ -435,15 +495,15 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 		// Fallback path: no transcript (Web Speech API unavailable) — use Whisper.
 
 		// Step 1: language detection via whisper-1.
-		_, detectedLang, err := callWhisper(apiKey, langDetectionModel, audioData, fileHeader.Filename, "", "")
+		_, detectedLang, err := callWhisper(ctx, apiKey, langDetectionModel, audioData, fileHeader.Filename, "", "")
 		if err != nil {
 			log.Printf("Whisper (lang detection) error: %v", err)
-			writeError(w, http.StatusBadGateway, "language detection failed")
+			writeUpstreamError(w, ctx, endpoint, err, "language detection failed")
 			return
 		}
 		if detectedLang == "" {
 			log.Printf("language detection failed: empty language from %s", langDetectionModel)
-			writeError(w, http.StatusBadGateway, "language detection failed")
+			writeError(w, http.StatusBadGateway, codeUpstreamError, "language detection failed")
 			return
 		}
 
@@ -455,7 +515,7 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 			srcLang, tgtLang = theirLang, myLang
 		default:
 			log.Printf("language_mismatch: detected=%s myLang=%s theirLang=%s", logDetectedLang(detectedLang), logLang(myLang.ID), logLang(theirLang.ID))
-			writeError(w, http.StatusUnprocessableEntity, "language_mismatch")
+			writeError(w, http.StatusUnprocessableEntity, codeLanguageMismatch, "language_mismatch")
 			return
 		}
 
@@ -465,10 +525,10 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 			txModel = defaultWhisperModel
 		}
 		langCode := whisperLangCode(srcLang.ID)
-		transcribedText, _, err = callWhisper(apiKey, txModel, audioData, fileHeader.Filename, langCode, whisperPrompts[langCode])
+		transcribedText, _, err = callWhisper(ctx, apiKey, txModel, audioData, fileHeader.Filename, langCode, whisperPrompts[langCode])
 		if err != nil {
 			log.Printf("Whisper (transcription) error: %v", err)
-			writeError(w, http.StatusBadGateway, "transcription failed")
+			writeUpstreamError(w, ctx, endpoint, err, "transcription failed")
 			return
 		}
 		log.Printf("Whisper: detectedLang=%s text runes=%d", logDetectedLang(detectedLang), logRunes(transcribedText))
@@ -509,7 +569,7 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 
 	if useProtection {
 		translatedRaw, backTranslationRaw, entries, perr := runProtectedTranslation(
-			apiKey, model,
+			ctx, apiKey, model,
 			transcribedText,
 			func(placeholderText string) string {
 				return translatePrompt(srcLang.Label, tgtLang.Label, tgtLang.ID, placeholderText)
@@ -521,7 +581,7 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 		if perr != nil {
 			if strings.Contains(perr.Error(), "proper_noun_protection_failed") {
 				log.Printf("interpret: proper noun protection failed: %v", perr)
-				writeError(w, http.StatusBadGateway, "proper_noun_protection_failed")
+				writeError(w, http.StatusBadGateway, codeProtectionFailed, "proper_noun_protection_failed")
 				return
 			}
 			if entries == nil {
@@ -530,7 +590,7 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 				useProtection = false
 			} else {
 				log.Printf("interpret: translation error: %v", perr)
-				writeError(w, http.StatusBadGateway, "translation failed")
+				writeUpstreamError(w, ctx, endpoint, perr, "translation failed")
 				return
 			}
 		} else if entries != nil {
@@ -550,19 +610,19 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 	if !useProtection {
 		debugLog("固有名詞保護前テキスト: %q", transcribedText)
 		debugLog("OpenAI 翻訳対象テキスト: %q", transcribedText)
-		translated, err := callOpenAI(apiKey, model, translatePrompt(srcLang.Label, tgtLang.Label, tgtLang.ID, transcribedText))
+		translated, err := callOpenAI(ctx, apiKey, model, translatePrompt(srcLang.Label, tgtLang.Label, tgtLang.ID, transcribedText))
 		if err != nil {
 			log.Printf("OpenAI translation error: %v", err)
-			writeError(w, http.StatusBadGateway, "translation failed")
+			writeUpstreamError(w, ctx, endpoint, err, "translation failed")
 			return
 		}
 		debugLog("OpenAI 翻訳 生レスポンス: %q", translated)
 		debugLog("プレースホルダ復元後 翻訳結果: %q", translated)
 		debugLog("バックトランスレーション入力: %q", translated)
-		bt, err := callOpenAI(apiKey, model, backTranslatePrompt(tgtLang.Label, srcLang.Label, srcLang.ID, translated))
+		bt, err := callOpenAI(ctx, apiKey, model, backTranslatePrompt(tgtLang.Label, srcLang.Label, srcLang.ID, translated))
 		if err != nil {
 			log.Printf("OpenAI back-translation error: %v", err)
-			writeError(w, http.StatusBadGateway, "translation failed")
+			writeUpstreamError(w, ctx, endpoint, err, "translation failed")
 			return
 		}
 		debugLog("バックトランスレーション 生レスポンス: %q", bt)
@@ -588,6 +648,7 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func translateHandler(w http.ResponseWriter, r *http.Request) {
+	const endpoint = "/api/translate"
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -596,7 +657,7 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
 		log.Println("OPENAI_API_KEY is not set")
-		writeError(w, http.StatusInternalServerError, "translation service unavailable")
+		writeError(w, http.StatusInternalServerError, codeInternalError, "translation service unavailable")
 		return
 	}
 
@@ -605,20 +666,33 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 		model = defaultModel
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req TranslateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if err := decodeJSONBody(r, &req); err != nil {
+		if isMaxBytesError(err) {
+			writeBodyTooLarge(w, endpoint)
+			return
+		}
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid request body")
 		return
 	}
 
 	if strings.TrimSpace(req.Text) == "" {
-		writeError(w, http.StatusBadRequest, "text is required")
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "text is required")
+		return
+	}
+	if textTooLong(req.Text) {
+		writeTextTooLong(w, endpoint)
 		return
 	}
 	if len(req.Languages) < 2 {
-		writeError(w, http.StatusBadRequest, "two languages are required")
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "two languages are required")
 		return
 	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), translateDeadline)
+	defer cancel()
+	ctx = withCallBudget(ctx, maxTranslateRequestCalls)
 
 	lang0 := req.Languages[0]
 	lang1 := req.Languages[1]
@@ -681,7 +755,7 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		translatedRaw, backTranslationRaw, entries, perr := runProtectedTranslation(
-			apiKey, model,
+			ctx, apiKey, model,
 			req.Text,
 			func(placeholderText string) string {
 				return translatePromptFn(srcLang.Label, tgtLang.Label, tgtLang.ID, placeholderText)
@@ -693,7 +767,7 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 		if perr != nil {
 			if strings.Contains(perr.Error(), "proper_noun_protection_failed") {
 				log.Printf("translate: proper noun protection failed: %v", perr)
-				writeError(w, http.StatusBadGateway, "proper_noun_protection_failed")
+				writeError(w, http.StatusBadGateway, codeProtectionFailed, "proper_noun_protection_failed")
 				return
 			}
 			if entries == nil {
@@ -702,7 +776,7 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 				useProtection = false
 			} else {
 				log.Printf("translate: translation error: %v", perr)
-				writeError(w, http.StatusBadGateway, "translation failed")
+				writeUpstreamError(w, ctx, endpoint, perr, "translation failed")
 				return
 			}
 		} else if entries != nil {
@@ -747,10 +821,10 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 			lang1.ID, lang1.Label,
 		)
 
-		raw, err := callOpenAI(apiKey, model, detectPrompt)
+		raw, err := callOpenAI(ctx, apiKey, model, detectPrompt)
 		if err != nil {
 			log.Printf("OpenAI error: %v", err)
-			writeError(w, http.StatusBadGateway, "translation failed")
+			writeUpstreamError(w, ctx, endpoint, err, "translation failed")
 			return
 		}
 		debugLog("OpenAI 翻訳 生レスポンス: %q", raw)
@@ -763,7 +837,7 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 		var dr detectResult
 		if err := json.Unmarshal([]byte(extractJSON(raw)), &dr); err != nil {
 			log.Printf("JSON parse error: %s (response runes=%d)", jsonErrSummary(err), logRunes(raw))
-			writeError(w, http.StatusBadGateway, "translation failed")
+			writeError(w, http.StatusBadGateway, codeUpstreamError, "translation failed")
 			return
 		}
 
@@ -771,7 +845,7 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 
 		if dr.SourceLanguage == "unknown" || (dr.SourceLanguage != lang0.ID && dr.SourceLanguage != lang1.ID) {
 			log.Printf("language_mismatch: text runes=%d lang0=%s lang1=%s detected=%s", logRunes(req.Text), logLang(lang0.ID), logLang(lang1.ID), logLang(dr.SourceLanguage))
-			writeError(w, http.StatusUnprocessableEntity, "language_mismatch")
+			writeError(w, http.StatusUnprocessableEntity, codeLanguageMismatch, "language_mismatch")
 			return
 		}
 
@@ -785,10 +859,10 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 		debugLog("プレースホルダ復元後 翻訳結果: %q", dr.TranslatedText)
 		// Back-translate
 		debugLog("バックトランスレーション入力: %q", dr.TranslatedText)
-		bt, err := callOpenAI(apiKey, model, backTranslatePromptFn(tgtLang.Label, srcLang.Label, srcLang.ID, dr.TranslatedText))
+		bt, err := callOpenAI(ctx, apiKey, model, backTranslatePromptFn(tgtLang.Label, srcLang.Label, srcLang.ID, dr.TranslatedText))
 		if err != nil {
 			log.Printf("OpenAI back-translation error: %v", err)
-			writeError(w, http.StatusBadGateway, "translation failed")
+			writeUpstreamError(w, ctx, endpoint, err, "translation failed")
 			return
 		}
 		debugLog("バックトランスレーション 生レスポンス: %q", bt)
@@ -813,17 +887,71 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func main() {
-	http.DefaultClient.Timeout = 120 * time.Second
+// HTTP server settings (docs/rate-limit-design.md 5.10). WriteTimeout is longer than the
+// longest request deadline (interpretDeadline), and shutdownTimeout is shorter than the
+// stop_grace_period of the backend service in docker-compose.yml (30s).
+const (
+	serverReadHeaderTimeout = 10 * time.Second
+	serverReadTimeout       = 30 * time.Second
+	serverWriteTimeout      = 90 * time.Second
+	serverIdleTimeout       = 60 * time.Second
+	serverMaxHeaderBytes    = 16 << 10
+	shutdownTimeout         = 25 * time.Second
+)
 
+func newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/api/tts", ttsHandler)
 	mux.HandleFunc("/api/interpret", interpretHandler)
 	mux.HandleFunc("/api/translate", translateHandler)
+	return mux
+}
 
+func newServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		ReadTimeout:       serverReadTimeout,
+		WriteTimeout:      serverWriteTimeout,
+		IdleTimeout:       serverIdleTimeout,
+		MaxHeaderBytes:    serverMaxHeaderBytes,
+	}
+}
+
+// runServer serves srv until ctx is done, then shuts it down gracefully: in-flight requests get
+// up to timeout to finish, after which the remaining connections are closed.
+func runServer(ctx context.Context, srv *http.Server, serve func() error, timeout time.Duration) error {
+	errCh := make(chan error, 1)
+	go func() { errCh <- serve() }()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+	}
+
+	log.Println("Shutting down server")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown did not finish (%v); closing connections", err)
+		srv.Close()
+	}
+	if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+
+	srv := newServer(":8080", newMux())
 	log.Println("Starting server on :8080")
-	if err := http.ListenAndServe(":8080", corsMiddleware(mux)); err != nil {
+	if err := runServer(ctx, srv, srv.ListenAndServe, shutdownTimeout); err != nil {
 		log.Fatal(err)
 	}
 }

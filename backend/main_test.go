@@ -100,7 +100,7 @@ func TestHealthHandler(t *testing.T) {
 func TestWriteError(t *testing.T) {
 	rec := httptest.NewRecorder()
 
-	writeError(rec, http.StatusBadRequest, "bad request")
+	writeError(rec, http.StatusBadRequest, "invalid_request", "bad request")
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d want=%d", rec.Code, http.StatusBadRequest)
@@ -108,31 +108,8 @@ func TestWriteError(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("content-type=%q want=%q", got, "application/json")
 	}
-	if !strings.Contains(rec.Body.String(), `"error":"bad request"`) {
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":"bad request","code":"invalid_request"}` {
 		t.Fatalf("body=%q", rec.Body.String())
-	}
-}
-
-func TestCorsMiddleware(t *testing.T) {
-	nextCalled := false
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		nextCalled = true
-		w.WriteHeader(http.StatusCreated)
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	rec := httptest.NewRecorder()
-
-	corsMiddleware(next).ServeHTTP(rec, req)
-
-	if !nextCalled {
-		t.Fatal("next handler was not called")
-	}
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status=%d want=%d", rec.Code, http.StatusCreated)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Fatalf("allow-origin=%q want=%q", got, "*")
 	}
 }
 
@@ -227,27 +204,5 @@ func TestHasIntroPatterns(t *testing.T) {
 				t.Fatalf("hasIntroPatterns(%q)=%v want=%v", tt.text, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestCorsMiddlewareOptions(t *testing.T) {
-	nextCalled := false
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		nextCalled = true
-	})
-
-	req := httptest.NewRequest(http.MethodOptions, "/test", nil)
-	rec := httptest.NewRecorder()
-
-	corsMiddleware(next).ServeHTTP(rec, req)
-
-	if nextCalled {
-		t.Fatal("next handler should not be called")
-	}
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status=%d want=%d", rec.Code, http.StatusNoContent)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Methods"); got != "GET, POST, OPTIONS" {
-		t.Fatalf("allow-methods=%q", got)
 	}
 }

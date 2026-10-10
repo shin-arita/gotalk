@@ -110,18 +110,27 @@ const maxErrorBodyBytes = 64 << 10
 //     "body over N bytes (truncated)" is reported.
 //   - Otherwise "body N bytes" is the size of the whole body.
 func readOpenAIErrorDetail(r io.Reader) string {
+	detail, _, _ := readOpenAIError(r)
+	return detail
+}
+
+// readOpenAIError is readOpenAIErrorDetail that also returns the error type and code
+// (filtered by openAIErrorToken; "" when the body is not an OpenAI error object or is over
+// maxErrorBodyBytes), so that the caller can tell, for example, a spend limit from a rate limit.
+func readOpenAIError(r io.Reader) (detail, errType, errCode string) {
 	body, err := io.ReadAll(io.LimitReader(r, maxErrorBodyBytes+1))
 	if err != nil {
 		readErr := fmt.Sprintf("body read error after %d bytes (%s)", len(body), readErrorCause(err))
-		if typeCode, ok := openAIErrorTypeCode(body); ok {
-			return typeCode + ", " + readErr
+		if errType, errCode, ok := openAIErrorFields(body); ok {
+			return fmt.Sprintf("type=%s code=%s, %s", errType, errCode, readErr), errType, errCode
 		}
-		return readErr
+		return readErr, "", ""
 	}
 	if len(body) > maxErrorBodyBytes {
-		return fmt.Sprintf("body over %d bytes (truncated)", maxErrorBodyBytes)
+		return fmt.Sprintf("body over %d bytes (truncated)", maxErrorBodyBytes), "", ""
 	}
-	return openAIErrorDetail(body)
+	errType, errCode, _ = openAIErrorFields(body)
+	return openAIErrorDetail(body), errType, errCode
 }
 
 // readErrorCause describes an error from reading a response body as a fixed string:
@@ -160,6 +169,17 @@ func openAIErrorDetail(body []byte) string {
 // (each value filtered by openAIErrorToken). ok is false when body is not a complete JSON object
 // with an "error" object.
 func openAIErrorTypeCode(body []byte) (typeCode string, ok bool) {
+	errType, errCode, ok := openAIErrorFields(body)
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf("type=%s code=%s", errType, errCode), true
+}
+
+// openAIErrorFields decodes body as an OpenAI error object and returns its type and code, each
+// filtered by openAIErrorToken. ok is false when body is not a complete JSON object with an
+// "error" object.
+func openAIErrorFields(body []byte) (errType, errCode string, ok bool) {
 	var resp struct {
 		Error *struct {
 			Type json.RawMessage `json:"type"`
@@ -167,9 +187,9 @@ func openAIErrorTypeCode(body []byte) (typeCode string, ok bool) {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil || resp.Error == nil {
-		return "", false
+		return "", "", false
 	}
-	return fmt.Sprintf("type=%s code=%s", openAIErrorToken(resp.Error.Type), openAIErrorToken(resp.Error.Code)), true
+	return openAIErrorToken(resp.Error.Type), openAIErrorToken(resp.Error.Code), true
 }
 
 // openAIErrorToken returns a raw JSON value when it is a string matching openAIErrorTokenRe,
