@@ -73,7 +73,7 @@ flowchart LR
 
 ## 品質保証
 
-- GitHub Actions CI による自動検証（Frontend は lint、test、coverage、build、Backend は vet、test、build）
+- GitHub Actions CI による自動検証（Frontend は lint、test、coverage、build、Backend は gofmt、vet、test、build）
 - Backend Unit Test による handler、OpenAI 連携まわりのエラーハンドリング、固有名詞保護、補助ロジックの検証
 - Frontend Unit Test による主要画面、ユーザー操作、UI ロジックの検証
 - Codex Review による差分レビューと品質リスクの確認

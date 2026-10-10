@@ -228,11 +228,11 @@ GitHub Actions は以下の workflow で構成されています。
 
 | Workflow | Trigger | 概要 |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | `push` to `main`, `pull_request` | Frontend lint / test / coverage / build、Backend vet / test / build |
+| `.github/workflows/ci.yml` | `push` to `main`, `pull_request` | Frontend lint / test / coverage / build、Backend gofmt / vet / test / build |
 | `.github/workflows/cd.yml` | `push` to `main` | SSH で VPS に入り `git pull --ff-only` と `docker compose up -d --build` を実行（`frontend` と `backend` を build・起動）。`production` Environment を指定しており、Required reviewers が設定されている場合は承認後に実行 |
 | `.github/workflows/codex-review-request.yml` | PR comment, PR synchronize | `@codex review` コメントと Bot 結果コメントをもとに `review-pending` / `merge-ready` / `merge-blocked` ラベルを管理 |
 
-CI の実装では Frontend は Node.js 22 をセットアップしています。Backend は `setup-go` で Go 1.22 を指定していますが、`backend/go.mod` の `go` ディレクティブは `1.24.0` のため、toolchain の自動切り替えが有効な場合は 1.24 系の toolchain が使われる可能性があります。CD は CI の完了を条件にしていないため、`main` への push では CI と CD が並行して動きます。Docker build では Backend Dockerfile が `golang:1.24-alpine` を使用します。
+CI の実装では Frontend は Node.js 22 をセットアップしています。Backend は `setup-go` の `go-version-file` で `backend/go.mod` を参照し、`go` ディレクティブ（`1.24.0`）に合わせた Go をセットアップします。Backend job は `go vet` の前に `gofmt -l .` で整形されていないファイルがないことを確認します。CD は CI の完了を条件にしていないため、`main` への push では CI と CD が並行して動きます。Docker build では Backend Dockerfile が `golang:1.24-alpine` を使用します。
 
 CI/CD の詳細は [CI/CD](ci-cd.md) を参照してください。
 

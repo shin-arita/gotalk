@@ -73,8 +73,6 @@ Frontend の音声処理は `frontend/src/pages/InterpreterPage.tsx` に実装�
 
 音声再生は `handleSpeak` が担当します。`/api/tts` に `{ text: ttsText }` を送信し、返却された `audio/mpeg` からオブジェクト URL を作成して `new Audio(url)` に渡します。`audio.play()` の後、`onended` または `onerror` で URL を解放し、`status` を `ready` に戻します。
 
-`InterpreterPage` は `pendingAudio` prop を受け取れます。`pendingAudio` が渡された場合は、その `Blob` で `callInterpretApi` を呼びます。`App.tsx` からは `pendingAudio` を渡していません。
-
 ## 4. 録音と SpeechRecognition
 
 録音は `MediaRecorder` が担当し、`SpeechRecognition` は録音と並行して認識テキストを取得します。
