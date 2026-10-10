@@ -625,16 +625,16 @@ func validatePlaceholders(output string, entries []propNounEntry, expected map[s
 		}
 		start := pos + idx
 		if start < prevEnd {
-			return fmt.Errorf("overlapping placeholder at byte %d in output %q", start, output)
+			return fmt.Errorf("overlapping placeholder at byte %d in output", start)
 		}
 		rest := output[start+len(prefix):]
 		end := strings.Index(rest, "__")
 		if end < 0 {
-			return fmt.Errorf("malformed placeholder %q in output", output[start:])
+			return fmt.Errorf("malformed placeholder at byte %d in output", start)
 		}
 		ph := prefix + rest[:end] + "__"
 		if _, ok := knownSet[ph]; !ok {
-			return fmt.Errorf("unknown placeholder %q in output", ph)
+			return fmt.Errorf("unknown placeholder at byte %d in output", start)
 		}
 		prevEnd = start + len(ph)
 		pos = start + 1
