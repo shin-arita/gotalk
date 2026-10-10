@@ -727,6 +727,8 @@ func buildRetryPrompt(basePrompt string, missingPlaceholders []string) string {
 // 6. Validate
 // Returns translatedRaw (with placeholders), backTranslationRaw (with placeholders), entries, error.
 // On tokenizer failure: returns ("", "", nil, err) — caller should fall back to unprotected translation.
+// If text already contains "__GT_PROPN_" or no proper noun is extracted: returns ("", "", nil, nil) —
+// caller uses unprotected translation.
 // On placeholder validation failure: returns ("", "", nil, err) with a protection-failed sentinel.
 func runProtectedTranslation(
 	apiKey, model string,
@@ -734,6 +736,13 @@ func runProtectedTranslation(
 	translatePromptFn func(placeholderText string) string,
 	backTranslatePromptFn func(translatedRaw string) string,
 ) (translatedRaw, backTranslationRaw string, entries []propNounEntry, err error) {
+
+	// Input that already contains the placeholder prefix would collide with generated placeholders
+	// in validation and restoration, so skip protection and let the caller use normal translation.
+	if strings.Contains(text, "__GT_PROPN_") {
+		log.Printf("WARN: input contains placeholder prefix %q; skipping proper noun protection", "__GT_PROPN_")
+		return "", "", nil, nil
+	}
 
 	entries, err = extractAllProperNouns(text)
 	if err != nil {

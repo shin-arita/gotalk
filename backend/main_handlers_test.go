@@ -1149,6 +1149,91 @@ func TestTranslateHandler_UnknownPlaceholder_RetryFails(t *testing.T) {
 	}
 }
 
+// TestTranslateHandler_InputContainsPlaceholderPrefix verifies that when the input text already
+// contains "__GT_PROPN_", proper noun protection is skipped and the text is translated through the
+// unprotected path (raw text in the prompt, OpenAI JSON response) with HTTP 200.
+func TestTranslateHandler_InputContainsPlaceholderPrefix(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	var capturedBodies []string
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		capturedBodies = append(capturedBodies, string(b))
+		if len(capturedBodies) == 1 {
+			result := `{"sourceLanguage":"ja","targetLanguage":"en","translatedText":"__GT_PROPN_000__ is at Hakata Station."}`
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse(result)), nil
+		}
+		return fakeHTTPResponse(http.StatusOK, openAITextResponse("__GT_PROPN_000__は博多駅にあります。")), nil
+	})
+	body := `{"text":"__GT_PROPN_000__は博多駅にあります","languages":[{"id":"ja","label":"Japanese"},{"id":"en","label":"English"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/translate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	translateHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(capturedBodies) != 2 {
+		t.Fatalf("expected 2 OpenAI calls (translate + back-translate), got %d", len(capturedBodies))
+	}
+	// 博多 must be sent raw, i.e. not replaced with a placeholder.
+	if !strings.Contains(capturedBodies[0], "博多駅") {
+		t.Errorf("translate prompt should contain the raw input text (unprotected path)")
+	}
+	var resp TranslateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.SourceLanguage != "ja" || resp.TranslatedText != "__GT_PROPN_000__ is at Hakata Station." {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+}
+
+// TestInterpretHandler_InputContainsPlaceholderPrefix verifies the same fallback for /api/interpret:
+// a transcript containing "__GT_PROPN_" is translated through the unprotected path with HTTP 200.
+func TestInterpretHandler_InputContainsPlaceholderPrefix(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	var capturedBodies []string
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		capturedBodies = append(capturedBodies, string(b))
+		if len(capturedBodies) == 1 {
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("__GT_PROPN_000__ is at Hakata Station.")), nil
+		}
+		return fakeHTTPResponse(http.StatusOK, openAITextResponse("__GT_PROPN_000__は博多駅にあります。")), nil
+	})
+	req, err := buildInterpretRequestWithTranscript(
+		[]byte("audio"),
+		`{"id":"ja","label":"Japanese"}`,
+		`{"id":"en","label":"English"}`,
+		"ja",
+		"__GT_PROPN_000__は博多駅にあります",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	interpretHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(capturedBodies) != 2 {
+		t.Fatalf("expected 2 OpenAI calls (translate + back-translate), got %d", len(capturedBodies))
+	}
+	if !strings.Contains(capturedBodies[0], "博多駅") {
+		t.Errorf("translate prompt should contain the raw input text (unprotected path)")
+	}
+	var resp InterpretResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.TranslatedText != "__GT_PROPN_000__ is at Hakata Station." {
+		t.Errorf("translatedText=%q", resp.TranslatedText)
+	}
+	if resp.BackTranslation != "__GT_PROPN_000__は博多駅にあります。" {
+		t.Errorf("backTranslation=%q", resp.BackTranslation)
+	}
+}
+
 // TestTranslateHandler_BackTranslatePlaceholderDropped_RetrySucceeds verifies the retry
 // logic applies to the back-translation step as well.
 func TestTranslateHandler_BackTranslatePlaceholderDropped_RetrySucceeds(t *testing.T) {
