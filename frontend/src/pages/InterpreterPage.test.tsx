@@ -163,11 +163,30 @@ async function renderAndInterpret() {
 
 // --- Lifecycle ---
 
+// テストで置き換える global を、テスト前の状態（property がない場合も含む）に戻す
+type SavedProperty = { target: object; key: string; descriptor: PropertyDescriptor | undefined }
+let savedProperties: SavedProperty[] = []
+
+function saveProperty(target: object, key: string) {
+  savedProperties.push({ target, key, descriptor: Object.getOwnPropertyDescriptor(target, key) })
+}
+
+beforeEach(() => {
+  savedProperties = []
+  saveProperty(globalThis.navigator, 'mediaDevices')
+  saveProperty(globalThis.URL, 'createObjectURL')
+  saveProperty(globalThis.URL, 'revokeObjectURL')
+})
+
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
   delete (globalThis as Record<string, unknown>).MediaRecorder
   delete (window as unknown as Record<string, unknown>).SpeechRecognition
+  for (const { target, key, descriptor } of savedProperties) {
+    if (descriptor) Object.defineProperty(target, key, descriptor)
+    else delete (target as Record<string, unknown>)[key]
+  }
 })
 
 // ============================================================
