@@ -123,11 +123,13 @@ cron:
 
 手順 2 の clone では `main` の先頭が checkout されます。CI がまだ成功していないコミットを避けたい場合は、clone の後に `git checkout -B main <CI が成功したコミット>` で `main` をそのコミットに合わせてから手順 8 に進みます。復旧後の CD は、VPS の現在のコミットが deploy するコミットの祖先である場合だけ deploy します。そのため、復旧時に `main` の先頭より古いコミットに合わせた場合でも、その後の CD はそれ以降のコミットを fast-forward で反映できます。
 
-Backend health check:
+Backend health check（VPS 上で実行します）:
 
 ```bash
 curl http://localhost:8080/health
 ```
+
+`backend` の `ports` は VPS の `127.0.0.1` だけに公開しているため、この確認は VPS 上で実行します。VPS の外から `http://<VPS のアドレス>:8080/health` には届きません（前提は [infrastructure.md の「ポートの公開範囲の前提」](infrastructure.md#ポートの公開範囲の前提) を参照）。外からの確認は、HTTPS の nginx 経由（`https://<ドメイン>/api/...`）で行います。
 
 期待 response:
 

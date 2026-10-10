@@ -22,31 +22,68 @@ Docker Compose の主な service は次のとおりです。
 
 | Service | Container | Port | 役割 |
 | --- | --- | --- | --- |
-| `frontend` | `gotalk-frontend` | `5173:5173` | Vite dev server |
-| `backend` | `gotalk-backend` | `8080:8080` | Go API server |
+| `frontend` | `gotalk-frontend` | `127.0.0.1:5173:5173` | Vite dev server |
+| `backend` | `gotalk-backend` | `127.0.0.1:8080:8080` | Go API server |
+
+`frontend` と `backend` の `ports` は、VPS の IPv4 の loopback アドレス（`127.0.0.1`）だけに公開しています。すべての IPv4 のアドレス（`0.0.0.0`）にも、IPv6 のアドレス（`[::]` を含む）にも公開しません。そのため、VPS の外から `5173` と `8080` には直接接続できない構成です。ただし、これには Docker Engine のバージョンの前提があります（3 章の「ポートの公開範囲の前提」を参照）。
 
 `docker-compose.yml` には `backend-dev` も定義されていますが、これは Backend 開発用 container です。通常運用で公開 port を持つ service ではありません。`backend-dev` には `profiles: ["dev"]` が付いているため、サービス名を指定しない `docker compose up` では起動しません。
 
 ## 3. ネットワーク構成
 
-公開環境では HTTPS で GoTalk にアクセスできる状態です。ドメインと HTTPS の終端設定は repository の `docker-compose.yml` には含まれていません。運用上の関連設定はバックアップ対象として `/etc/nginx` と `/etc/letsencrypt` に含まれます。
+公開環境では HTTPS で GoTalk にアクセスできる状態です。ドメインと HTTPS の終端設定は repository の `docker-compose.yml` には含まれていません。HTTPS は VPS 上の nginx が終端します。nginx の設定はリポジトリの外（VPS の `/etc/nginx`）にあり、運用上の関連設定はバックアップ対象として `/etc/nginx` と `/etc/letsencrypt` に含まれます。
+
+VPS の nginx の設定で確認している転送先は次のとおりです。
+
+| nginx の location | 転送先 |
+| --- | --- |
+| `/` | `http://127.0.0.1:5173`（`frontend`） |
+| `/api/` | `http://127.0.0.1:8080/api/`（`backend`） |
+
+nginx の転送先は `127.0.0.1` で、Docker Compose の `ports` も `127.0.0.1` だけに公開しています。そのため、外からは HTTPS の nginx 経由でだけ GoTalk に届き、`5173` と `8080` に直接は届かない構成です（下の「ポートの公開範囲の前提」の条件を満たす場合）。
 
 ```mermaid
 flowchart LR
-  User[User Browser] -->|HTTPS / domain| Public[Public endpoint]
-  Public --> Frontend[frontend<br/>gotalk-frontend<br/>5173]
-  Frontend -->|/api proxy<br/>http://backend:8080| Backend[backend<br/>gotalk-backend<br/>8080]
+  User[User Browser] -->|HTTPS / domain| Nginx[nginx<br/>HTTPS 終端]
+  Internet[Internet] -.->|:5173 / :8080 直接は届かない<br/>Docker Engine 28.3.3 以上が前提| VPSHost[VPS の外向きアドレス]
+  Nginx -->|/ → http://127.0.0.1:5173| Frontend[frontend<br/>gotalk-frontend<br/>127.0.0.1:5173]
+  Nginx -->|/api/ → http://127.0.0.1:8080/api/| Backend[backend<br/>gotalk-backend<br/>127.0.0.1:8080]
+  Frontend -->|/api proxy<br/>http://backend:8080| Backend
   Backend -->|HTTPS| OpenAI[OpenAI API<br/>Responses API / Audio Transcriptions API / Audio Speech API]
 
-  subgraph VPS[VPS / Docker Compose]
-    Frontend
-    Backend
+  subgraph VPS[VPS]
+    Nginx
+    VPSHost
+    subgraph Compose[Docker Compose]
+      Frontend
+      Backend
+    end
   end
 ```
 
 Compose 内では `frontend` と `backend` が default network 上で service 名により接続します。`frontend` には `VITE_BACKEND_URL=http://backend:8080` が設定され、Vite proxy 経由で Backend に接続します。
 
 Backend は OpenAI API へ HTTPS で outbound 接続します。
+
+### ポートの公開範囲の前提
+
+`5173` と `8080` に外から直接届かないことは、次の 2 点を前提にしています。
+
+| 前提 | 内容 |
+| --- | --- |
+| Docker Engine が 28.3.3 以上であること | Docker のドキュメント（Port publishing and mapping）には、28.0.0 より前のリリースでは、同じ L2 のセグメントにあるホスト（同じネットワークスイッチにつながったホストなど）から、localhost に公開したポートに届く、という警告があります（[moby/moby#45610](https://github.com/moby/moby/issues/45610)）。VPS では、VPS の事業者のネットワーク上の他のホストがこれに当たる可能性があります。この問題は 28.0.0 で修正されました（Docker Engine 28 のリリースノートの 28.0.0「Fix a security issue that was allowing neighbor hosts to connect to ports mapped on a loopback address.」、[moby/moby#49325](https://github.com/moby/moby/pull/49325)）。これとは別に、firewalld を使っているホストでは、28.2.0 から 28.3.2 のバージョンで firewalld を reload した後に、Docker が作る「host のインターフェースに届いたパケットがコンテナのアドレスに届かないようにする規則」が作り直されません。その結果、Docker のブリッジネットワークへの経路を設定した他のホストから、コンテナのアドレス経由で、loopback だけに公開したポートにも届くようになります（[GHSA-x4rx-4gw3-53p4](https://github.com/moby/moby/security/advisories/GHSA-x4rx-4gw3-53p4)、[CVE-2025-54388](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2025-54388)、[moby/moby#50506](https://github.com/moby/moby/pull/50506)）。advisory によると、28.2.0 より前のリリースは影響を受けず、28.3.3 で修正されています。Rootless mode や Docker Desktop のように、Docker Engine が host の network namespace で動いていない場合も影響を受けません。advisory には、28.3.3 に更新できない場合の回避策として、「firewalld を reload した後に、次のいずれかを行う」という形で、docker daemon を再起動する、ブリッジネットワークを作り直す、Rootless mode を使う、の 3 つが書かれています（3 つとも「firewalld を reload した後に」の下に並んでいます）。VPS で firewalld を使っているかどうかはリポジトリからは確認できないため、28.3.3 以上を前提にしています。28.3.3 より前のバージョンの場合は、Docker Engine を更新するか、ホストの firewall で `5173` と `8080` への外からのアクセスを塞ぐ必要があります。firewall の backend が iptables（既定）の場合は、Docker の `DOCKER-USER` チェーンに規則を加えます。nftables の場合は、Docker の nftables の実装には `DOCKER-USER` チェーンがないため、独自の table と chain で対策します（Docker のドキュメント「[Docker with nftables](https://docs.docker.com/engine/network/firewall-nftables/)」の「Migrating `DOCKER-USER`」を参照） |
+| `docker-compose.yml` の `ports` に `127.0.0.1` を指定していること | 外からのアクセスを塞いでいるのは、この `127.0.0.1` の指定です。ufw ではありません（次の段落） |
+
+VPS の Docker Engine の現在のバージョン、firewall の backend（iptables か nftables か）、firewalld を使っているかどうかは、リポジトリからは確認できません。この前提の確認は、VPS で `docker version` を実行し、Server（Engine）のバージョンが 28.3.3 以上であることで行います。
+
+補助的な確認として、28.0.0 で入った moby/moby#45610 への対策の規則（`127.0.0.1` 宛てで `lo` 以外から来た通信を落とす規則）が VPS にあることも、次のコマンドで確認できます。ただし、この規則は `127.0.0.1` 宛ての通信だけを対象にしており、CVE-2025-54388 で作り直されなかったコンテナのアドレス宛ての規則とは別のものです。そのため、この規則の有無では CVE-2025-54388 への対策は確認できず、バージョンの確認の代わりにはなりません。28.2.0 から 28.3.2 で firewalld を使っている場合は、確認したときに規則があっても、firewalld を reload した後の状態までは保証されません。なお、nftables の backend は Docker 29.0.0 から入った機能（Docker のドキュメント「Docker with nftables」では experimental）なので、CVE-2025-54388 の影響を受けるバージョン（28.2.0 から 28.3.2）は、いずれも iptables の backend です。下の表の nftables の行は、29.0.0 以上で nftables の backend を使っている場合の、moby/moby#45610 への対策の規則の確認です。
+
+| firewall の backend | 確認のコマンド | 期待する結果 |
+| --- | --- | --- |
+| iptables | `sudo iptables -t raw -S PREROUTING \| grep 127.0.0.1` | `5173` と `8080` について、`-d 127.0.0.1/32 ! -i lo ... -j DROP` の規則がある |
+| nftables | `sudo nft list table ip docker-bridges \| grep 'DROP REMOTE LOOPBACK'` | `5173` と `8080` について、`iifname != "lo" ip daddr 127.0.0.1 ... drop` の規則がある |
+
+Docker のドキュメント（Packet filtering and firewalls の「Docker and ufw」）にあるとおり、Docker が公開したポートへの通信は `nat` テーブルで転送されます。そのため、ufw が使う `INPUT` と `OUTPUT` のチェーンに届く前に処理され、ufw の規則は効きません。以前、外から `5173` と `8080` に直接届いていたのも、`ports` が `0.0.0.0` と `[::]` に公開していたためで、ufw の設定にかかわらず届いていたと考えられます。VPS の ufw の現在の設定は、リポジトリからは確認できません。`ports` を変更するときは、ufw で塞いでいるつもりでも外に公開されることがあるため、`127.0.0.1` の指定を外さないよう注意してください。
 
 ## 4. デプロイ構成
 

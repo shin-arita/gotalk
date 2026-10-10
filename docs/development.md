@@ -6,11 +6,38 @@ GoTalk の標準開発環境は Docker Compose です。`docker-compose.yml` に
 
 | Service | 役割 | Port | 主な用途 |
 | --- | --- | --- | --- |
-| `frontend` | React / TypeScript / Vite の開発サーバー | `5173:5173` | ブラウザ UI の起動 |
-| `backend` | Go の API server | `8080:8080` | 文字起こし、翻訳、バックトランスレーション、TTS |
+| `frontend` | React / TypeScript / Vite の開発サーバー | `127.0.0.1:5173:5173` | ブラウザ UI の起動 |
+| `backend` | Go の API server | `127.0.0.1:8080:8080` | 文字起こし、翻訳、バックトランスレーション、TTS |
 | `backend-dev` | Go 開発用コンテナ（`profiles: ["dev"]`） | なし | `gofmt`、`go test`、`go build` などの Backend 開発コマンド |
 
 通常の動作確認では `frontend` と `backend` を起動します。`backend-dev` は通常運用で常時起動する service ではなく、Backend の開発コマンドを実行するために使います。
+
+`frontend` と `backend` の `ports` は host の `127.0.0.1` だけに公開しています。開発中のマシンからは `http://localhost:5173` と `http://localhost:8080` でアクセスできますが、同じ LAN の別の端末（スマートフォンなど）から、開発中のマシンの LAN 側のアドレスで接続することはできません（Docker Engine のバージョンなどの前提は [infrastructure.md の「ポートの公開範囲の前提」](infrastructure.md#ポートの公開範囲の前提) を参照）。macOS などで `localhost` が IPv6 の `::1` に先に解決される環境でも、curl やブラウザは `::1` への接続に失敗した後に `127.0.0.1` へ接続し直すため、`http://localhost:5173` と `http://localhost:8080` はこれまでどおり使えます。`http://[::1]:8080` のように IPv6 のアドレスを直接指定した場合は接続できません。`localhost` を IPv4 にフォールバックしないツールでは、`127.0.0.1` を指定してください。
+
+### 実機（スマートフォンなど）での確認
+
+LAN の `http://<開発中のマシンの IP>:5173` は、もともと音声機能の確認には使えませんでした。マイク（`getUserMedia`）は secure context（HTTPS か `localhost`）でしか使えず、LAN の IP アドレスへの HTTP は secure context にならないためです。
+
+実機で音声機能を確認する場合は、開発中のマシン（ホスト）で cloudflared の tunnel を動かし、`127.0.0.1:5173` を origin にする方法が使えます。
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:5173
+```
+
+表示された `https://<ランダムな名前>.trycloudflare.com` を実機のブラウザで開きます。HTTPS なのでマイクを使えます。`frontend/vite.config.ts` の `server.allowedHosts` に `.trycloudflare.com` が設定されているため、Vite の開発サーバーはこの host 名でのアクセスを受け付けます。`/api` は Vite の proxy で `backend` に転送されます。
+
+cloudflared は、コンテナではなくホスト上で動かしてください。コンテナの中では `127.0.0.1` がそのコンテナ自身を指すため、ホストの `127.0.0.1:5173` には届きません。
+
+この方法（Cloudflare の Quick Tunnel）で発行される URL には、次の注意があります。
+
+- URL を知っている人は、誰でも開発サーバーにアクセスできます。`/api` も Vite の proxy で `backend` に転送されるため、開発者の `OPENAI_API_KEY` を使う Backend にも届きます。URL が漏れると、第三者のリクエストで OpenAI の利用料が発生する可能性があります。URL を共有しないでください
+- 確認が終わったら、`cloudflared` を止めてください。Cloudflare のドキュメントにあるとおり、`cloudflared` のプロセスを止めると URL は使えなくなります
+- アクセスできる人を制限したい場合は、Cloudflare のドキュメント（Quick Tunnels の「Restrict access by email」）にある `--allowed-mail` を使えます。指定したメールアドレスに届くワンタイム PIN で認証した人だけがアクセスできます。`--allowed-mail` をくり返し指定すると複数のアドレスを、`*@example.com` の形でドメインのすべてのアドレスを許可できます。この認証は対話的なブラウザでのアクセスが前提です
+- `--allowed-mail` は cloudflared 2026.9.2 以降で使えます。Cloudflare のドキュメントには最低バージョンが書かれていませんが、cloudflared の `RELEASE_NOTES` の 2026.9.2 に「chore: Enable --allowed-mail flag and mac runners」とあります。また、2026.10.0 には「VULN-141859: Normalize request path when using access rules」（アクセスの規則を使うときのリクエストのパスの正規化）の修正が入っています。そのため、アクセスの制限に使う場合は 2026.10.0 以降を使ってください。`cloudflared --version` でバージョンを確認できます
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:5173 --allowed-mail you@example.com
+```
 
 `frontend` には `VITE_BACKEND_URL=http://backend:8080` が設定されます。Vite の proxy により、Frontend からの `/api` request は Backend service に転送されます。
 
