@@ -176,6 +176,7 @@ beforeEach(() => {
   saveProperty(globalThis.navigator, 'mediaDevices')
   saveProperty(globalThis.URL, 'createObjectURL')
   saveProperty(globalThis.URL, 'revokeObjectURL')
+  saveProperty(globalThis, 'Audio')
 })
 
 afterEach(() => {
