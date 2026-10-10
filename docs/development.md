@@ -28,6 +28,16 @@ cloudflared tunnel --url http://127.0.0.1:5173
 
 cloudflared は、コンテナではなくホスト上で動かしてください。コンテナの中では `127.0.0.1` がそのコンテナ自身を指すため、ホストの `127.0.0.1:5173` には届きません。
 
+この方法（Cloudflare の Quick Tunnel）で発行される URL には、次の注意があります。
+
+- URL を知っている人は、誰でも開発サーバーにアクセスできます。`/api` も Vite の proxy で `backend` に転送されるため、開発者の `OPENAI_API_KEY` を使う Backend にも届きます。URL が漏れると、第三者のリクエストで OpenAI の利用料が発生する可能性があります。URL を共有しないでください
+- 確認が終わったら、`cloudflared` を止めてください。Cloudflare のドキュメントにあるとおり、`cloudflared` のプロセスを止めると URL は使えなくなります
+- アクセスできる人を制限したい場合は、Cloudflare のドキュメント（Quick Tunnels の「Restrict access by email」）にある `--allowed-mail` を使えます。指定したメールアドレスに届くワンタイム PIN で認証した人だけがアクセスできます。`--allowed-mail` をくり返し指定すると複数のアドレスを、`*@example.com` の形でドメインのすべてのアドレスを許可できます。この認証は対話的なブラウザでのアクセスが前提です
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:5173 --allowed-mail you@example.com
+```
+
 `frontend` には `VITE_BACKEND_URL=http://backend:8080` が設定されます。Vite の proxy により、Frontend からの `/api` request は Backend service に転送されます。
 
 ## 2. 必要ソフトウェア

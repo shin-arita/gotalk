@@ -25,7 +25,7 @@ Docker Compose の主な service は次のとおりです。
 | `frontend` | `gotalk-frontend` | `127.0.0.1:5173:5173` | Vite dev server |
 | `backend` | `gotalk-backend` | `127.0.0.1:8080:8080` | Go API server |
 
-`frontend` と `backend` の `ports` は、VPS の IPv4 の loopback アドレス（`127.0.0.1`）だけに公開しています。IPv4 と IPv6 のすべてのアドレス（`0.0.0.0` と `[::]`）には公開せず、IPv6 のアドレスにも公開しません。そのため、VPS の外から `5173` と `8080` には直接接続できない構成です。ただし、これには Docker Engine のバージョンの前提があります（3 章の「ポートの公開範囲の前提」を参照）。
+`frontend` と `backend` の `ports` は、VPS の IPv4 の loopback アドレス（`127.0.0.1`）だけに公開しています。すべての IPv4 のアドレス（`0.0.0.0`）にも、IPv6 のアドレス（`[::]` を含む）にも公開しません。そのため、VPS の外から `5173` と `8080` には直接接続できない構成です。ただし、これには Docker Engine のバージョンの前提があります（3 章の「ポートの公開範囲の前提」を参照）。
 
 `docker-compose.yml` には `backend-dev` も定義されていますが、これは Backend 開発用 container です。通常運用で公開 port を持つ service ではありません。`backend-dev` には `profiles: ["dev"]` が付いているため、サービス名を指定しない `docker compose up` では起動しません。
 
