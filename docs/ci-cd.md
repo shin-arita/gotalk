@@ -99,7 +99,7 @@ CD は `.github/workflows/cd.yml` で定義されています。
 | --- | --- |
 | Trigger | `workflow_run`（`CI` の `completed`、branch `main`）、`workflow_dispatch`（手動） |
 | job | `resolve`、`deploy`（`needs: resolve`） |
-| concurrency | group `cd-production`、`cancel-in-progress: false` |
+| concurrency | `deploy` job に group `cd-production`、`cancel-in-progress: false` |
 | runner | `ubuntu-latest` |
 | environment | `production` |
 | deploy target | VPS |
@@ -107,10 +107,10 @@ CD は `.github/workflows/cd.yml` で定義されています。
 
 ### 起動条件と deploy するコミット
 
-CD は `workflow_run` で、`CI` workflow の完了（`completed`）を契機に起動します。`branches: [main]` を指定しているため、`main` で実行された CI だけが対象です。`workflow_run` は CI の結果にかかわらず完了時に起動するため、`resolve` job の `if` で次の 3 つをすべて満たす場合だけ処理を進めます。
+CD は `workflow_run` で、`CI` workflow の完了（`completed`）を契機に起動します。`branches: [main]` のフィルタは、起動元の CI の run の `head_branch` で判定されます。そのため、`main` への push の CI のほか、fork の `main` branch から出された Pull Request の CI の完了でも CD は起動します。また、`workflow_run` は CI の結果にかかわらず完了時に起動します。push to main の CI が成功した場合以外は、`resolve` job の `if` で除外します。`resolve` job は、次の 3 つをすべて満たす場合だけ処理を進めます。
 
 - `github.event.workflow_run.conclusion` が `success`
-- `github.event.workflow_run.event` が `push`（Pull Request の CI は対象外）
+- `github.event.workflow_run.event` が `push`（fork の `main` から出された Pull Request の CI を含め、Pull Request の CI はここで除外する）
 - `github.event.workflow_run.head_branch` が `main`
 
 条件を満たさない場合は `resolve` job が skip され、`needs: resolve` の `deploy` job も skip されます。この場合、`production` Environment の承認待ちにもなりません。
@@ -122,13 +122,22 @@ CD は `workflow_run` で、`CI` workflow の完了（`completed`）を契機に
 | deploy するコミット | `workflow_run` では CI が検証したコミット（`github.event.workflow_run.head_sha`）。`workflow_dispatch` では入力の `sha`、省略時は実行時点の `main` の先頭 |
 | 40 桁の SHA であること | 正規表現で確認 |
 | `main` に含まれるコミットであること | GitHub API の compare（`<sha>...main`）が `identical` または `ahead` |
-| `push` to `main` の CI が成功していること | GitHub API で `ci.yml` の run を `head_sha`、`event=push`、`status=success` で検索し、1 件以上あること |
+| `push` to `main` の CI が成功していること | GitHub API（List workflow runs for a workflow）で `ci.yml` の run を `head_sha`、`event=push`、`branch=main`、`status=success` で検索し、1 件以上あること |
 
 `deploy` job は `environment: production` を指定しています。GitHub Environment 側で Required reviewers が設定されている場合、承認されるまで VPS への deploy は実行されません。承認待ちの間に `main` が進んでも、deploy するのは `resolve` job で確定したコミットです。
 
 ### deploy が重ならないようにする仕組み
 
-workflow に `concurrency`（group `cd-production`、`cancel-in-progress: false`）を指定しています。同じ group で実行中の run がある間、新しい run は待機（pending）になり、実行中の deploy は途中で止めません。待機中の run がある状態でさらに新しい run が来た場合は、待機中の古い run がキャンセルされ、新しい run に置き換わります。
+`deploy` job に `concurrency`（group `cd-production`、`cancel-in-progress: false`）を指定しています。同じ group で実行中の `deploy` job がある間、新しい `deploy` job は待機（pending）になり、実行中の deploy は途中で止めません。待機中の job がある状態でさらに新しい job が来た場合は、待機中の古い job がキャンセルされ、新しい job に置き換わります。
+
+concurrency を workflow レベルではなく `deploy` job に置いているのは、`resolve` job を通った run だけを group で競合させるためです。workflow レベルに置くと、`resolve` job が skip される run も group に入ります（main の CI が失敗した場合や、fork の `main` から出された Pull Request の CI が完了した場合など）。その結果、待機中の正当な deploy が、その run に置き換えられてキャンセルされます。`deploy` job に置けば、`resolve` job が skip または失敗した run の `deploy` job は始まらないため、group に入りません。
+
+GitHub のドキュメントでは、Environment を参照する job は、すべての deployment protection rule（Required reviewers など）を通ってから runner に送られるとされています。ただし、job レベルの concurrency と承認待ちのどちらが先に効くか（承認待ちの job が group を占有するかどうか）は、ドキュメントからは確定できません。以下は、承認待ちの job が実行中として group を占有する場合の運用です。
+
+| 状況 | 動き | 運用 |
+| --- | --- | --- |
+| 古いコミットの `deploy` job が承認待ちのまま、新しいコミットの `deploy` job が来た | 新しい job は pending になり、古い job が承認または Reject されるまで待つ（承認待ちの上限の時間は、GitHub のドキュメントでは確認できていない） | 古い job を承認すると、古いコミットが deploy される。その後、pending の新しい job が動き出し、もう一度承認を求める。最新のコミットだけを deploy したい場合は、古い job を Reject してよい（Reject した run は失敗として終わる） |
+| pending の job がある状態で、さらに新しいコミットの `deploy` job が来た | pending の古い job はキャンセルされ、新しい job に置き換わる | 対応は不要。最新の job だけが残る |
 
 GitHub のドキュメントでは、concurrency group の中での実行順は保証されないとされています。そのため、deploy script でも、VPS の現在のコミット（`HEAD`）が deploy するコミットの祖先であることを確認します。新しいコミットがすでに反映されている状態で古いコミットの deploy が来た場合は、`git merge-base --is-ancestor` の確認で失敗し、古いコミットへ戻しません。
 
@@ -143,6 +152,19 @@ GitHub のドキュメントでは、concurrency group の中での実行順は�
 
 CI の run を Re-run して成功した場合も、CI の完了で `workflow_run` が起動するため、CD がもう一度起動します。
 
+`workflow_dispatch` は、Actions 画面の「Use workflow from」（`gh workflow run` の `--ref`）で選んだ branch の `cd.yml` で実行されます。write 権限を持つ人が別の branch で `cd.yml` を書き換えて実行すると、`resolve` job の確認を迂回できます。その場合に残る歯止めは、`production` Environment の Required reviewers だけです。そのため、次の運用と設定を推奨します。
+
+- `workflow_dispatch` は `main` から実行する（`gh workflow run cd.yml` は既定で default branch の `main` を使う）
+- `production` Environment の Deployment branches and tags を `main` だけに制限する。Deployment branches の規則は run の `GITHUB_REF` に対して判定されるため、`main` 以外の branch から実行した `workflow_dispatch` の `deploy` job は Environment に拒否される。`workflow_run` の run の `GITHUB_REF` は default branch の `main` なので、この制限の影響を受けない
+
+Environment の設定は GitHub のリポジトリ設定で管理しており、リポジトリのファイルからは現在の設定を確認できません。
+
+### deploy が途中で失敗した場合
+
+deploy script は `set -e` で実行するため、途中のコマンドが失敗するとそこで止まります。`git merge --ff-only` の後に `docker compose build --pull` や base image の pull が失敗した場合は、VPS の作業ツリーは対象のコミットに進みますが、コンテナは作り直されません。`docker compose up -d` まで進んでいないため、それまでのコンテナが古いコミットのまま動き続けます。
+
+この場合は、失敗した CD の run を Re-run すれば再実行できます。VPS の `HEAD` と `TARGET_SHA` が同じなので祖先の確認を通り、fast-forward は何もせずに、build から再実行されます。
+
 VPS が同じコミットのままでも deploy script はそのまま実行できるため、再 deploy では base image の pull、build、service の更新がもう一度行われます。VPS ですでに新しいコミットが反映されている場合に、それより古いコミットを指定すると、上の祖先の確認で失敗します。古いコミットへの切り戻しは、この workflow ではできません。
 
 VPS への SSH 接続には `appleboy/ssh-action@v1.2.2` を使います。参照する GitHub Secrets は次のとおりです。
@@ -153,12 +175,16 @@ VPS への SSH 接続には `appleboy/ssh-action@v1.2.2` を使います。参�
 | `VPS_USER` | SSH user |
 | `VPS_SSH_KEY` | SSH private key |
 
-VPS 上で実行する deploy script（`TARGET_SHA` には `resolve` job で確定したコミットが入ります）:
+VPS 上で実行する deploy script です。`TARGET_SHA` には `resolve` job で確定したコミットが入ります。`TARGET_SHA` は script に `${{ }}` で直接展開せず、step の `env` に設定したうえで、`appleboy/ssh-action` の `envs: TARGET_SHA` で VPS の shell に環境変数として渡します。deploy script でも、使う前に 40 桁の SHA であることを確認します。
 
 ```bash
+# TARGET_SHA は appleboy/ssh-action の envs で環境変数として渡される
 set -e
 cd ~/gotalk
-TARGET_SHA=<resolve job で確定したコミット>
+if ! printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+  echo "Invalid TARGET_SHA: $TARGET_SHA"
+  exit 1
+fi
 git fetch origin main
 if ! git merge-base --is-ancestor HEAD "$TARGET_SHA"; then
   echo "Current HEAD $(git rev-parse HEAD) is not an ancestor of $TARGET_SHA; refusing to deploy"
@@ -179,12 +205,16 @@ deploy script は次の順に処理します。
 1. `git fetch origin main` で `origin/main` を取得する
 2. VPS の現在のコミット（`HEAD`）が `TARGET_SHA` の祖先であることを確認する（同じコミットの場合も含む）
 3. `git merge --ff-only "$TARGET_SHA"` で、checkout 中の branch を `TARGET_SHA` まで fast-forward する。`origin/main` が `TARGET_SHA` より先に進んでいても、`TARGET_SHA` より先のコミットは反映しない
-4. `HEAD` が `TARGET_SHA` と一致することを確認する
+4. `HEAD` が `TARGET_SHA` と一致することを確認する（その前に、`TARGET_SHA` が 40 桁の SHA であることも確認する）
 5. `docker compose build --pull` で base image を pull してから image を build する
 6. `docker compose up -d` で service を更新する
 7. `docker compose ps` で service 状態を表示する
 
-VPS の作業ツリーは、これまでどおり `~/gotalk` の `main` を fast-forward で更新します。`TARGET_SHA` まで fast-forward した後も `main` は `origin/main` の祖先なので、VPS で手作業の `git pull --ff-only` を実行すれば、これまでどおり `origin/main` の先頭まで進められます。
+VPS の作業ツリーは、`~/gotalk` の `main` を fast-forward で更新します。`TARGET_SHA` まで fast-forward した後の `main` は、`origin/main` の祖先です。
+
+VPS では、手作業で `git pull` をしないでください。`git pull` は `origin/main` の先頭まで進めるため、CI がまだ成功していない（または失敗した）コミットまで作業ツリーが進み、動いているコンテナとの状態がずれます。その後に間のコミットの CD が来ると、祖先の確認で失敗します。その状態で `docker compose up` を実行すると、CI を通っていないコードが本番で動きます。
+
+再 deploy は `workflow_dispatch` か Re-run を使います。手作業でコミットを合わせる必要がある場合は、CI が成功したコミットを指定して `git merge --ff-only <SHA>` を実行します。
 
 `docker compose build --pull` と `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを pull・build・起動します。
 

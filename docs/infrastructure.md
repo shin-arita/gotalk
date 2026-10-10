@@ -56,7 +56,7 @@ CD は `.github/workflows/cd.yml` で定義されています。
 | --- | --- |
 | Trigger | `workflow_run`（`CI` の完了、`main`。CI が成功した場合だけ deploy）、`workflow_dispatch`（手動） |
 | GitHub Environment | `production` |
-| concurrency | group `cd-production`（deploy を同時に実行しない） |
+| concurrency | `deploy` job に group `cd-production`（deploy を同時に実行しない） |
 | 接続方式 | SSH |
 | GitHub Action | `appleboy/ssh-action@v1.2.2` |
 | Deploy target | VPS |
@@ -69,12 +69,16 @@ CD workflow は次の GitHub Secrets を使います。
 | `VPS_USER` | SSH user |
 | `VPS_SSH_KEY` | SSH private key |
 
-VPS 上で実行される deploy script（`TARGET_SHA` には CI が検証したコミットが入ります）:
+VPS 上で実行される deploy script です。`TARGET_SHA` には CI が検証したコミットが入り、`appleboy/ssh-action` の `envs` で環境変数として渡されます。
 
 ```bash
+# TARGET_SHA は appleboy/ssh-action の envs で環境変数として渡される
 set -e
 cd ~/gotalk
-TARGET_SHA=<resolve job で確定したコミット>
+if ! printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+  echo "Invalid TARGET_SHA: $TARGET_SHA"
+  exit 1
+fi
 git fetch origin main
 if ! git merge-base --is-ancestor HEAD "$TARGET_SHA"; then
   echo "Current HEAD $(git rev-parse HEAD) is not an ancestor of $TARGET_SHA; refusing to deploy"
@@ -94,7 +98,7 @@ docker compose ps
 
 `docker compose build --pull` と `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを pull・build・起動します。
 
-手動で再 deploy する場合は、CD の run の Re-run か、CD workflow の `workflow_dispatch` を使います。詳細は [ci-cd.md](ci-cd.md) を参照してください。
+手動で再 deploy する場合は、CD の run の Re-run か、CD workflow の `workflow_dispatch`（`main` から実行）を使います。VPS では手作業で `git pull` をしないでください。CI が成功していないコミットまで作業ツリーが進むためです。手作業でコミットを合わせる必要がある場合は、CI が成功したコミットを指定して `git merge --ff-only <SHA>` を実行します。build や pull で失敗した場合は、失敗した CD の run を Re-run すれば build から再実行でき、それまでのコンテナは動き続けます。詳細は [ci-cd.md](ci-cd.md) を参照してください。
 
 ## 5. 環境変数
 

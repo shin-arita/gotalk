@@ -45,13 +45,18 @@ GitHub Repository は GoTalk のソースコード、Docker 構成、CI/CD 設�
 - feature branch で変更し、Pull Request で CI と review を通す
 - Pull Request merge 後の `push` to `main` で CI が起動し、CI が成功すると CD workflow が起動する
 - VPS では `~/gotalk` の `main` を、CI が検証したコミットまで fast-forward で更新する
+- VPS では手作業で `git pull` をしない。再 deploy は CD の `workflow_dispatch` か Re-run を使い、手作業でコミットを合わせる必要がある場合は、CI が成功したコミットを指定して `git merge --ff-only <SHA>` を実行する
 
-CD workflow は VPS 上で次を実行します（`TARGET_SHA` には CI が検証したコミットが入ります）。
+CD workflow は VPS 上で次を実行します。`TARGET_SHA` には CI が検証したコミットが入り、`appleboy/ssh-action` の `envs` で環境変数として渡されます。
 
 ```bash
+# TARGET_SHA は appleboy/ssh-action の envs で環境変数として渡される
 set -e
 cd ~/gotalk
-TARGET_SHA=<resolve job で確定したコミット>
+if ! printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+  echo "Invalid TARGET_SHA: $TARGET_SHA"
+  exit 1
+fi
 git fetch origin main
 if ! git merge-base --is-ancestor HEAD "$TARGET_SHA"; then
   echo "Current HEAD $(git rev-parse HEAD) is not an ancestor of $TARGET_SHA; refusing to deploy"
