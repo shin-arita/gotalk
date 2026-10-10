@@ -10,7 +10,7 @@ GoTalk の Docker 構成は `docker-compose.yml` で定義されています。�
 
 `frontend` は Vite dev server を起動する開発用 Frontend service です。`backend` は Go API server を起動する Backend service です。`backend-dev` は Backend ディレクトリを mount して Go tooling を実行するための開発用 service です。
 
-通常のアプリケーション実行では `frontend` と `backend` が接続します。`backend-dev` は通常運用で常時起動する service ではなく、Backend の開発作業でコマンドを指定して使うための service です。
+通常のアプリケーション実行では `frontend` と `backend` が接続します。`backend-dev` は `profiles: ["dev"]` に属しており、サービス名を指定しない `docker compose up` の対象になりません。通常運用で常時起動する service ではなく、Backend の開発作業で `docker compose run` によりコマンドを指定して使うための service です。
 
 ## 2. 全体構成
 
@@ -21,14 +21,14 @@ flowchart LR
   subgraph Services[Compose services]
     Frontend[frontend<br/>Vite dev server<br/>5173:5173]
     Backend[backend<br/>Go API server<br/>8080:8080]
-    BackendDev[backend-dev<br/>Go development container]
+    BackendDev[backend-dev<br/>Go development container<br/>profile: dev]
   end
 
   OpenAI[OpenAI API<br/>Responses API / Audio Transcriptions API / Audio Speech API]
 
   Compose --> Frontend
   Compose --> Backend
-  Compose --> BackendDev
+  Compose -.->|docker compose run で利用| BackendDev
 
   Frontend -->|VITE_BACKEND_URL=http://backend:8080<br/>/api proxy| Backend
   Backend -->|transcription / translation / back translation / TTS| OpenAI
@@ -41,13 +41,15 @@ flowchart LR
 
 `docker-compose.yml` は `services` だけを定義しています。明示的な top-level `networks` は定義されていません。
 
-| Service | image | build | ports | environment | volumes | network |
-| --- | --- | --- | --- | --- | --- | --- |
-| `frontend` | 定義なし | `context: ./frontend` | `5173:5173` | `VITE_BACKEND_URL=http://backend:8080` | `./frontend:/app`, `/app/node_modules` | Compose default network |
-| `backend` | 定義なし | `context: ./backend` | `8080:8080` | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}`, `DEBUG_TRANSLATION=true` | 定義なし | Compose default network |
-| `backend-dev` | 定義なし | `context: ./backend`, `dockerfile: Dockerfile.dev` | 定義なし | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}` | `./backend:/app` | Compose default network |
+| Service | profiles | image | build | ports | environment | volumes | network |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `frontend` | 定義なし | 定義なし | `context: ./frontend` | `5173:5173` | `VITE_BACKEND_URL=http://backend:8080` | `./frontend:/app`, `/app/node_modules` | Compose default network |
+| `backend` | 定義なし | 定義なし | `context: ./backend` | `8080:8080` | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}`, `DEBUG_TRANSLATION=true` | 定義なし | Compose default network |
+| `backend-dev` | `["dev"]` | 定義なし | `context: ./backend`, `dockerfile: Dockerfile.dev` | 定義なし | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}` | `./backend:/app` | Compose default network |
 
-`frontend` には `depends_on: backend` が設定されています。`backend-dev` には `entrypoint: [""]` が設定されています。
+`frontend` には `depends_on: backend` が設定されています。`backend-dev` には `profiles: ["dev"]` と `entrypoint: [""]` が設定されています。
+
+`profiles` を持たない `frontend` と `backend` は常に有効です。`backend-dev` は `dev` profile が有効なときだけ Compose の対象になるため、サービス名を指定しない `docker compose build`、`docker compose up` では `frontend` と `backend` だけが build・起動されます。`docker compose config --services` には `frontend` と `backend` だけが表示され、`docker compose --profile dev config --services` では `backend-dev` も表示されます。
 
 ## 4. frontend
 
@@ -122,9 +124,14 @@ Backend は OpenAI Audio Transcriptions API で言語判定と文字起こしを
 | Working directory | `/app` |
 | volume | `./backend:/app` |
 | ports | 定義なし |
+| profiles | `["dev"]` |
 | entrypoint | `[""]` |
 
 `backend-dev` は Backend の開発用途の service です。`./backend` を `/app` に mount するため、Backend の source に対して Go command を実行できます。Compose 上では `ports` が定義されておらず、通常運用で常時起動する API server service ではありません。
+
+`backend-dev` は `profiles: ["dev"]` に属しているため、サービス名を指定しない `docker compose up` では起動しません。`docker compose run` でサービス名を指定すると、`--profile dev` を付けなくても実行できます。
+
+`backend-dev` は `entrypoint: [""]` を指定しており、Compose で `entrypoint` を指定するとイメージ既定の `CMD` も使われないため、既定のコマンドを持ちません。そのため `docker compose run` では必ず実行するコマンドを指定してください。コマンドなしの `docker compose run --rm backend-dev` や、サービス名を指定した `docker compose up backend-dev` は、`no command specified` でコンテナを作成できずに失敗します。`--profile dev` を付けた `docker compose up` や、`COMPOSE_PROFILES=dev` を設定した状態（シェルの環境変数、または Compose が読むプロジェクトの `.env`）での `docker compose up` も同じ理由で失敗し、同時に作り直していた `backend` が起動しないまま残ることがあります。`backend-dev` は `docker compose run` だけで使ってください。
 
 利用例:
 
@@ -178,7 +185,7 @@ flowchart LR
 
 host からは `frontend` が `localhost:5173`、`backend` が `localhost:8080` で到達できます。`backend` は OpenAI API へ outbound 接続します。
 
-`backend-dev` は同じ Compose project の service ですが、port は公開していません。Backend source を mount した開発用 container として使います。
+`backend-dev` は同じ Compose project の service ですが、port は公開していません。`dev` profile に属しているため、サービス名を指定しない `docker compose up` では container が作られず、`docker compose run` で実行したときに作られます。Backend source を mount した開発用 container として使います。
 
 ## 9. 開発手順
 
@@ -191,7 +198,7 @@ Docker 開発環境の基本的な流れは次のとおりです。
 5. `http://localhost:8080/health` で Backend の health check を確認する
 6. Backend 開発用 command は `docker compose run --rm backend-dev ...` で実行する
 
-サービス名を指定しない `docker compose up` では、`backend-dev` も build・起動の対象になります。`backend-dev` は `entrypoint: [""]` とイメージ既定の `CMD`（`/bin/sh`）の組み合わせのため、起動してすぐ終了します。`frontend` と `backend` だけを起動したい場合は、サービス名を指定して `docker compose up frontend backend` を使います。
+`backend-dev` は `profiles: ["dev"]` に属しているため、手順2と手順3のどちらでも build・起動の対象になりません。サービス名を指定しない `docker compose up` でも、起動するのは `frontend` と `backend` だけです。手順6の `docker compose run --rm backend-dev ...` は `--profile` を付けずに実行できます。
 
 詳細な開発手順は [development.md](development.md) を参照してください。
 

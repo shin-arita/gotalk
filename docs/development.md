@@ -8,7 +8,7 @@ GoTalk の標準開発環境は Docker Compose です。`docker-compose.yml` に
 | --- | --- | --- | --- |
 | `frontend` | React / TypeScript / Vite の開発サーバー | `5173:5173` | ブラウザ UI の起動 |
 | `backend` | Go の API server | `8080:8080` | 文字起こし、翻訳、バックトランスレーション、TTS |
-| `backend-dev` | Go 開発用コンテナ | なし | `gofmt`、`go test`、`go build` などの Backend 開発コマンド |
+| `backend-dev` | Go 開発用コンテナ（`profiles: ["dev"]`） | なし | `gofmt`、`go test`、`go build` などの Backend 開発コマンド |
 
 通常の動作確認では `frontend` と `backend` を起動します。`backend-dev` は通常運用で常時起動する service ではなく、Backend の開発コマンドを実行するために使います。
 
@@ -67,7 +67,7 @@ background で起動する場合は次を使います。
 docker compose up -d frontend backend
 ```
 
-サービス名を指定せずに `docker compose up` を実行すると、`backend-dev` も build・起動の対象になります。`backend-dev` は `entrypoint: [""]` とイメージ既定の `CMD`（`/bin/sh`）の組み合わせのため、起動してすぐ終了します。`frontend` と `backend` だけを起動したい場合は、上のようにサービス名を指定します。
+`backend-dev` には `profiles: ["dev"]` が付いているため、サービス名を指定しない `docker compose up` でも `backend-dev` は build・起動の対象にならず、`frontend` と `backend` だけが起動します。
 
 ## 4. 起動方法
 
@@ -99,7 +99,9 @@ docker compose logs -f
 
 ### backend-dev 利用
 
-`backend-dev` は Backend 開発コマンド用です。`./backend` が container の `/app` に mount されます。
+`backend-dev` は Backend 開発コマンド用です。`./backend` が container の `/app` に mount されます。`backend-dev` は `profiles: ["dev"]` に属していますが、`docker compose run` でサービス名を指定すれば `--profile` を付けずに実行できます。
+
+`backend-dev` は既定のコマンドを持たないため、`docker compose run` では必ず実行するコマンドを指定してください。`docker compose up` では使えません（`--profile dev` を付けた場合や `COMPOSE_PROFILES=dev` を設定した場合も含めて失敗します）。理由と失敗する操作の詳細は [docker.md](docker.md) の「6. backend-dev」を参照してください。
 
 ```bash
 docker compose run --rm backend-dev gofmt -w .

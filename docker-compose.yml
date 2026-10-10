@@ -25,6 +25,7 @@ services:
       - DEBUG_TRANSLATION=true
 
   backend-dev:
+    profiles: ["dev"]
     build:
       context: ./backend
       dockerfile: Dockerfile.dev

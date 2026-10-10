@@ -25,7 +25,7 @@ Docker Compose の主な service は次のとおりです。
 | `frontend` | `gotalk-frontend` | `5173:5173` | Vite dev server |
 | `backend` | `gotalk-backend` | `8080:8080` | Go API server |
 
-`docker-compose.yml` には `backend-dev` も定義されていますが、これは Backend 開発用 container です。通常運用で公開 port を持つ service ではありません。
+`docker-compose.yml` には `backend-dev` も定義されていますが、これは Backend 開発用 container です。通常運用で公開 port を持つ service ではありません。`backend-dev` には `profiles: ["dev"]` が付いているため、サービス名を指定しない `docker compose up` では起動しません。
 
 ## 3. ネットワーク構成
 
@@ -80,7 +80,7 @@ docker compose ps
 
 `git pull --ff-only` で `main` の最新状態に更新し、`docker compose up -d --build` で image build と service 更新を行います。最後に `docker compose ps` で service 状態を表示します。
 
-サービス名を指定しない `docker compose up` では、`backend-dev` も build・起動の対象になります。`backend-dev` は `entrypoint: [""]` とイメージ既定の `CMD`（`/bin/sh`）の組み合わせのため、起動してすぐ終了します。そのため deploy script の `docker compose up -d --build` でも、`backend-dev` は build された後、起動してすぐ終了します。
+deploy script の `docker compose up -d --build` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを build・起動します。
 
 ## 5. 環境変数
 
