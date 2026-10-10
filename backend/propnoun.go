@@ -718,18 +718,21 @@ func buildRetryPrompt(basePrompt string, missingPlaceholders []string) string {
 	return sb.String()
 }
 
-// applyProperNounProtection runs the full protection pipeline:
+// runProtectedTranslation runs the full protection pipeline:
 // 1. Extract proper nouns
-// 2. Replace with placeholders
+// 2. Replace with placeholders (and validate the replaced text itself)
 // 3. Call translate
-// 4. Validate
+// 4. Validate (retry once on failure)
 // 5. Call back-translate
-// 6. Validate
+// 6. Validate (retry once on failure)
 // Returns translatedRaw (with placeholders), backTranslationRaw (with placeholders), entries, error.
+// On success: returns (translatedRaw, backTranslationRaw, entries, nil).
+// If text already contains "__GT_PROPN_", no proper noun is extracted, or the replaced text fails
+// placeholder validation: returns ("", "", nil, nil) — caller uses unprotected translation.
 // On tokenizer failure: returns ("", "", nil, err) — caller should fall back to unprotected translation.
-// If text already contains "__GT_PROPN_" or no proper noun is extracted: returns ("", "", nil, nil) —
-// caller uses unprotected translation.
-// On placeholder validation failure: returns ("", "", nil, err) with a protection-failed sentinel.
+// On OpenAI call failure (including the retry call): returns ("", "", entries, err).
+// On placeholder validation failure after the retry: returns ("", "", entries, err) whose message
+// contains the "proper_noun_protection_failed" sentinel.
 func runProtectedTranslation(
 	apiKey, model string,
 	text string,
