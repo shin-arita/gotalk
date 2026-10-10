@@ -7,7 +7,6 @@ type InterpreterStatus = 'idle' | 'recording' | 'processing' | 'ready' | 'speaki
 interface InterpreterPageProps {
   selectedLanguages: Language[]
   onBack: () => void
-  pendingAudio?: Blob
 }
 
 interface HistoryEntry {
@@ -118,7 +117,7 @@ function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null
 }
 
-export default function InterpreterPage({ selectedLanguages, onBack, pendingAudio }: InterpreterPageProps) {
+export default function InterpreterPage({ selectedLanguages, onBack }: InterpreterPageProps) {
   const [status, setStatus] = useState<InterpreterStatus>('idle')
   const [recordingFlagIndex, setRecordingFlagIndex] = useState<0 | 1 | null>(null)
   const [recognizedText, setRecognizedText] = useState('')
@@ -315,15 +314,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, pendingAudi
       audioContextRef.current?.close()
     }
   }, [])
-
-  const callInterpretApiRef = useRef(callInterpretApi)
-
-  useEffect(() => {
-    if (!pendingAudio) return
-    const audio = pendingAudio
-    const timer = setTimeout(() => { void callInterpretApiRef.current(audio) }, 0)
-    return () => clearTimeout(timer)
-  }, [pendingAudio])
 
   const startRecording = async (lang: Language, flagIndex: 0 | 1) => {
     const mimeType = getSupportedMimeType()
