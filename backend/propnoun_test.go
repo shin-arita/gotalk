@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -72,6 +74,68 @@ func TestBuildRetryPrompt(t *testing.T) {
 		}
 		if !strings.Contains(got, "exactly as many times as it appears in the input") {
 			t.Errorf("prompt should ask to keep placeholders exactly: %q", got)
+		}
+	})
+}
+
+// TestRunProtectedTranslation_PlaceholderTextFailsValidation verifies that when replacing proper
+// nouns with placeholders produces text that itself fails validation (the placeholder joins the
+// surrounding characters), protection is skipped without calling OpenAI and the caller falls back
+// to the unprotected path. A normal input is still protected.
+func TestRunProtectedTranslation_PlaceholderTextFailsValidation(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	inputs := []string{
+		"博多GT_PROPN_1__に行く",    // → __GT_PROPN_000__GT_PROPN_1__に行く (overlapping)
+		"__GT_PROPN博多に行く",      // → __GT_PROPN__GT_PROPN_000__に行く (unknown)
+		"博多_GT_PROPN_000__に行く", // → __GT_PROPN_000___GT_PROPN_000__に行く (overlapping)
+	}
+	for _, in := range inputs {
+		t.Run(in, func(t *testing.T) {
+			calls := 0
+			setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+				calls++
+				return fakeHTTPResponse(http.StatusOK, openAITextResponse("unused")), nil
+			})
+			translatedRaw, backTranslationRaw, entries, err := runProtectedTranslation(
+				"test-key", "test-model", in,
+				func(placeholderText string) string { return placeholderText },
+				func(translatedRaw string) string { return translatedRaw },
+			)
+			if err != nil || entries != nil || translatedRaw != "" || backTranslationRaw != "" {
+				t.Fatalf("want (\"\", \"\", nil, nil), got (%q, %q, %v, %v)", translatedRaw, backTranslationRaw, entries, err)
+			}
+			if calls != 0 {
+				t.Errorf("OpenAI should not be called, got %d calls", calls)
+			}
+		})
+	}
+
+	t.Run("normal input stays protected", func(t *testing.T) {
+		var prompts []string
+		setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+			b, _ := io.ReadAll(r.Body)
+			prompts = append(prompts, string(b))
+			if len(prompts) == 1 {
+				return fakeHTTPResponse(http.StatusOK, openAITextResponse("Where is __GT_PROPN_000__ Station?")), nil
+			}
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("__GT_PROPN_000__駅はどこですか。")), nil
+		})
+		translatedRaw, _, entries, err := runProtectedTranslation(
+			"test-key", "test-model", "博多駅はどこですか",
+			func(placeholderText string) string { return placeholderText },
+			func(translatedRaw string) string { return translatedRaw },
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(entries) == 0 {
+			t.Fatal("expected proper noun entries for a normal input")
+		}
+		if len(prompts) == 0 || !strings.Contains(prompts[0], "__GT_PROPN_000__駅はどこですか") {
+			t.Errorf("translate prompt should contain the placeholder text, got %v", prompts)
+		}
+		if translatedRaw != "Where is __GT_PROPN_000__ Station?" {
+			t.Errorf("translatedRaw=%q", translatedRaw)
 		}
 	})
 }

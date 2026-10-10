@@ -757,6 +757,13 @@ func runProtectedTranslation(
 	placeholderText := replacePlaceholders(text, entries)
 	expected := expectedCounts(placeholderText, entries)
 
+	// The replaced text itself must pass validation; otherwise surrounding characters joined with a
+	// placeholder (e.g. "__GT_PROPN_000__GT_PROPN_1__") and even a faithful response would fail.
+	if valErr := validatePlaceholders(placeholderText, entries, expected); valErr != nil {
+		log.Printf("WARN: placeholder text does not pass validation (%v); skipping proper noun protection", valErr)
+		return "", "", nil, nil
+	}
+
 	debugLog("固有名詞保護前テキスト: %q", text)
 	debugLog("固有名詞保護後テキスト: %q", placeholderText)
 	for _, e := range entries {

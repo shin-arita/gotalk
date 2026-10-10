@@ -1188,6 +1188,52 @@ func TestTranslateHandler_InputContainsPlaceholderPrefix(t *testing.T) {
 	}
 }
 
+// TestTranslateHandler_PlaceholderTextFailsValidation verifies that inputs whose placeholder text
+// would fail validation (the placeholder joins the surrounding characters) are translated through
+// the unprotected path with HTTP 200 instead of failing with proper_noun_protection_failed.
+func TestTranslateHandler_PlaceholderTextFailsValidation(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	for _, in := range []string{"博多GT_PROPN_1__に行く", "__GT_PROPN博多に行く", "博多_GT_PROPN_000__に行く"} {
+		t.Run(in, func(t *testing.T) {
+			var capturedBodies []string
+			setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+				b, _ := io.ReadAll(r.Body)
+				capturedBodies = append(capturedBodies, string(b))
+				if len(capturedBodies) == 1 {
+					result := `{"sourceLanguage":"ja","targetLanguage":"en","translatedText":"Go to Hakata."}`
+					return fakeHTTPResponse(http.StatusOK, openAITextResponse(result)), nil
+				}
+				return fakeHTTPResponse(http.StatusOK, openAITextResponse("博多に行く。")), nil
+			})
+			body, _ := json.Marshal(map[string]any{
+				"text":      in,
+				"languages": []map[string]string{{"id": "ja", "label": "Japanese"}, {"id": "en", "label": "English"}},
+			})
+			req := httptest.NewRequest(http.MethodPost, "/api/translate", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			translateHandler(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			if len(capturedBodies) != 2 {
+				t.Fatalf("expected 2 OpenAI calls (translate + back-translate), got %d", len(capturedBodies))
+			}
+			// 博多 must be sent raw, i.e. not replaced with a placeholder.
+			if !strings.Contains(capturedBodies[0], "博多") || strings.Contains(capturedBodies[0], "__GT_PROPN_000__") {
+				t.Errorf("translate prompt should contain the raw input text (unprotected path)")
+			}
+			var resp TranslateResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatal(err)
+			}
+			if resp.SourceLanguage != "ja" || resp.TranslatedText != "Go to Hakata." {
+				t.Errorf("unexpected response: %+v", resp)
+			}
+		})
+	}
+}
+
 // TestInterpretHandler_InputContainsPlaceholderPrefix verifies the same fallback for /api/interpret:
 // a transcript containing "__GT_PROPN_" is translated through the unprotected path with HTTP 200.
 func TestInterpretHandler_InputContainsPlaceholderPrefix(t *testing.T) {
