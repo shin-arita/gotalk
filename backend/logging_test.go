@@ -669,22 +669,11 @@ func TestReadOpenAIErrorDetail_ReadErrorCauses(t *testing.T) {
 func TestReadOpenAIErrorDetail_RealConnectionErrors(t *testing.T) {
 	complete := `{"error":{"message":"SECRETMSG","type":"server_error","param":null,"code":null}}`
 	partial := `{"error":{"message":"SECRETMSG","type":"server_`
-	hijack := func(t *testing.T, w http.ResponseWriter, raw string, wait time.Duration) {
-		conn, buf, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer conn.Close()
-		buf.WriteString(raw)
-		buf.Flush()
-		time.Sleep(wait)
-	}
 	tests := []struct {
 		name    string
 		raw     string
-		wait    time.Duration
-		timeout time.Duration
+		wait    time.Duration // how long the server keeps the connection open after writing raw
+		timeout time.Duration // http.Client.Timeout (0 = none)
 		want    string
 	}{
 		{"content-length short", "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n" + partial, 0, 0,
@@ -692,19 +681,61 @@ func TestReadOpenAIErrorDetail_RealConnectionErrors(t *testing.T) {
 		{"chunked cut after complete JSON", "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n" +
 			fmt.Sprintf("%x\r\n%s\r\n", len(complete), complete), 0, 0,
 			fmt.Sprintf("type=server_error code=none, body read error after %d bytes (unexpected EOF)", len(complete))},
-		{"client timeout", "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n" + partial, 2 * time.Second, 300 * time.Millisecond,
+		// The client timeout covers the whole request including the response headers, so it is 1s
+		// to leave room for a slow environment, and the server keeps the connection open for 3s,
+		// well beyond the timeout. The server stops waiting as soon as the subtest ends (see below),
+		// so the longer wait does not make the test slower.
+		{"client timeout", "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n" + partial, 3 * time.Second, time.Second,
 			fmt.Sprintf("body read error after %d bytes (timeout)", len(partial))},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// done is closed when the subtest ends, so the handler stops waiting; started is closed
+			// when the handler runs, and exited when it has returned and closed the hijacked connection.
+			done := make(chan struct{})
+			started := make(chan struct{})
+			exited := make(chan struct{})
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				hijack(t, w, tt.raw, tt.wait)
+				close(started)
+				defer close(exited)
+				conn, buf, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Errorf("hijack: %v", err)
+					return
+				}
+				defer conn.Close()
+				buf.WriteString(tt.raw)
+				buf.Flush()
+				select {
+				case <-done:
+				case <-time.After(tt.wait):
+				}
 			}))
-			defer srv.Close()
-			client := &http.Client{Timeout: tt.timeout}
+			transport := &http.Transport{}
+			// t.Cleanup runs after the subtest function returns. httptest.Server.Close does not
+			// wait for handlers of hijacked connections, so the handler is released and awaited first.
+			t.Cleanup(func() {
+				close(done)
+				select {
+				case <-started:
+					// The handler ran; wait until it has returned.
+					select {
+					case <-exited:
+					case <-time.After(5 * time.Second):
+						t.Error("server handler did not return")
+					}
+				default:
+					// The request never reached the handler (for example, client.Get failed early).
+				}
+				srv.Close()
+				transport.CloseIdleConnections()
+			})
+
+			client := &http.Client{Timeout: tt.timeout, Transport: transport}
 			resp, err := client.Get(srv.URL)
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("client.Get failed before the response body was read "+
+					"(the response headers were not received; client timeout %v): %v", tt.timeout, err)
 			}
 			defer resp.Body.Close()
 			got := readOpenAIErrorDetail(resp.Body)
