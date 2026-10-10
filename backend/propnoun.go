@@ -595,8 +595,9 @@ func expectedCounts(placeholderText string, entries []propNounEntry) map[string]
 
 // validatePlaceholders verifies that each placeholder in expected appears the correct number of times
 // in output, and that no unknown placeholders exist.
-// Every occurrence of the "__GT_PROPN_" prefix must form a known placeholder; an unknown
-// placeholder or a malformed one (e.g. missing the closing "__") fails validation.
+// Every occurrence of the "__GT_PROPN_" prefix must form a known placeholder that does not
+// overlap the previous one; an unknown placeholder, a malformed one (e.g. missing the closing "__"),
+// or placeholders sharing underscores (e.g. "__GT_PROPN_000___GT_PROPN_001__") fail validation.
 func validatePlaceholders(output string, entries []propNounEntry, expected map[string]int) error {
 	knownSet := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
@@ -613,23 +614,30 @@ func validatePlaceholders(output string, entries []propNounEntry, expected map[s
 
 	// Check no unexpected placeholders appear
 	// Scan for __GT_PROPN_NNN__ patterns
+	// Search for the next prefix from the character after the previous one, so that a prefix
+	// starting inside the previous placeholder's closing "__" is still found.
 	const prefix = "__GT_PROPN_"
-	s := output
+	pos, prevEnd := 0, 0
 	for {
-		start := strings.Index(s, prefix)
-		if start < 0 {
+		idx := strings.Index(output[pos:], prefix)
+		if idx < 0 {
 			break
 		}
-		rest := s[start+len(prefix):]
+		start := pos + idx
+		if start < prevEnd {
+			return fmt.Errorf("overlapping placeholder at byte %d in output %q", start, output)
+		}
+		rest := output[start+len(prefix):]
 		end := strings.Index(rest, "__")
 		if end < 0 {
-			return fmt.Errorf("malformed placeholder %q in output", s[start:])
+			return fmt.Errorf("malformed placeholder %q in output", output[start:])
 		}
 		ph := prefix + rest[:end] + "__"
 		if _, ok := knownSet[ph]; !ok {
 			return fmt.Errorf("unknown placeholder %q in output", ph)
 		}
-		s = rest[end+2:]
+		prevEnd = start + len(ph)
+		pos = start + 1
 	}
 	return nil
 }

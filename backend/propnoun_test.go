@@ -21,6 +21,7 @@ func TestValidatePlaceholders(t *testing.T) {
 	}{
 		{name: "valid", output: "__GT_PROPN_000__ met __GT_PROPN_001__.", wantErr: ""},
 		{name: "valid adjacent", output: "__GT_PROPN_000____GT_PROPN_001__", wantErr: ""},
+		{name: "concatenated sharing underscores", output: "__GT_PROPN_000___GT_PROPN_001__", wantErr: "overlapping placeholder"},
 		{name: "missing", output: "__GT_PROPN_000__ met someone.", wantErr: "expected 1 occurrences, got 0"},
 		{name: "too many", output: "__GT_PROPN_000__ met __GT_PROPN_001__ and __GT_PROPN_001__.", wantErr: "expected 1 occurrences, got 2"},
 		{name: "unknown placeholder", output: "__GT_PROPN_000__ met __GT_PROPN_001__ at __GT_PROPN_002__.", wantErr: `unknown placeholder "__GT_PROPN_002__"`},
