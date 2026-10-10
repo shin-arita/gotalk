@@ -1072,6 +1072,83 @@ func TestTranslateHandler_PlaceholderDropped_RetryFails(t *testing.T) {
 	}
 }
 
+// TestTranslateHandler_UnknownPlaceholder_RetrySucceeds verifies that when OpenAI adds an
+// unknown placeholder to the translation, validation fails and the handler retries once,
+// succeeding if the retry output contains only the expected placeholder.
+func TestTranslateHandler_UnknownPlaceholder_RetrySucceeds(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	var capturedBodies []string
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		capturedBodies = append(capturedBodies, string(b))
+		switch len(capturedBodies) {
+		case 1: // first translate: adds an unknown placeholder
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("I want to go to __GT_PROPN_000__ Station near __GT_PROPN_001__.")), nil
+		case 2: // retry translate: only the expected placeholder
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("I want to go to __GT_PROPN_000__ Station.")), nil
+		default: // back-translate
+			return fakeHTTPResponse(http.StatusOK, openAITextResponse("__GT_PROPN_000__駅に行きたいです。")), nil
+		}
+	})
+	body := `{"text":"博多駅に行きたいです","languages":[{"id":"ja","label":"Japanese"},{"id":"en","label":"English"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/translate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	translateHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(capturedBodies) != 3 {
+		t.Errorf("expected 3 OpenAI calls (translate + retry + back-translate), got %d", len(capturedBodies))
+	}
+	// No placeholder was omitted, so the retry prompt must not claim one was.
+	if len(capturedBodies) >= 2 {
+		if !strings.Contains(capturedBodies[1], "[CRITICAL RETRY]") {
+			t.Errorf("retry prompt should contain [CRITICAL RETRY]")
+		}
+		if strings.Contains(capturedBodies[1], "omitted the following placeholder") {
+			t.Errorf("retry prompt should not list omitted placeholders when none were omitted")
+		}
+	}
+	var resp TranslateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.TranslatedText != "I want to go to Hakata Station." {
+		t.Errorf("translatedText=%q want %q", resp.TranslatedText, "I want to go to Hakata Station.")
+	}
+}
+
+// TestTranslateHandler_UnknownPlaceholder_RetryFails verifies that when both the initial
+// translation and the retry contain an unknown placeholder, the handler returns 502
+// proper_noun_protection_failed.
+func TestTranslateHandler_UnknownPlaceholder_RetryFails(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	callCount := 0
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		callCount++
+		return fakeHTTPResponse(http.StatusOK, openAITextResponse("I want to go to __GT_PROPN_000__ Station near __GT_PROPN_001__.")), nil
+	})
+	body := `{"text":"博多駅に行きたいです","languages":[{"id":"ja","label":"Japanese"},{"id":"en","label":"English"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/translate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	translateHandler(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 OpenAI calls (translate + retry), got %d", callCount)
+	}
+	var errResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatal(err)
+	}
+	if errResp["error"] != "proper_noun_protection_failed" {
+		t.Errorf("error=%q want %q", errResp["error"], "proper_noun_protection_failed")
+	}
+}
+
 // TestTranslateHandler_BackTranslatePlaceholderDropped_RetrySucceeds verifies the retry
 // logic applies to the back-translation step as well.
 func TestTranslateHandler_BackTranslatePlaceholderDropped_RetrySucceeds(t *testing.T) {

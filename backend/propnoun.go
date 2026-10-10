@@ -595,6 +595,8 @@ func expectedCounts(placeholderText string, entries []propNounEntry) map[string]
 
 // validatePlaceholders verifies that each placeholder in expected appears the correct number of times
 // in output, and that no unknown placeholders exist.
+// Every occurrence of the "__GT_PROPN_" prefix must form a known placeholder; an unknown
+// placeholder or a malformed one (e.g. missing the closing "__") fails validation.
 func validatePlaceholders(output string, entries []propNounEntry, expected map[string]int) error {
 	knownSet := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
@@ -611,20 +613,21 @@ func validatePlaceholders(output string, entries []propNounEntry, expected map[s
 
 	// Check no unexpected placeholders appear
 	// Scan for __GT_PROPN_NNN__ patterns
+	const prefix = "__GT_PROPN_"
 	s := output
 	for {
-		start := strings.Index(s, "__GT_PROPN_")
+		start := strings.Index(s, prefix)
 		if start < 0 {
 			break
 		}
-		rest := s[start:]
+		rest := s[start+len(prefix):]
 		end := strings.Index(rest, "__")
-		if end < 2 {
-			break
+		if end < 0 {
+			return fmt.Errorf("malformed placeholder %q in output", s[start:])
 		}
-		ph := rest[:end+2]
+		ph := prefix + rest[:end] + "__"
 		if _, ok := knownSet[ph]; !ok {
-			return fmt.Errorf("unknown placeholder %s in output", ph)
+			return fmt.Errorf("unknown placeholder %q in output", ph)
 		}
 		s = rest[end+2:]
 	}
@@ -689,10 +692,16 @@ func collectMissingPlaceholders(output string, expected map[string]int) []string
 	return missing
 }
 
-// buildRetryPrompt appends a critical reminder about dropped placeholders to basePrompt.
+// buildRetryPrompt appends a critical reminder about placeholders to basePrompt.
+// When no placeholder was dropped (e.g. duplicated, unknown, or malformed placeholders),
+// it asks for the input placeholders to be kept exactly instead of listing omitted ones.
 func buildRetryPrompt(basePrompt string, missingPlaceholders []string) string {
 	var sb strings.Builder
 	sb.WriteString(basePrompt)
+	if len(missingPlaceholders) == 0 {
+		sb.WriteString("\n\n[CRITICAL RETRY] Your previous response did not keep the placeholders exactly. Include each placeholder from the input verbatim and exactly as many times as it appears in the input — do NOT translate, modify, split, duplicate, or invent placeholders.\n")
+		return sb.String()
+	}
 	sb.WriteString("\n\n[CRITICAL RETRY] Your previous response omitted the following placeholder(s). You MUST include each one verbatim — do NOT translate, modify, split, or omit:\n")
 	for _, ph := range missingPlaceholders {
 		sb.WriteString("  " + ph + "\n")
