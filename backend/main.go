@@ -78,6 +78,8 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	json.NewEncoder(w).Encode(ErrorResponse{Error: msg})
 }
 
+// debugLog writes detailed translation logs only when DEBUG_TRANSLATION=true.
+// They include the user's utterance, prompts, and OpenAI responses, so never enable it in production.
 func debugLog(format string, args ...interface{}) {
 	if os.Getenv("DEBUG_TRANSLATION") == "true" {
 		log.Printf("[DEBUG_TRANSLATION] "+format, args...)
@@ -115,8 +117,8 @@ func callOpenAITTS(apiKey, model, voice, text string) ([]byte, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("OpenAI TTS API returned status %d: %s", resp.StatusCode, string(body))
+		// Only the error type and code are included, so that the response body never reaches the logs.
+		return nil, fmt.Errorf("OpenAI TTS API returned status %d (%s)", resp.StatusCode, readOpenAIErrorDetail(resp.Body))
 	}
 
 	return io.ReadAll(resp.Body)
@@ -201,12 +203,13 @@ func callOpenAI(apiKey, model, prompt string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("OpenAI API returned status %d", resp.StatusCode)
+		// Only the error type and code are included, so that the response body never reaches the logs.
+		return "", fmt.Errorf("OpenAI API returned status %d (%s)", resp.StatusCode, readOpenAIErrorDetail(resp.Body))
 	}
 
 	var result respBody
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+		return "", fmt.Errorf("decode OpenAI response: %s", jsonErrSummary(err))
 	}
 
 	if len(result.Output) == 0 || len(result.Output[0].Content) == 0 {
@@ -315,8 +318,8 @@ func callWhisper(apiKey, model string, audioData []byte, filename, language, pro
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", "", fmt.Errorf("Whisper API status %d: %s", resp.StatusCode, string(body))
+		// Only the error type and code are included, so that the response body never reaches the logs.
+		return "", "", fmt.Errorf("Whisper API status %d (%s)", resp.StatusCode, readOpenAIErrorDetail(resp.Body))
 	}
 
 	var result struct {
@@ -324,7 +327,7 @@ func callWhisper(apiKey, model string, audioData []byte, filename, language, pro
 		Text     string `json:"text"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("decode Whisper response: %s", jsonErrSummary(err))
 	}
 
 	return strings.TrimSpace(result.Text), strings.ToLower(strings.TrimSpace(result.Language)), nil
@@ -407,8 +410,9 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	speaker := r.FormValue("speaker")
 	clientTranscript := strings.TrimSpace(r.FormValue("transcript"))
-	log.Printf("interpret: myLang=%s theirLang=%s speaker=%q file=%s size=%d hasTranscript=%v",
-		myLang.ID, theirLang.ID, speaker, fileHeader.Filename, len(audioData), clientTranscript != "")
+	log.Printf("interpret: myLang=%s theirLang=%s speaker=%s fileExt=%s size=%d hasTranscript=%v",
+		logLang(myLang.ID), logLang(theirLang.ID), logSpeaker(speaker, myLang, theirLang),
+		logFileExt(fileHeader.Filename), len(audioData), clientTranscript != "")
 
 	var srcLang, tgtLang LangInfo
 	var transcribedText string
@@ -426,7 +430,7 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		transcribedText = clientTranscript
-		log.Printf("interpret: transcript=%q src=%s tgt=%s", transcribedText, srcLang.ID, tgtLang.ID)
+		log.Printf("interpret: transcript runes=%d src=%s tgt=%s", logRunes(transcribedText), logLang(srcLang.ID), logLang(tgtLang.ID))
 	} else {
 		// Fallback path: no transcript (Web Speech API unavailable) — use Whisper.
 
@@ -450,7 +454,7 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 		case whisperLangMatches(detectedLang, theirLang.ID):
 			srcLang, tgtLang = theirLang, myLang
 		default:
-			log.Printf("language_mismatch: detected=%q myLang=%s theirLang=%s", detectedLang, myLang.ID, theirLang.ID)
+			log.Printf("language_mismatch: detected=%s myLang=%s theirLang=%s", logDetectedLang(detectedLang), logLang(myLang.ID), logLang(theirLang.ID))
 			writeError(w, http.StatusUnprocessableEntity, "language_mismatch")
 			return
 		}
@@ -467,7 +471,7 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadGateway, "transcription failed")
 			return
 		}
-		log.Printf("Whisper: detectedLang=%q text=%q", detectedLang, transcribedText)
+		log.Printf("Whisper: detectedLang=%s text runes=%d", logDetectedLang(detectedLang), logRunes(transcribedText))
 	}
 
 	translatePrompt := func(srcLabel, tgtLabel, tgtID, text string) string {
@@ -570,7 +574,7 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 		ttsText = translatedText
 	}
 
-	log.Printf("interpret result: %s -> %s", srcLang.ID, tgtLang.ID)
+	log.Printf("interpret result: %s -> %s", logLang(srcLang.ID), logLang(tgtLang.ID))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(InterpretResponse{
@@ -618,7 +622,7 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 
 	lang0 := req.Languages[0]
 	lang1 := req.Languages[1]
-	log.Printf("translate: text=%q lang0=%s lang1=%s", req.Text, lang0.ID, lang1.ID)
+	log.Printf("translate: text runes=%d lang0=%s lang1=%s", logRunes(req.Text), logLang(lang0.ID), logLang(lang1.ID))
 	debugLog("受信テキスト: %q", req.Text)
 
 	translatePromptFn := func(srcLabel, tgtLabel, tgtID, text string) string {
@@ -758,15 +762,15 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		var dr detectResult
 		if err := json.Unmarshal([]byte(extractJSON(raw)), &dr); err != nil {
-			log.Printf("JSON parse error: %v | raw: %s", err, raw)
+			log.Printf("JSON parse error: %s (response runes=%d)", jsonErrSummary(err), logRunes(raw))
 			writeError(w, http.StatusBadGateway, "translation failed")
 			return
 		}
 
-		log.Printf("detect result: %s -> %s", dr.SourceLanguage, dr.TargetLanguage)
+		log.Printf("detect result: %s -> %s", logLang(dr.SourceLanguage), logLang(dr.TargetLanguage))
 
 		if dr.SourceLanguage == "unknown" || (dr.SourceLanguage != lang0.ID && dr.SourceLanguage != lang1.ID) {
-			log.Printf("language_mismatch: text=%q lang0=%s lang1=%s detected=%q", req.Text, lang0.ID, lang1.ID, dr.SourceLanguage)
+			log.Printf("language_mismatch: text runes=%d lang0=%s lang1=%s detected=%s", logRunes(req.Text), logLang(lang0.ID), logLang(lang1.ID), logLang(dr.SourceLanguage))
 			writeError(w, http.StatusUnprocessableEntity, "language_mismatch")
 			return
 		}
@@ -797,7 +801,7 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 		ttsText = translatedText
 	}
 
-	log.Printf("translate result: %s -> %s", srcLang.ID, tgtLang.ID)
+	log.Printf("translate result: %s -> %s", logLang(srcLang.ID), logLang(tgtLang.ID))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(TranslateResponse{

@@ -44,7 +44,7 @@ flowchart LR
 | Service | profiles | image | build | ports | environment | volumes | network |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `frontend` | 定義なし | 定義なし | `context: ./frontend` | `127.0.0.1:5173:5173` | `VITE_BACKEND_URL=http://backend:8080` | `./frontend:/app`, `/app/node_modules` | Compose default network |
-| `backend` | 定義なし | 定義なし | `context: ./backend` | `127.0.0.1:8080:8080` | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}`, `DEBUG_TRANSLATION=true` | 定義なし | Compose default network |
+| `backend` | 定義なし | 定義なし | `context: ./backend` | `127.0.0.1:8080:8080` | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}` | 定義なし | Compose default network |
 | `backend-dev` | `["dev"]` | 定義なし | `context: ./backend`, `dockerfile: Dockerfile.dev` | 定義なし | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}` | `./backend:/app` | Compose default network |
 
 `frontend` には `depends_on: backend` が設定されています。`backend-dev` には `profiles: ["dev"]` と `entrypoint: [""]` が設定されています。
@@ -107,8 +107,9 @@ ports:
 environment:
   - OPENAI_API_KEY=${OPENAI_API_KEY}
   - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
-  - DEBUG_TRANSLATION=true
 ```
+
+`DEBUG_TRANSLATION` は `backend` に渡していません。そのため、Compose で起動した `backend` は翻訳の debug log を出力しません（[development.md](development.md) の「Backend の debug log」を参照）。
 
 Backend は OpenAI Audio Transcriptions API で言語判定と文字起こしを行い、OpenAI Responses API で翻訳とバックトランスレーションを行い、OpenAI Audio Speech API で TTS を行います。OpenAI API key は Backend 側の環境変数として扱われます。
 
@@ -140,7 +141,7 @@ docker compose run --rm backend-dev gofmt -w .
 docker compose run --rm backend-dev go test ./...
 ```
 
-`backend-dev` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます。`DEBUG_TRANSLATION` は `backend-dev` には定義されていません。
+`backend-dev` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます。`DEBUG_TRANSLATION` は `backend` と同じく `backend-dev` にも定義されていません。
 
 ## 7. 環境変数
 
@@ -150,7 +151,7 @@ docker compose run --rm backend-dev go test ./...
 | --- | --- | --- | --- |
 | `OPENAI_API_KEY` | Compose が `backend`、`backend-dev` に `${OPENAI_API_KEY}` を渡す | Backend から OpenAI API を呼び出すための API key | `/api/tts`、`/api/interpret` は HTTP 500 `service unavailable`、`/api/translate` は HTTP 500 `translation service unavailable` を返す |
 | `OPENAI_MODEL` | Compose が `backend`、`backend-dev` に `${OPENAI_MODEL:-gpt-4o-mini}` を渡す（`.env` などで未設定なら `gpt-4o-mini`） | 翻訳とバックトランスレーションに使う model | `gpt-4o-mini` |
-| `DEBUG_TRANSLATION` | Compose が `backend` に `true` を渡す（`backend-dev` には渡さない） | 翻訳 debug log の出力制御。`true` のときだけ出力する | debug log を出力しない |
+| `DEBUG_TRANSLATION` | Compose では渡さない（`backend`、`backend-dev` とも）。ローカルでの調査のときだけ、ホストで Backend を直接実行するときのシェルの環境変数か、一時的な Compose の override ファイルで渡す | 翻訳 debug log の出力制御。`true` のときだけ出力する。debug log は発話の内容を含むため、本番では有効にしない | debug log を出力しない |
 | `VITE_BACKEND_URL` | Compose が `frontend` に `http://backend:8080` を渡す | Vite proxy の Backend 接続先 | `http://localhost:8080`（`frontend/vite.config.ts`） |
 | `OPENAI_TTS_MODEL` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | TTS model | `gpt-4o-mini-tts` |
 | `OPENAI_TTS_VOICE` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | TTS voice | `marin` |
