@@ -76,7 +76,7 @@ Frontend の翻訳処理は `frontend/src/pages/InterpreterPage.tsx` に実装�
 | `speaker` | タップされた国旗の言語 ID |
 | `transcript` | `SpeechRecognition` の認識テキスト。認識テキストが得られた場合だけ送信 |
 
-レスポンスから `translatedText`、`backTranslation`、`ttsText` を state に保存し、履歴には原文、翻訳文、バックトランスレーション、`sourceLanguage`、`targetLanguage` を保存します。録音中に `SpeechRecognition` の `onresult` が一度も呼ばれなかった場合（`hasLiveTranscriptRef.current` が `false`）は、レスポンスの `text` を原文として表示します。`onresult` は呼ばれたが認識テキストが空だった場合は、`transcript` を送らず、`text` も原文として表示しません。レスポンスの `ttsText` がない場合は `translatedText` を読み上げ用テキストとして使います。タイムアウトは 60 秒です。
+レスポンスから `translatedText`、`backTranslation`、`ttsText` を state に保存し、履歴には原文、翻訳文、バックトランスレーション、`sourceLanguage`、`targetLanguage` を保存します。録音中に `SpeechRecognition` の `onresult` が一度も呼ばれなかった場合（`hasLiveTranscriptRef.current` が `false`）は、レスポンスの `text` を原文として表示します。`onresult` は呼ばれたが認識テキストが空だった場合は、`transcript` を送らず、`text` も原文として表示しません。レスポンスの `ttsText` がない場合は `translatedText` を読み上げ用テキストとして使います。タイムアウトは 65 秒です。
 
 原文を編集して確定した場合、`handleEditConfirm` は `callTranslateApi(trimmed)` を呼び出します。`callTranslateApi` は `/api/translate` に `text` と `languages` を送信し、成功時は `/api/interpret` と同様に state と履歴を更新します。タイムアウトは 30 秒です。
 
@@ -164,7 +164,7 @@ OpenAI Audio Speech API から返った音声は Backend から `audio/mpeg` と
 
 `/api/translate` では、入力検証エラー、API キー未設定、OpenAI Responses API の失敗、翻訳元言語の不一致、固有名詞保護の失敗が JSON エラーとして返されます。代表的なエラーは `language_mismatch`、`translation failed`、`proper_noun_protection_failed` です。
 
-Frontend は `/api/interpret` と `/api/translate`（再翻訳）のどちらでも、HTTP 422 でエラーが `language_mismatch` の場合は同じ扱いをします。選択言語ごとの言語不明メッセージを表示し、翻訳文とバックトランスレーションを空にして `idle` に戻します。それ以外の失敗では、タイムアウトの場合は「通信がタイムアウトしました。もう一度お試しください。」、それ以外は `HTTP 500` のような status 表示などのエラー内容を表示し、状態を `idle` に戻します。リアルタイム翻訳の失敗は表示しません。
+Frontend は `/api/interpret` と `/api/translate`（再翻訳）のどちらでも、HTTP 422 でエラーが `language_mismatch` の場合は同じ扱いをします。選択言語ごとの言語不明メッセージを表示し、翻訳文とバックトランスレーションを空にして `idle` に戻します。それ以外の失敗では、タイムアウトの場合は「通信がタイムアウトしました。もう一度お試しください。」を表示します。エラーの応答の `code` が `input_too_large`、`service_unavailable`、`upstream_busy`、`timeout` の場合は、それぞれ「入力が長すぎます。短くしてもう一度お試しください」「現在サービスを利用できません」「混み合っています。しばらくしてからお試しください」「処理に時間がかかっています。もう一度お試しください」を表示します（[api.md](api.md) の「9. Frontend からの利用」）。それ以外は `HTTP 500` のような status 表示などのエラー内容を表示し、状態を `idle` に戻します。リアルタイム翻訳の失敗は表示しません。
 
 `/api/tts` では、入力検証エラー、API キー未設定、OpenAI Audio Speech API の失敗が扱われます。OpenAI Audio Speech API の呼び出しに失敗した場合、Backend は `tts failed` を返します。Frontend の読み上げ処理は TTS 失敗時に状態を `ready` に戻します。
 

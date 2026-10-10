@@ -109,6 +109,12 @@ environment:
   - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
 ```
 
+`backend` には `stop_grace_period: 30s` を設定しています。Backend は `SIGTERM` を受けると、処理中のリクエストを最大 25 秒待ってから終了するので（graceful shutdown）、Docker Compose の停止の猶予（既定は 10 秒）をそれより長くしています。
+
+```yaml
+stop_grace_period: 30s
+```
+
 `DEBUG_TRANSLATION` は `backend` に渡していません。そのため、Compose で起動した `backend` は翻訳の debug log を出力しません（[development.md](development.md) の「Backend の debug log」を参照）。
 
 Backend は OpenAI Audio Transcriptions API で言語判定と文字起こしを行い、OpenAI Responses API で翻訳とバックトランスレーションを行い、OpenAI Audio Speech API で TTS を行います。OpenAI API key は Backend 側の環境変数として扱われます。
