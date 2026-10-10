@@ -1,25 +1,114 @@
 name: CD
 
 on:
-  push:
+  # head_branch が main の CI の完了で起動する（fork の main branch から出された PR の CI も含む）。
+  # push to main の CI が成功した場合以外は、resolve job の if で除外する
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
+  # 手動での再 deploy。sha を省略した場合は main の先頭を deploy する
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "deploy するコミット（40 桁の SHA。省略時は main の先頭）。push to main の CI が成功したコミットだけを deploy できる"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
+  resolve:
+    name: Resolve commit to deploy
+    runs-on: ubuntu-latest
+    # workflow_run は、main への push で起動した CI が成功した場合だけ進める
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Resolve and verify commit
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            sha="$RUN_SHA"
+          elif [ -n "$INPUT_SHA" ]; then
+            sha="$INPUT_SHA"
+          else
+            sha=$(gh api "repos/$REPO/commits/main" --jq .sha)
+          fi
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Invalid commit SHA: $sha"
+            exit 1
+          fi
+          # main に含まれるコミットであること
+          status=$(gh api "repos/$REPO/compare/$sha...main" --jq .status)
+          if [ "$status" != "identical" ] && [ "$status" != "ahead" ]; then
+            echo "::error::Commit $sha is not on main (compare status: $status)"
+            exit 1
+          fi
+          # push to main で起動した CI が、このコミットで成功していること
+          success=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$sha&event=push&branch=main&status=success" --jq .total_count)
+          if [ "$success" -lt 1 ]; then
+            echo "::error::No successful CI run (push to main) found for $sha"
+            exit 1
+          fi
+          echo "Deploy target: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
   deploy:
     name: Deploy to VPS
+    needs: resolve
     runs-on: ubuntu-latest
     environment: production
+    # resolve を通った run だけが競合するよう、concurrency は deploy job に置く。
+    # 実行中の deploy は止めず、待機中の古い run は新しい run で置き換える
+    concurrency:
+      group: cd-production
+      cancel-in-progress: false
 
     steps:
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.2.2
+        # VPS の SSH 秘密鍵を扱うため、action はコミットの SHA で固定する（v1.2.2）
+        uses: appleboy/ssh-action@2ead5e36573f08b82fbfce1504f1a4b05a647c6f # v1.2.2
+        env:
+          TARGET_SHA: ${{ needs.resolve.outputs.sha }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          # envs には変数名をカンマ区切りで書く（README の例と drone-ssh の実装による。key=value 形式では渡らない）
+          envs: TARGET_SHA
           script: |
             set -e
             cd ~/gotalk
-            git pull --ff-only
-            docker compose up -d --build
+            if ! printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "Invalid TARGET_SHA: $TARGET_SHA"
+              exit 1
+            fi
+            git fetch origin main
+            # 新しいコミットが反映済みの場合に、古いコミットへ戻さない
+            if ! git merge-base --is-ancestor HEAD "$TARGET_SHA"; then
+              echo "Current HEAD $(git rev-parse HEAD) is not an ancestor of $TARGET_SHA; refusing to deploy"
+              exit 1
+            fi
+            git merge --ff-only "$TARGET_SHA"
+            if [ "$(git rev-parse HEAD)" != "$TARGET_SHA" ]; then
+              echo "HEAD $(git rev-parse HEAD) does not match $TARGET_SHA"
+              exit 1
+            fi
+            docker compose build --pull
+            docker compose up -d
             docker compose ps

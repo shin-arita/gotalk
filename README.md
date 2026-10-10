@@ -62,7 +62,8 @@ flowchart LR
     PR --> CI[GitHub Actions CI]
     CI --> Review[Codex Review]
     Review --> Main[Merge to main]
-    Main --> CD[GitHub Actions CD]
+    Main --> CIMain[GitHub Actions CI<br/>push to main]
+    CIMain -->|success| CD[GitHub Actions CD]
     CD --> Approval[production Environment<br/>Required reviewers 設定時は承認待ち]
     Approval -->|SSH deploy| VPS[VPS]
     VPS --> Docker[Docker Compose]
@@ -116,11 +117,11 @@ flowchart LR
 
 - Pull Request Workflow による main 取り込み前の確認
 - Branch Protection による main ブランチ保護
-- GitHub Actions CD による main push 起点のデプロイ workflow
+- GitHub Actions CD による、main push の CI 成功を条件にしたデプロイ workflow
 - `production` Environment を使った Production Approval Gate（GitHub 側で Required reviewers が設定されている場合）
 - GitHub Actions から SSH で VPS に接続し、Docker Compose で更新
 
-CD は `main` への push で起動します。CI の完了を条件にしていないため、`main` への push では CI と CD が並行して動きます。CD の deploy job は `production` Environment を指定しているため、GitHub 側で Required reviewers が設定されている場合は、承認されるまで VPS への deploy は実行されません。
+CD は、`main` への push で起動した CI が成功した場合だけ起動し（`workflow_run`）、その CI が検証したコミットを VPS に deploy します。CI が失敗した場合は deploy しません。deploy は `concurrency` で同時に実行されないようにし、VPS ではすでに反映されているコミットより古いコミットへは戻しません。deploy 時は `docker compose build --pull` で base image を pull してから build します。CD の deploy job は `production` Environment を指定しているため、GitHub 側で Required reviewers が設定されている場合は、承認されるまで VPS への deploy は実行されません。手動で再 deploy する場合は、CD の run の Re-run か `workflow_dispatch` を使います（詳細は [docs/ci-cd.md](docs/ci-cd.md)）。
 
 ## インフラ / 運用
 

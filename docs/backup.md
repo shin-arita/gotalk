@@ -43,20 +43,36 @@ GitHub Repository は GoTalk のソースコード、Docker 構成、CI/CD 設�
 
 - `main` branch が CD workflow の deploy 元になる
 - feature branch で変更し、Pull Request で CI と review を通す
-- Pull Request merge 後の `push` to `main` で CD workflow が起動する
-- VPS では `~/gotalk` で `git pull --ff-only` を実行し、GitHub の最新状態に更新する
+- Pull Request merge 後の `push` to `main` で CI が起動し、CI が成功すると CD workflow が起動する
+- VPS では `~/gotalk` の `main` を、CI が検証したコミットまで fast-forward で更新する
+- VPS では手作業で `git pull` をしない。再 deploy は CD の `workflow_dispatch` か Re-run を使い、手作業でコミットを合わせる必要がある場合は、CI が成功したコミットを指定して `git merge --ff-only <SHA>` を実行する
 
-CD workflow は VPS 上で次を実行します。
+CD workflow は VPS 上で次を実行します。`TARGET_SHA` には CI が検証したコミットが入り、`appleboy/ssh-action` の `envs` で環境変数として渡されます。
 
 ```bash
+# TARGET_SHA は appleboy/ssh-action の envs で環境変数として渡される
 set -e
 cd ~/gotalk
-git pull --ff-only
-docker compose up -d --build
+if ! printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+  echo "Invalid TARGET_SHA: $TARGET_SHA"
+  exit 1
+fi
+git fetch origin main
+if ! git merge-base --is-ancestor HEAD "$TARGET_SHA"; then
+  echo "Current HEAD $(git rev-parse HEAD) is not an ancestor of $TARGET_SHA; refusing to deploy"
+  exit 1
+fi
+git merge --ff-only "$TARGET_SHA"
+if [ "$(git rev-parse HEAD)" != "$TARGET_SHA" ]; then
+  echo "HEAD $(git rev-parse HEAD) does not match $TARGET_SHA"
+  exit 1
+fi
+docker compose build --pull
+docker compose up -d
 docker compose ps
 ```
 
-この `docker compose up -d --build` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを build・起動します。詳細は [ci-cd.md](ci-cd.md) を参照してください。
+`docker compose build --pull` と `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを pull・build・起動します。詳細は [ci-cd.md](ci-cd.md) を参照してください。
 
 ## 4. VPS
 
@@ -99,11 +115,13 @@ cron:
 5. `sudo nginx -t` で nginx 設定を確認する
 6. `sudo systemctl reload nginx` を実行する
 7. `/home/ubuntu/uptime-kuma` で `docker compose restart` を実行する
-8. `/home/ubuntu/gotalk` で `docker compose build` を実行する
+8. `/home/ubuntu/gotalk` で `docker compose build --pull` を実行する
 9. `/home/ubuntu/gotalk` で `docker compose up -d` を実行する
 10. `docker compose ps` と Backend health check を確認する
 
-手順 8 の `docker compose build` と手順 9 の `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを build・起動します。
+手順 8 の `docker compose build --pull` と手順 9 の `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを pull・build・起動します。手順 8 は CD の deploy script と同じく `--pull` を付け、base image を pull してから build します。
+
+手順 2 の clone では `main` の先頭が checkout されます。CI がまだ成功していないコミットを避けたい場合は、clone の後に `git checkout -B main <CI が成功したコミット>` で `main` をそのコミットに合わせてから手順 8 に進みます。復旧後の CD は、VPS の現在のコミットが deploy するコミットの祖先である場合だけ deploy します。そのため、復旧時に `main` の先頭より古いコミットに合わせた場合でも、その後の CD はそれ以降のコミットを fast-forward で反映できます。
 
 Backend health check:
 

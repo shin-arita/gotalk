@@ -2,7 +2,7 @@
 
 ## 1. 概要
 
-GoTalk は VPS 上で Docker Compose により `frontend` と `backend` を起動します。GitHub Actions の CD workflow は `main` への push を trigger に起動し、SSH で VPS に接続して repository を更新します。CD の deploy job は `production` Environment を指定しているため、GitHub 側で Required reviewers が設定されている場合は、承認されるまで deploy は実行されません。
+GoTalk は VPS 上で Docker Compose により `frontend` と `backend` を起動します。GitHub Actions の CD workflow は、`main` への push で起動した CI が成功した場合に起動し、SSH で VPS に接続して repository を CI が検証したコミットに更新します。CD の deploy job は `production` Environment を指定しているため、GitHub 側で Required reviewers が設定されている場合は、承認されるまで deploy は実行されません。
 
 Backend は OpenAI API キーをサーバー側で扱い、OpenAI Audio Transcriptions API、OpenAI Responses API、OpenAI Audio Speech API へ outbound 接続します。Frontend は Backend の `/api` にリクエストし、Backend が文字起こし、翻訳、バックトランスレーション、TTS を実行します。
 
@@ -54,10 +54,11 @@ CD は `.github/workflows/cd.yml` で定義されています。
 
 | 項目 | 内容 |
 | --- | --- |
-| Trigger | `push` to `main` |
+| Trigger | `workflow_run`（`CI` の完了、`main`。CI が成功した場合だけ deploy）、`workflow_dispatch`（手動） |
 | GitHub Environment | `production` |
+| concurrency | `deploy` job に group `cd-production`（deploy を同時に実行しない） |
 | 接続方式 | SSH |
-| GitHub Action | `appleboy/ssh-action@v1.2.2` |
+| GitHub Action | `appleboy/ssh-action` v1.2.2（コミットの SHA `2ead5e36573f08b82fbfce1504f1a4b05a647c6f` で固定） |
 | Deploy target | VPS |
 
 CD workflow は次の GitHub Secrets を使います。
@@ -68,19 +69,36 @@ CD workflow は次の GitHub Secrets を使います。
 | `VPS_USER` | SSH user |
 | `VPS_SSH_KEY` | SSH private key |
 
-VPS 上で実行される deploy script:
+VPS 上で実行される deploy script です。`TARGET_SHA` には CI が検証したコミットが入り、`appleboy/ssh-action` の `envs` で環境変数として渡されます。
 
 ```bash
+# TARGET_SHA は appleboy/ssh-action の envs で環境変数として渡される
 set -e
 cd ~/gotalk
-git pull --ff-only
-docker compose up -d --build
+if ! printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+  echo "Invalid TARGET_SHA: $TARGET_SHA"
+  exit 1
+fi
+git fetch origin main
+if ! git merge-base --is-ancestor HEAD "$TARGET_SHA"; then
+  echo "Current HEAD $(git rev-parse HEAD) is not an ancestor of $TARGET_SHA; refusing to deploy"
+  exit 1
+fi
+git merge --ff-only "$TARGET_SHA"
+if [ "$(git rev-parse HEAD)" != "$TARGET_SHA" ]; then
+  echo "HEAD $(git rev-parse HEAD) does not match $TARGET_SHA"
+  exit 1
+fi
+docker compose build --pull
+docker compose up -d
 docker compose ps
 ```
 
-`git pull --ff-only` で `main` の最新状態に更新し、`docker compose up -d --build` で image build と service 更新を行います。最後に `docker compose ps` で service 状態を表示します。
+`git fetch origin main` の後、VPS の現在のコミットが `TARGET_SHA` の祖先であることを確認し、`git merge --ff-only` で `TARGET_SHA` まで fast-forward します。`origin/main` がさらに進んでいても、CI が検証していないコミットは反映しません。新しいコミットがすでに反映されている場合は、古いコミットへ戻さずに失敗します。その後、`docker compose build --pull` で base image を pull してから image を build し、`docker compose up -d` で service を更新します。最後に `docker compose ps` で service 状態を表示します。
 
-deploy script の `docker compose up -d --build` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを build・起動します。
+`docker compose build --pull` と `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを pull・build・起動します。
+
+手動で再 deploy する場合は、CD の run の Re-run か、CD workflow の `workflow_dispatch`（`main` から実行）を使います。VPS では手作業で `git pull` をしないでください。CI が成功していないコミットまで作業ツリーが進むためです。手作業でコミットを合わせる必要がある場合は、CI が成功したコミットを指定して `git merge --ff-only <SHA>` を実行します。build や pull で失敗した場合は、失敗した CD の run を Re-run すれば build から再実行でき、それまでのコンテナは動き続けます。詳細は [ci-cd.md](ci-cd.md) を参照してください。
 
 ## 5. 環境変数
 
