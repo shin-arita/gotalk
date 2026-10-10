@@ -202,7 +202,7 @@ Backend のログには、利用者の発話の内容を出力しません。障
 | 言語 | 選択言語、翻訳元と翻訳先、文字起こしで判定した言語。`frontend/src/languages.ts` にある言語 ID（と `unknown`）以外は `other` と出力し、文字起こしで判定した言語は、Whisper が対応する言語の名前（`japanese` など）と言語コード（`ja` など）の許可リスト（`backend/whisperlangs.go`。openai/whisper の `whisper/tokenizer.py` の `LANGUAGES` から作成）にない値を `other` と出力する |
 | テキストの長さ | 文字起こしや翻訳の対象のテキストの文字数（rune の数）。例：`translate: text runes=7 lang0=ja lang1=en` |
 | リクエストの概要 | `speaker`（選択言語のどちらかに一致する場合だけその言語、それ以外は `invalid`）、音声のファイルの拡張子（`.webm`、`.mp4`、`.ogg` 以外は `other`）、音声のサイズ、`transcript` の有無 |
-| エラーの種類 | OpenAI API の HTTP status、エラー応答の `error.type` と `error.code`（英小文字、数字、`_` だけの 64 文字以下の値の場合だけ。null や欠落は `none`、それ以外は `invalid`）、エラー応答の本文のバイト数（エラー応答の本文は 64 KiB までしか読まず、それを超える場合は `body over 65536 bytes (truncated)`、読み取りが途中で失敗した場合は `body read error after N bytes (<エラーの型>)` と出力する）、JSON のデコードエラーの種類と位置（`EOF` と `unexpected EOF` を区別する）、固有名詞保護の検証エラーの種類。例：`OpenAI error: OpenAI API returned status 429 (type=insufficient_quota code=insufficient_quota, body 312 bytes)` |
+| エラーの種類 | OpenAI API の HTTP status、エラー応答の `error.type` と `error.code`（英小文字、数字、`_` だけの 64 文字以下の値の場合だけ。null や欠落は `none`、それ以外は `invalid`）、エラー応答の本文のバイト数（エラー応答の本文は 64 KiB までしか読まず、それを超える場合は `body over 65536 bytes (truncated)`、読み取りが途中で失敗した場合は `body read error after N bytes (<原因>)` と出力する。原因は、接続が途中で切れた場合は `unexpected EOF`、タイムアウトの場合は `timeout`、それ以外はエラーの型。失敗する前に完全なエラーの JSON を受け取れていた場合は、`type=server_error code=none, body read error after 64 bytes (unexpected EOF)` のように `type` と `code` も添える）、JSON のデコードエラーの種類と位置（`EOF` と `unexpected EOF` を区別する）、固有名詞保護の検証エラーの種類。例：`OpenAI error: OpenAI API returned status 429 (type=insufficient_quota code=insufficient_quota, body 312 bytes)` |
 
 出力しないものは次のとおりです。
 

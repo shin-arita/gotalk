@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // captureLog redirects the standard logger to a buffer for the duration of the test.
@@ -615,4 +616,104 @@ func TestReadOpenAIErrorDetail_ReadError(t *testing.T) {
 	}
 	assertLogIncludes(t, logs.String(), "OpenAI error: OpenAI API returned status 500 (body read error after ")
 	assertLogExcludes(t, logs.String(), "SECRETPART", "server_error", "secret plan")
+}
+
+// timeoutErr is a net.Error whose Timeout() is true, wrapped like errors from net/http.
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout SECRETERR" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
+// Read errors are reported with a fixed cause, and type/code are added only when the bytes read
+// before the error form a complete OpenAI error object.
+func TestReadOpenAIErrorDetail_ReadErrorCauses(t *testing.T) {
+	complete := `{"error":{"message":"SECRETMSG","type":"server_error","param":null,"code":null}}`
+	partial := `{"error":{"message":"SECRETMSG","type":"server_error"`
+	tests := []struct {
+		name string
+		data string
+		err  error
+		want string
+	}{
+		{"unexpected EOF after partial JSON", partial, io.ErrUnexpectedEOF,
+			fmt.Sprintf("body read error after %d bytes (unexpected EOF)", len(partial))},
+		{"wrapped unexpected EOF", partial, fmt.Errorf("read body: %w", io.ErrUnexpectedEOF),
+			fmt.Sprintf("body read error after %d bytes (unexpected EOF)", len(partial))},
+		{"timeout", partial, fmt.Errorf("wrapped: %w", timeoutErr{}),
+			fmt.Sprintf("body read error after %d bytes (timeout)", len(partial))},
+		{"connection reset", partial, syscall.ECONNRESET,
+			fmt.Sprintf("body read error after %d bytes (syscall.Errno)", len(partial))},
+		{"unexpected EOF after complete JSON", complete, io.ErrUnexpectedEOF,
+			fmt.Sprintf("type=server_error code=none, body read error after %d bytes (unexpected EOF)", len(complete))},
+		{"timeout after complete JSON", complete, timeoutErr{},
+			fmt.Sprintf("type=server_error code=none, body read error after %d bytes (timeout)", len(complete))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := readOpenAIErrorDetail(&failingReader{data: []byte(tt.data), err: tt.err})
+			if got != tt.want {
+				t.Errorf("got %q want %q", got, tt.want)
+			}
+			for _, s := range []string{"SECRETMSG", "SECRETERR", "connection reset", "read body"} {
+				if strings.Contains(got, s) {
+					t.Errorf("must not include %q: %q", s, got)
+				}
+			}
+		})
+	}
+}
+
+// With a real net/http client, an error body cut off part way (Content-Length short, or a chunked
+// body without the final chunk) is reported as "unexpected EOF", and a client timeout as "timeout".
+func TestReadOpenAIErrorDetail_RealConnectionErrors(t *testing.T) {
+	complete := `{"error":{"message":"SECRETMSG","type":"server_error","param":null,"code":null}}`
+	partial := `{"error":{"message":"SECRETMSG","type":"server_`
+	hijack := func(t *testing.T, w http.ResponseWriter, raw string, wait time.Duration) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		buf.WriteString(raw)
+		buf.Flush()
+		time.Sleep(wait)
+	}
+	tests := []struct {
+		name    string
+		raw     string
+		wait    time.Duration
+		timeout time.Duration
+		want    string
+	}{
+		{"content-length short", "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n" + partial, 0, 0,
+			fmt.Sprintf("body read error after %d bytes (unexpected EOF)", len(partial))},
+		{"chunked cut after complete JSON", "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n" +
+			fmt.Sprintf("%x\r\n%s\r\n", len(complete), complete), 0, 0,
+			fmt.Sprintf("type=server_error code=none, body read error after %d bytes (unexpected EOF)", len(complete))},
+		{"client timeout", "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n" + partial, 2 * time.Second, 300 * time.Millisecond,
+			fmt.Sprintf("body read error after %d bytes (timeout)", len(partial))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hijack(t, w, tt.raw, tt.wait)
+			}))
+			defer srv.Close()
+			client := &http.Client{Timeout: tt.timeout}
+			resp, err := client.Get(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			got := readOpenAIErrorDetail(resp.Body)
+			if got != tt.want {
+				t.Errorf("got %q want %q", got, tt.want)
+			}
+			if strings.Contains(got, "SECRETMSG") {
+				t.Errorf("must not include the message: %q", got)
+			}
+		})
+	}
 }

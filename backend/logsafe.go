@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -100,21 +101,42 @@ func jsonErrSummary(err error) string {
 const maxErrorBodyBytes = 64 << 10
 
 // readOpenAIErrorDetail reads at most maxErrorBodyBytes+1 bytes of an OpenAI error response body
-// and summarizes it with openAIErrorDetail. When reading fails part way, the partial body is not
-// decoded and only "body read error after N bytes (<error type>)" is reported. When the body is
-// larger than maxErrorBodyBytes, it is not decoded and only "body over N bytes (truncated)" is
-// reported; otherwise "body N bytes" is the size of the whole body.
+// and summarizes it with openAIErrorDetail.
+//   - When reading fails part way, "body read error after N bytes (<cause>)" is reported (see
+//     readErrorCause). If the bytes read so far already form a complete OpenAI error object,
+//     its type and code are prefixed as in openAIErrorDetail, for example
+//     "type=server_error code=none, body read error after 64 bytes (unexpected EOF)".
+//   - When the body is larger than maxErrorBodyBytes, it is not decoded and only
+//     "body over N bytes (truncated)" is reported.
+//   - Otherwise "body N bytes" is the size of the whole body.
 func readOpenAIErrorDetail(r io.Reader) string {
 	body, err := io.ReadAll(io.LimitReader(r, maxErrorBodyBytes+1))
 	if err != nil {
-		// Only the error type is logged; network error messages do not contain the body,
-		// but the type is enough to tell that the connection failed while reading.
-		return fmt.Sprintf("body read error after %d bytes (%T)", len(body), err)
+		readErr := fmt.Sprintf("body read error after %d bytes (%s)", len(body), readErrorCause(err))
+		if typeCode, ok := openAIErrorTypeCode(body); ok {
+			return typeCode + ", " + readErr
+		}
+		return readErr
 	}
 	if len(body) > maxErrorBodyBytes {
 		return fmt.Sprintf("body over %d bytes (truncated)", maxErrorBodyBytes)
 	}
 	return openAIErrorDetail(body)
+}
+
+// readErrorCause describes an error from reading a response body as a fixed string:
+// "unexpected EOF" when the connection closed before the body was complete, "timeout" for
+// a timeout (a net.Error whose Timeout() is true, including the http.Client timeout),
+// and the error type otherwise. Error messages are never included.
+func readErrorCause(err error) string {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return "unexpected EOF"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	return fmt.Sprintf("%T", err)
 }
 
 // openAIErrorTokenRe matches the error type and code values that are safe to log
@@ -128,6 +150,16 @@ var openAIErrorTokenRe = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 // A missing or null value is reported as "none", any other value as "invalid".
 // When the body is not an OpenAI error object, only the body size is reported.
 func openAIErrorDetail(body []byte) string {
+	if typeCode, ok := openAIErrorTypeCode(body); ok {
+		return fmt.Sprintf("%s, body %d bytes", typeCode, len(body))
+	}
+	return fmt.Sprintf("body %d bytes", len(body))
+}
+
+// openAIErrorTypeCode decodes body as an OpenAI error object and returns "type=<type> code=<code>"
+// (each value filtered by openAIErrorToken). ok is false when body is not a complete JSON object
+// with an "error" object.
+func openAIErrorTypeCode(body []byte) (typeCode string, ok bool) {
 	var resp struct {
 		Error *struct {
 			Type json.RawMessage `json:"type"`
@@ -135,10 +167,9 @@ func openAIErrorDetail(body []byte) string {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil || resp.Error == nil {
-		return fmt.Sprintf("body %d bytes", len(body))
+		return "", false
 	}
-	return fmt.Sprintf("type=%s code=%s, body %d bytes",
-		openAIErrorToken(resp.Error.Type), openAIErrorToken(resp.Error.Code), len(body))
+	return fmt.Sprintf("type=%s code=%s", openAIErrorToken(resp.Error.Type), openAIErrorToken(resp.Error.Code)), true
 }
 
 // openAIErrorToken returns a raw JSON value when it is a string matching openAIErrorTokenRe,
