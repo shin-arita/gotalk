@@ -153,11 +153,16 @@ Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeOb
 開発用のマイクの確認のページ（`#mic-test`、`MicTestPage.test.tsx`）のテストでは、`getUserMedia`、`MediaRecorder`、`SpeechRecognition`、`navigator.permissions` を mock し、次を確かめます。ページの使い方は [development.md](development.md) の「8. 注意点」に書いています。
 
 - `#mic-test` のときだけページを表示し、通常の URL では表示しないこと。上部の説明の文を表示すること
-- S1 では開始のたびに `getUserMedia` を呼び、停止で track の `stop()` を呼ぶこと
+- S1 では開始のたびに `getUserMedia` を呼び、停止で track の `stop()` を呼び、閉じる前の track の状態と閉じたことをログに出すこと
 - S2 では `getUserMedia` を最初の1回だけ呼び、開始と停止で `track.enabled` を true と false に切り替え、track の `stop()` を呼ばないこと
 - S7 では `getUserMedia` を最初の1回だけ呼び、`track.enabled` が true のままであること
-- S4 では `getUserMedia` を呼ばずに、音声認識の `start()` と `stop()` を呼ぶこと（設定は `ja-JP`、`continuous`、`interimResults`）。音声認識がないブラウザでは、S3、S4、S5 で対応していないとログに出すこと
-- S6 ではすべての track の `stop()` と音声認識の `stop()` を呼び、その後の S2 でマイクを開き直すこと。別のテストを始めるときは前のテストのマイクを閉じること
+- S3 では `getUserMedia` を最初の1回だけ呼び、`track.enabled` が true のままで、`MediaRecorder` を作らず、停止で track を閉じないこと
+- S4 では `getUserMedia` と `MediaRecorder` を呼ばずに、音声認識の `start()` と `stop()` を呼ぶこと（設定は `ja-JP`、`continuous`、`interimResults`）。音声認識がないブラウザでは、S3、S4、S5 で対応していないとログに出すこと
+- S5 では `getUserMedia` を最初の1回だけ呼び、開始と停止で `track.enabled` を true と false に切り替え、録音と音声認識の両方を始めて止めること
+- track が `ended` になった後に S2 や S3 を始めると、古い track の `stop()` を呼んでマイクを開き直し、そのことと、`ended` がどのテストの何回目の開始の後に起きたかをログに出すこと
+- `MediaRecorder` の作成や `start()`、音声認識の `start()` が例外になる場合に、失敗をログに出し、開いたマイクと録音を閉じて、テストが始まっていない状態に戻ること。もう一度始めても前の track が残らないこと。未処理の Promise の拒否が出ないこと（Node の `unhandledRejection` で確かめます）
+- `getUserMedia` を待っている間に `pagehide` やコンポーネントが外れて閉じた場合に、後から成功した track の `stop()` を呼ぶこと。待っている間は S6 を含むほかのボタンを押せないこと
+- S6 ではすべての track の `stop()` と音声認識の `stop()` を呼び、その後の S2 でマイクを開き直すこと。別のテストを始めるときは前のテストのマイクを閉じ、音声認識が動いている場合（S4 など）は音声認識の `stop()` を呼ぶこと
 - `navigator.permissions.query` が例外になる場合に `unsupported` と表示すること
 - Backend への `fetch` を呼ばないこと
 - 音声認識の結果の文字列を画面に表示せず、文字数だけを表示すること
