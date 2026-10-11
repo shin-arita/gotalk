@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,27 @@ func TestSupportedLanguagesMatchFrontend(t *testing.T) {
 	}
 	if len(frontend) == 0 {
 		t.Fatal("no languages found in frontend/src/languages.ts; update the pattern in this test")
+	}
+
+	// Count the language entries independently of the pattern above: every "id:" with a string
+	// value (the interface's "id: string" has no quote). An entry written differently (other quotes,
+	// split over lines, fields in another order) is counted here but not matched above, so the test
+	// fails instead of silently skipping it.
+	idRe := regexp.MustCompile("\\bid\\s*:\\s*['\"`]")
+	var unmatched []string
+	idCount := 0
+	for i, line := range strings.Split(string(src), "\n") {
+		if !idRe.MatchString(line) {
+			continue
+		}
+		idCount++
+		if !re.MatchString(line) {
+			unmatched = append(unmatched, fmt.Sprintf("line %d: %s", i+1, strings.TrimSpace(line)))
+		}
+	}
+	if idCount != len(frontend) || len(unmatched) > 0 {
+		t.Fatalf("frontend/src/languages.ts has %d entries with an id but %d match the expected format; "+
+			"update the pattern in this test. Lines not matched:\n%s", idCount, len(frontend), strings.Join(unmatched, "\n"))
 	}
 	if len(frontend) != len(supportedLanguages) {
 		t.Fatalf("frontend has %d languages, backend %d: %v vs %v", len(frontend), len(supportedLanguages), frontend, supportedLanguages)
