@@ -4,7 +4,7 @@ import App from '../App'
 import MicTestPage from './MicTestPage'
 
 const DESCRIPTION =
-  'マイク動作確認用の開発ページです。録音した音声と音声認識の結果は、GoTalk の Backend や OpenAI API には送信・保存しません。音声認識を使うテスト（S3、S4、S5）では、ブラウザまたは OS の音声認識サービスへ音声が送信される場合があります。'
+  'マイク動作確認用の開発ページです。録音した音声と音声認識の結果は、GoTalk の Backend や OpenAI API には送信・保存しません。音声認識を使うテスト（S3、S4、S5）では、ブラウザまたは OS の音声認識サービスへ音声が送信される場合があります。録音した音声は、このページの中で再生するためだけにメモリに持ちます。送信も保存もしません。次の録音を始めたとき、S6 を押したとき、ページを閉じたときに捨てます。'
 
 // --- getUserMedia mock ---
 
@@ -76,7 +76,8 @@ interface MockRecorder {
   state: string
   mimeType: string
   ondataavailable: ((e: { data: Blob }) => void) | null
-  onstop: (() => void) | null
+  onstart: ((e: Event) => void) | null
+  onstop: ((e: Event) => void) | null
   start: ReturnType<typeof vi.fn>
   stop: ReturnType<typeof vi.fn>
 }
@@ -89,12 +90,16 @@ function setupMediaRecorderMock() {
       state: 'inactive',
       mimeType: '',
       ondataavailable: null,
+      onstart: null,
       onstop: null,
-      start: vi.fn(() => { recorder.state = 'recording' }),
+      start: vi.fn(() => {
+        recorder.state = 'recording'
+        recorder.onstart?.(new Event('start'))
+      }),
       stop: vi.fn(() => {
         recorder.state = 'inactive'
         recorder.ondataavailable?.({ data: new Blob([new Uint8Array(5)]) })
-        recorder.onstop?.()
+        recorder.onstop?.(new Event('stop'))
       }),
     }
     recorders.push(recorder)
@@ -215,11 +220,39 @@ function saveProperty(target: object, key: string) {
 }
 
 let fetchMock: ReturnType<typeof vi.fn>
+let createObjectURL: ReturnType<typeof vi.fn>
+let revokeObjectURL: ReturnType<typeof vi.fn>
+
+// 再生の mock。play() を呼ぶと playing のイベントを出す
+function setupPlayMock(rejects = false) {
+  const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(function (this: HTMLMediaElement) {
+    if (rejects) return Promise.reject(new DOMException('not allowed', 'NotAllowedError'))
+    this.dispatchEvent(new Event('playing'))
+    return Promise.resolve()
+  })
+  const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+  return { play, pause }
+}
+
+function playButton() {
+  return screen.getByRole('button', { name: '直前の録音を再生' })
+}
+
+function recordingText() {
+  return screen.getByTestId('mic-test-recording').textContent ?? ''
+}
 
 beforeEach(() => {
   savedProperties = []
   saveProperty(globalThis.navigator, 'mediaDevices')
   saveProperty(globalThis.navigator, 'permissions')
+  saveProperty(URL, 'createObjectURL')
+  saveProperty(URL, 'revokeObjectURL')
+  let urlCount = 0
+  createObjectURL = vi.fn(() => `blob:mock-${++urlCount}`)
+  revokeObjectURL = vi.fn()
+  Object.defineProperty(URL, 'createObjectURL', { value: createObjectURL, writable: true, configurable: true })
+  Object.defineProperty(URL, 'revokeObjectURL', { value: revokeObjectURL, writable: true, configurable: true })
   tracks = []
   recorders = []
   recognitions = []
@@ -706,5 +739,164 @@ describe('MicTestPage', () => {
     unmount()
     expect(tracks[1].stop).toHaveBeenCalledTimes(1)
     expect(recognitions[1].stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('録音していないときは、直前の録音を再生のボタンを押せない', async () => {
+    setupRecognitionMock()
+    await renderPage()
+    expect(playButton()).toBeDisabled()
+
+    // 録音しないテスト（S3、S4）だけを試した後も押せない
+    for (const id of ['S3', 'S4']) {
+      await click(`${id} 開始`)
+      await click(`${id} 停止`)
+    }
+    expect(playButton()).toBeDisabled()
+    expect(createObjectURL).not.toHaveBeenCalled()
+  })
+
+  it('S2 で録音して停止すると再生のボタンを押せるようになり、テストの番号、回数、バイト数を表示する', async () => {
+    await renderPage()
+    await click('S2 開始')
+    // 録音している間は、まだ押せない
+    expect(playButton()).toBeDisabled()
+    await click('S2 停止')
+
+    expect(playButton()).toBeEnabled()
+    expect(recordingText()).toMatch(/^S2 1回目の録音、5バイト、約\d+\.\d秒$/)
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    const blob = createObjectURL.mock.calls[0][0] as Blob
+    expect(blob.size).toBe(5)
+    expect(logText()).toContain('直前の録音を持つ（S2 1回目の録音、5バイト、')
+  })
+
+  for (const id of ['S1', 'S5', 'S7'] as const) {
+    it(`${id} で録音して停止しても、再生のボタンを押せるようになる`, async () => {
+      setupRecognitionMock()
+      await renderPage()
+      await click(`${id} 開始`)
+      await click(`${id} 停止`)
+      expect(playButton()).toBeEnabled()
+      expect(recordingText()).toContain(`${id} 1回目の録音、5バイト`)
+    })
+  }
+
+  it('次の録音を始めると、直前の録音を捨てて URL.revokeObjectURL を呼ぶ', async () => {
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    expect(revokeObjectURL).not.toHaveBeenCalled()
+
+    await click('S2 開始')
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+    expect(playButton()).toBeDisabled()
+    expect(logText()).toContain('直前の録音を捨てる（次の録音の開始）')
+
+    await click('S2 停止')
+    expect(recordingText()).toContain('S2 2回目の録音')
+  })
+
+  it('録音しないテストに切り替えても、直前の録音は捨てない', async () => {
+    setupRecognitionMock()
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('S3 開始')
+    await click('S3 停止')
+    expect(revokeObjectURL).not.toHaveBeenCalled()
+    expect(playButton()).toBeEnabled()
+  })
+
+  it('S6 で直前の録音を捨てて URL.revokeObjectURL を呼ぶ', async () => {
+    await renderPage()
+    await click('S7 開始')
+    await click('S7 停止')
+    await click('S6 すべて閉じる')
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+    expect(playButton()).toBeDisabled()
+    expect(logText()).toContain('直前の録音を捨てる（S6）')
+  })
+
+  it('録音している間に S6 を押すと、止めた録音を持たない', async () => {
+    await renderPage()
+    await click('S2 開始')
+    // 実際のブラウザと同じく、onstop は stop() の後に遅れて届く
+    const recorder = recorders[0]
+    recorder.stop.mockImplementation(() => { recorder.state = 'inactive' })
+    await click('S6 すべて閉じる')
+    act(() => {
+      recorder.ondataavailable?.({ data: new Blob([new Uint8Array(5)]) })
+      recorder.onstop?.(new Event('stop'))
+    })
+    expect(logText()).toContain('MediaRecorder stop bytes=5')
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(playButton()).toBeDisabled()
+  })
+
+  it('pagehide で直前の録音を捨てて URL.revokeObjectURL を呼ぶ', async () => {
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+    expect(playButton()).toBeDisabled()
+    expect(logText()).toContain('直前の録音を捨てる（pagehide）')
+  })
+
+  it('コンポーネントが外れたときに直前の録音を捨てて URL.revokeObjectURL を呼ぶ', async () => {
+    const consoleError = vi.spyOn(console, 'error')
+    const { unmount } = render(<MicTestPage />)
+    await click('S2 開始')
+    await click('S2 停止')
+    unmount()
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+    expect(consoleError).not.toHaveBeenCalled()
+  })
+
+  it('再生の開始と終わり、その前後の track の状態をログに出し、fetch も localStorage も使わない', async () => {
+    const { play } = setupPlayMock()
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+
+    expect(play).toHaveBeenCalledTimes(1)
+    const audio = play.mock.contexts[0] as HTMLAudioElement
+    expect(audio.src).toBe('blob:mock-1')
+    act(() => { audio.dispatchEvent(new Event('ended')) })
+
+    const text = logText()
+    expect(text).toContain('track[0] readyState=live enabled=false muted=false（再生の前）')
+    expect(text).toMatch(/再生の開始（S2 1回目の録音、5バイト、/)
+    expect(text).toMatch(/再生の終わり（S2 1回目の録音、5バイト、/)
+    expect(text).toContain('track[0] readyState=live enabled=false muted=false（再生の終わり）')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(setItem).not.toHaveBeenCalled()
+  })
+
+  it('再生に失敗したら、name と track の状態をログに出す', async () => {
+    setupPlayMock(true)
+    const rejections = watchUnhandledRejections()
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+
+    expect(logText()).toMatch(/再生の失敗 name=NotAllowedError（S2 1回目の録音/)
+    expect(logText()).toContain('track[0] readyState=live enabled=false muted=false（再生の失敗）')
+    await rejections.settle()
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('再生している間に次の録音を始めると、再生を止める', async () => {
+    const { pause } = setupPlayMock()
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+    await click('S2 開始')
+    expect(pause).toHaveBeenCalledTimes(1)
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
   })
 })
