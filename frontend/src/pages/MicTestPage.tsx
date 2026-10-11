@@ -76,6 +76,8 @@ export default function MicTestPage() {
   const streamOwnerRef = useRef<TestId | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recognitionRef = useRef<Recognition | null>(null)
+  // テストごとの開始の回数（track の ended がどの開始の後に起きたかをログに出すため）
+  const startCountsRef = useRef<Record<TestId, number>>({ S1: 0, S2: 0, S3: 0, S4: 0, S5: 0, S7: 0 })
   // すべて閉じるたびに増やし、閉じる前に始めた getUserMedia の結果を捨てるのに使う
   const generationRef = useRef(0)
 
@@ -106,9 +108,9 @@ export default function MicTestPage() {
     streamRef.current?.getTracks().forEach(t => { t.enabled = enabled })
   }
 
-  const openStream = async (test: TestId): Promise<MediaStream | null> => {
+  const openStream = async (test: TestId, reopen = false): Promise<MediaStream | null> => {
     const generation = generationRef.current
-    addLog(`getUserMedia 開始（${test}）`)
+    addLog(`getUserMedia 開始（${test}${reopen ? '、開き直し' : ''}）`)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       if (generation !== generationRef.current) {
@@ -119,7 +121,8 @@ export default function MicTestPage() {
       }
       addLog(`getUserMedia 成功（${test}）`)
       stream.getTracks().forEach((t, i) => {
-        t.addEventListener('ended', () => addLog(`track[${i}] ended`))
+        t.addEventListener('ended', () =>
+          addLog(`track[${i}] ended（${test} ${startCountsRef.current[test]}回目の開始の後）`))
       })
       streamRef.current = stream
       streamOwnerRef.current = test
@@ -130,9 +133,18 @@ export default function MicTestPage() {
     }
   }
 
-  // 同じテストで開いたマイクがあればそれを使い、なければ開く
+  // 同じテストで開いたマイクがあり、track がすべて動いていればそれを使い、なければ開く。
+  // ブラウザや OS が track を終わらせていた場合は、閉じてから開き直す
   const ensureStream = async (test: TestId): Promise<MediaStream | null> => {
-    if (streamRef.current && streamOwnerRef.current === test) return streamRef.current
+    const stream = streamRef.current
+    if (stream && streamOwnerRef.current === test) {
+      const tracks = stream.getTracks()
+      if (tracks.length > 0 && tracks.every(t => t.readyState === 'live')) return stream
+      const states = tracks.map(t => t.readyState).join(',') || 'なし'
+      addLog(`track が終わっているため開き直す（readyState=${states}）（${test}）`)
+      stopStream()
+      return openStream(test, true)
+    }
     return openStream(test)
   }
 
@@ -208,7 +220,8 @@ export default function MicTestPage() {
   }
 
   const start = async (test: TestId) => {
-    addLog(`${test} 開始`)
+    startCountsRef.current[test]++
+    addLog(`${test} 開始（${startCountsRef.current[test]}回目）`)
     const RecognitionCtor = getRecognitionCtor()
     if (RECOGNITION_TESTS.includes(test) && !RecognitionCtor) {
       addLog('このブラウザは音声認識に対応していません')

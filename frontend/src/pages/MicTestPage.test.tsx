@@ -13,6 +13,7 @@ interface MockTrack {
   readyState: string
   stop: ReturnType<typeof vi.fn>
   addEventListener: ReturnType<typeof vi.fn>
+  listeners: Record<string, (() => void)[]>
 }
 
 let tracks: MockTrack[] = []
@@ -21,11 +22,21 @@ function makeTrack(): MockTrack {
   const track: MockTrack = {
     enabled: true,
     readyState: 'live',
+    // 実際のブラウザと同じく、stop() では ended のイベントを出さない
     stop: vi.fn(() => { track.readyState = 'ended' }),
-    addEventListener: vi.fn(),
+    addEventListener: vi.fn((type: string, fn: () => void) => {
+      (track.listeners[type] ??= []).push(fn)
+    }),
+    listeners: {},
   }
   tracks.push(track)
   return track
+}
+
+// ブラウザや OS が track を終わらせたときの動き
+function endTrack(track: MockTrack) {
+  track.readyState = 'ended'
+  track.listeners.ended?.forEach(fn => fn())
 }
 
 function setupGetUserMediaMock() {
@@ -215,6 +226,44 @@ describe('MicTestPage', () => {
     expect(recorders).toHaveLength(2)
     expect(tracks[0].stop).not.toHaveBeenCalled()
     expect(logText()).toContain('track[0] readyState=live enabled=false（S2 停止）')
+  })
+
+  it('GG1: track が ended になった後に S2 を始めると、古い track を stop() してマイクを開き直す', async () => {
+    const getUserMedia = setupGetUserMediaMock()
+    await renderPage()
+
+    await click('S2 開始')
+    await click('S2 停止')
+    act(() => { endTrack(tracks[0]) })
+    expect(logText()).toContain('track[0] ended（S2 1回目の開始の後）')
+
+    await click('S2 開始')
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(tracks[1].enabled).toBe(true)
+    expect(recorders).toHaveLength(2)
+    const text = logText()
+    const reopen = text.indexOf('track が終わっているため開き直す（readyState=ended）（S2）')
+    const gum = text.indexOf('getUserMedia 開始（S2、開き直し）')
+    expect(reopen).toBeGreaterThanOrEqual(0)
+    // 新しいログが上なので、開き直しの行の直後（上）に getUserMedia の開始の行が続く
+    expect(gum).toBeGreaterThanOrEqual(0)
+    expect(gum).toBeLessThan(reopen)
+  })
+
+  it('GG1: track が ended になった後に S3 を始めても、マイクを開き直す', async () => {
+    const getUserMedia = setupGetUserMediaMock()
+    setupRecognitionMock()
+    await renderPage()
+
+    await click('S3 開始')
+    act(() => { endTrack(tracks[0]) })
+    expect(logText()).toContain('track[0] ended（S3 1回目の開始の後）')
+    await click('S3 停止')
+    await click('S3 開始')
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(logText()).toContain('track[0] readyState=live enabled=true（S3 開始）')
   })
 
   it('S7: getUserMedia は最初の1回だけで、track.enabled は true のまま', async () => {
