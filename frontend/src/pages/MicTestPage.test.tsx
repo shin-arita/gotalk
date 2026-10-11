@@ -329,6 +329,9 @@ describe('MicTestPage', () => {
 
     await click('S1 開始')
     expect(logText()).toContain('MediaRecorder 失敗 name=NotSupportedError')
+    // GG6: 閉じられていない本当の失敗は、これまでどおり開始の失敗として扱う
+    expect(logText()).toContain('S1 開始に失敗したため、すべて閉じる')
+    expect(logText()).not.toContain('開始をやめる')
     expect(tracks[0].stop).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('button', { name: 'S1 開始' })).toBeInTheDocument()
 
@@ -439,6 +442,8 @@ describe('MicTestPage', () => {
 
   it('GG3: getUserMedia を待っている間にコンポーネントが外れたら、後から成功した track を stop() する', async () => {
     const gum = setupDeferredGetUserMediaMock()
+    const consoleError = vi.spyOn(console, 'error')
+    const rejections = watchUnhandledRejections()
     const { unmount } = render(<MicTestPage />)
     await click('S7 開始')
     unmount()
@@ -446,6 +451,67 @@ describe('MicTestPage', () => {
 
     expect(tracks[0].stop).toHaveBeenCalledTimes(1)
     expect(MediaRecorder).not.toHaveBeenCalled()
+    // 外れた後も、React の警告や例外、未処理の拒否が出ない
+    await rejections.settle()
+    expect(rejections.handler).not.toHaveBeenCalled()
+    expect(consoleError).not.toHaveBeenCalled()
+  })
+
+  // GG6: 待っている間に閉じられたときは、開始の失敗と区別して「開始をやめる」と出し、closeAll を重ねて呼ばない
+  for (const id of ['S2', 'S1'] as const) {
+    it(`GG6: ${id} の getUserMedia を待っている間に pagehide が起きたら、開始の失敗ではなく開始をやめたとログに出す`, async () => {
+      const gum = setupDeferredGetUserMediaMock()
+      const rejections = watchUnhandledRejections()
+      await renderPage()
+
+      await click(`${id} 開始`)
+      act(() => { window.dispatchEvent(new Event('pagehide')) })
+      await act(async () => { gum.resolve() })
+
+      expect(tracks[0].stop).toHaveBeenCalledTimes(1)
+      const text = logText()
+      expect(text).toContain(`${id} の開始をやめる（開始を待っている間に閉じられたため）`)
+      expect(text).not.toContain('開始に失敗したため、すべて閉じる')
+      expect(text).not.toContain('開始に失敗）')
+      // closeAll は pagehide の1回だけ
+      expect(text.match(/すべて閉じる/g)).toHaveLength(1)
+      expect(MediaRecorder).not.toHaveBeenCalled()
+      expect(screen.getByRole('button', { name: `${id} 開始` })).toBeEnabled()
+
+      await rejections.settle()
+      expect(rejections.handler).not.toHaveBeenCalled()
+    })
+  }
+
+  it('GG6: 別のテストからの切り替えでは「開始をやめる」と出さず、新しいテストが始まる', async () => {
+    setupGetUserMediaMock()
+    setupRecognitionMock()
+    await renderPage()
+
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('S3 開始')
+
+    const text = logText()
+    expect(text).toContain('前のテストを閉じます')
+    expect(text).not.toContain('開始をやめる')
+    expect(text).not.toContain('開始に失敗')
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(recognitions[0].start).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'S3 停止' })).toBeInTheDocument()
+  })
+
+  it('GG6: 動いているテストから切り替えて開くときも「開始をやめる」と出さない', async () => {
+    setupGetUserMediaMock()
+    await renderPage()
+
+    await click('S7 開始')
+    await click('S1 開始')
+
+    expect(logText()).not.toContain('開始をやめる')
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(recorders[1].start).toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'S1 停止' })).toBeInTheDocument()
   })
 
   it('GG3: 音声認識が動いている S4 から別のテストに切り替えると、音声認識を stop() する', async () => {

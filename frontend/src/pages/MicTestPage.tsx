@@ -261,6 +261,9 @@ export default function MicTestPage() {
       addLog('前のテストを閉じます')
       closeAll()
     }
+    // 切り替えのための closeAll の後の世代の番号。開くのを待っている間に pagehide などで
+    // closeAll が呼ばれると変わる
+    const generation = generationRef.current
     setBusy(true)
     try {
       let started: boolean
@@ -269,6 +272,11 @@ export default function MicTestPage() {
       } catch (e) {
         addLog(`${test} 開始で例外 name=${errorName(e)}`)
         started = false
+      }
+      if (!started && generation !== generationRef.current) {
+        // 開始の失敗ではなく、閉じられたため。閉じる処理はもう済んでいるので、closeAll は呼ばない
+        addLog(`${test} の開始をやめる（開始を待っている間に閉じられたため）`)
+        return
       }
       if (!started) {
         // 途中まで開いたマイク、録音、音声認識を残さず、running も設定しない
