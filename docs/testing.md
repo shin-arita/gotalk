@@ -150,9 +150,9 @@ npm test
 
 Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeObjectURL` を mock します。`navigator.mediaDevices`、`URL.createObjectURL`、`URL.revokeObjectURL`、`Audio` は各テストの前の状態を `beforeEach` で保存し、`afterEach` で元に戻します。`MediaRecorder` と `window.SpeechRecognition` は `afterEach` で削除します。API 呼び出しは `fetch` mock で検証します。
 
-開発用のマイクの確認のページ（`#mic-test`、`MicTestPage.test.tsx`）のテストでは、`getUserMedia`、`MediaRecorder`、`SpeechRecognition`、`navigator.permissions` を mock し、次を確かめます。ページの使い方は [development.md](development.md) の「8. 注意点」に書いています。
+開発用のマイクの確認のページ（`#mic-test`、`MicTestPage.test.tsx`）のテストでは、`getUserMedia`、`MediaRecorder`、`SpeechRecognition`、`navigator.permissions`、`URL.createObjectURL`、`URL.revokeObjectURL`、`HTMLMediaElement` の `play()` と `pause()` を mock し（`URL` の2つは `beforeEach` で保存し、`afterEach` で元に戻します）、次を確かめます。ページの使い方は [development.md](development.md) の「8. 注意点」に書いています。
 
-- `#mic-test` のときだけページを表示し、通常の URL では表示しないこと。上部の説明の文を表示すること
+- `#mic-test` のときだけページを表示し、通常の URL では表示しないこと。上部の説明の文（録音をメモリにだけ持ち、捨てるときの説明を含む）を表示すること
 - S1 では開始のたびに `getUserMedia` を呼び、停止で track の `stop()` を呼び、閉じる前の track の状態と閉じたことをログに出すこと
 - S2 では `getUserMedia` を最初の1回だけ呼び、開始と停止で `track.enabled` を true と false に切り替え、track の `stop()` を呼ばないこと
 - S7 では `getUserMedia` を最初の1回だけ呼び、`track.enabled` が true のままであること
@@ -168,6 +168,12 @@ Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeOb
 - Backend への `fetch` を呼ばないこと
 - 音声認識の結果の文字列を画面に表示せず、文字数だけを表示すること
 - `pagehide` とコンポーネントが外れたときに、マイク、録音、音声認識を閉じること
+- track の `mute` と `unmute` で、テストの番号と開始の回数を入れたログ（「track[0] mute（S3 2回目の開始の後）」）を出すこと。track の状態のログに `muted` を出すこと
+- 音声認識の `onsoundstart`、`onsoundend`、`onspeechstart`、`onspeechend`、`onnomatch` をログに出すこと
+- 録音していないとき（最初と、S3、S4 だけを試した後）と、録音している間は、「直前の録音を再生」のボタンを押せないこと
+- S2 で録音して停止すると、ボタンを押せるようになり、テストの番号、回数、バイト数を表示し、録音したデータの `Blob` から object URL を作ること。S1、S5、S7 でも押せるようになること
+- 次の録音の開始、S6、`pagehide`、コンポーネントが外れたときに直前の録音を捨て、`URL.revokeObjectURL` を呼ぶこと。録音しないテスト（S3）に切り替えても捨てないこと。録音している間に S6 を押し、`MediaRecorder` の `stop` のイベントが後から届いた場合に、その録音を持たないこと
+- 再生で、再生の開始と終わり、その前後の track の状態をログに出し、Backend への `fetch` を呼ばず、`localStorage` に書かないこと。再生に失敗した場合に、エラーの `name` と track の状態をログに出し、未処理の Promise の拒否が出ないこと。再生している間に次の録音を始めると、再生を止めること
 
 ## 4. テスト対象
 
