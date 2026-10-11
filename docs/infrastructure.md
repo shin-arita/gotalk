@@ -217,7 +217,7 @@ Backend のログには、利用者の発話の内容を出力しません。障
 | 出力するもの | 例 |
 | --- | --- |
 | 処理の種類と結果 | `translate result: ja -> en`、`interpret result: en -> ja` |
-| 言語 | 選択言語、翻訳元と翻訳先、文字起こしで判定した言語。`frontend/src/languages.ts` にある言語 ID（と `unknown`）以外は `other` と出力し、文字起こしで判定した言語は、Whisper が対応する言語の名前（`japanese` など）と言語コード（`ja` など）の許可リスト（`backend/whisperlangs.go`。openai/whisper の `whisper/tokenizer.py` の `LANGUAGES` から作成）にない値を `other` と出力する |
+| 言語 | 選択言語、翻訳元と翻訳先、文字起こしで判定した言語。対応言語の ID（`backend/languages.go` の `supportedLanguages`。`frontend/src/languages.ts` と同じ）と `unknown` 以外は `other` と出力し、文字起こしで判定した言語は、Whisper が対応する言語の名前（`japanese` など）と言語コード（`ja` など）の許可リスト（`backend/whisperlangs.go`。openai/whisper の `whisper/tokenizer.py` の `LANGUAGES` から作成）にない値を `other` と出力する |
 | テキストの長さ | 文字起こしや翻訳の対象のテキストの文字数（rune の数）。例：`translate: text runes=7 lang0=ja lang1=en` |
 | リクエストの概要 | `speaker`（選択言語のどちらかに一致する場合だけその言語、それ以外は `invalid`）、音声のファイルの拡張子（`.webm`、`.mp4`、`.ogg` 以外は `other`）、音声のサイズ、`transcript` の有無 |
 | 制限とキャンセル | 入力の上限を超えた、クライアントが切断した、処理の deadline に達した、OpenAI のエラーを変換した場合に、`endpoint`、`limit_type`（`input_size`、`canceled`、`timeout`、`service_unavailable`、`upstream_busy`）、返した status（応答を書かない `canceled` は `none`）を出力する。例：`limit: endpoint=/api/translate limit_type=input_size status=400` |

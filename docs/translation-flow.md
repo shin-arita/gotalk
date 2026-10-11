@@ -71,7 +71,7 @@ Frontend の翻訳処理は `frontend/src/pages/InterpreterPage.tsx` に実装�
 | Field | 内容 |
 | --- | --- |
 | `audio` | 録音データ。ファイル名は MIME type に応じて `recording.webm`、`recording.mp4`、`recording.ogg` のいずれか |
-| `myLanguage` | タップされた国旗の言語の `{ id, label }` |
+| `myLanguage` | タップされた国旗の言語の `{ id, label }`（Backend は `id` だけを使い、prompt の言語ラベルは Backend の対応表の値を使う） |
 | `theirLanguage` | もう一方の言語の `{ id, label }` |
 | `speaker` | タップされた国旗の言語 ID |
 | `transcript` | `SpeechRecognition` の認識テキスト。認識テキストが得られた場合だけ送信 |

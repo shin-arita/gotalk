@@ -49,8 +49,28 @@ Backend は CORS のヘッダ（`Access-Control-Allow-*`）を付けません。
 | `/api/interpret` の `transcript` | 前後の空白を除いて 500 文字（rune） | 400 `input_too_large` |
 | `/api/translate`、`/api/tts` の body 全体 | 16 KiB（解析の前に `http.MaxBytesReader`） | 413 `input_too_large` |
 | `/api/translate`、`/api/tts` の `text` | 500 文字（rune） | 400 `input_too_large` |
+| `/api/interpret` の `transcript` 以外の音声でないフィールド（`myLanguage`、`theirLanguage`、`speaker` など） | それぞれ 1 KiB | 413 `input_too_large` |
+| `/api/interpret` の `transcript`（前後の空白を除く前） | 4 KiB | 413 `input_too_large` |
 
-JSON の request body は、表にないフィールド（例：`/api/tts` の `speed` や `instructions`）があるとき、または 1つ目の JSON の値の後ろに別の値があるときに、400 `invalid_request` になります。
+JSON の request body は、表にないフィールド（例：`/api/tts` の `speed` や `instructions`）があるとき、または 1つ目の JSON の値の後ろに別の値があるときに、400 `invalid_request` になります。`/api/interpret` の `myLanguage` と `theirLanguage` の JSON も同じです。
+
+### 言語の指定
+
+Backend は、Frontend の対応言語（`frontend/src/languages.ts`）と同じ7言語の `id` と、prompt に使う `label` の対応表（`backend/languages.go` の `supportedLanguages`）を持っています。2つの一覧が同じであることは、Backend のテスト（`TestSupportedLanguagesMatchFrontend`）が `frontend/src/languages.ts` を読んで確かめます。
+
+| `id` | prompt に使う `label` |
+| --- | --- |
+| `ja` | `Japanese` |
+| `en` | `English` |
+| `zh-CN` | `Chinese Simplified` |
+| `zh-TW` | `Chinese Traditional` |
+| `ko` | `Korean` |
+| `th` | `Thai` |
+| `vi` | `Tiếng Việt` |
+
+- `/api/translate` の `languages` と、`/api/interpret` の `myLanguage` と `theirLanguage` は、この表にある互いに異なる2つの言語である必要があります。そうでない場合は 400 `invalid_request`（`invalid languages`）で拒否し、OpenAI は呼びません。`id` は大文字と小文字を区別します
+- クライアントが送る `label` は受け取りますが、使いません。prompt には、上の表の `label` を入れます。クライアントの値が OpenAI に送られることはないので、`label` で入力が長くなることも、prompt に任意の文字列を差し込まれることもありません
+- `/api/interpret` の `speaker` は、送る場合は `myLanguage.id` か `theirLanguage.id` のどちらかである必要があります（`transcript` がある場合は必須）
 
 ### エラーの応答
 
@@ -156,9 +176,9 @@ Request form fields:
 | Field | Type | 必須 | 内容 |
 | --- | --- | --- | --- |
 | `audio` | file | yes | 録音音声。1 MiB まで。Frontend はファイル名を `recording.webm`、`recording.mp4`、`recording.ogg` のいずれかにして送る |
-| `myLanguage` | string | yes | 話者側の言語。`{"id","label"}` 形式の JSON 文字列。`id` が空の場合はエラー |
-| `theirLanguage` | string | yes | 相手側の言語。`{"id","label"}` 形式の JSON 文字列。`id` が空の場合はエラー |
-| `speaker` | string | 条件付き | 話者の言語 ID。`transcript` がある場合は `myLanguage.id` または `theirLanguage.id` に一致する必要がある |
+| `myLanguage` | string | yes | 話者側の言語。`{"id","label"}` 形式の JSON 文字列（1 KiB まで）。`id` は対応言語のどれか（[言語の指定](#言語の指定)）。`label` は使わない |
+| `theirLanguage` | string | yes | 相手側の言語。`{"id","label"}` 形式の JSON 文字列（1 KiB まで）。`id` は対応言語のどれかで、`myLanguage.id` と異なる。`label` は使わない |
+| `speaker` | string | 条件付き | 話者の言語 ID。`transcript` がある場合は必須。送る場合は `myLanguage.id` または `theirLanguage.id` に一致する必要がある |
 | `transcript` | string | no | Frontend の `SpeechRecognition` で得た認識テキスト。前後の空白は除去して扱う。除去した後に 500 文字（rune）まで |
 
 Request 例（`curl`）:
@@ -207,7 +227,7 @@ Response 例:
 | transcript 経路 | `transcript` が空でない | `speaker` が `myLanguage.id` に一致すれば `myLanguage` を翻訳元、`theirLanguage.id` に一致すれば `theirLanguage` を翻訳元にする。どちらにも一致しなければ HTTP 400 `invalid speaker` | `transcript` |
 | Whisper 経路 | `transcript` がない、または空白のみ | `whisper-1` で判定した言語を `myLanguage`、`theirLanguage` の順に照合する。どちらにも一致しなければ HTTP 422 `language_mismatch` | `WHISPER_MODEL` による文字起こし結果 |
 
-Whisper 経路では `speaker` は使いません。Whisper 経路の処理は次のとおりです。
+Whisper 経路では `speaker` を翻訳元の決定に使いません（送られた場合は、選択言語のどちらかであることだけを確かめます）。Whisper 経路の処理は次のとおりです。
 
 1. `whisper-1`（`response_format=verbose_json`）に音声を送り、言語を判定する。呼び出しに失敗した場合、または判定言語が空の場合は HTTP 502 `language detection failed` を返す
 2. 判定言語を `whisperLangMatches` で選択言語と照合する。`whisperLangMatches` は `japanese` などの言語名と `ja` などの ISO コードの両方に対応し、`zh` は `zh-CN`、`zh-TW` に一致する
@@ -243,9 +263,9 @@ Request body:
 | Field | Type | 必須 | 内容 |
 | --- | --- | --- | --- |
 | `text` | string | yes | 翻訳対象テキスト。空白のみはエラー。500 文字（rune）まで |
-| `languages` | array | yes | 選択済み言語。2 件以上が必要 |
-| `languages[].id` | string | yes | 言語 ID |
-| `languages[].label` | string | yes | prompt に使う言語ラベル |
+| `languages` | array | yes | 選択済み言語。互いに異なる 2 件が必要 |
+| `languages[].id` | string | yes | 言語 ID。対応言語のどれか（[言語の指定](#言語の指定)） |
+| `languages[].label` | string | no | Frontend との互換のために受け取るが、使わない。prompt には Backend の対応表の言語ラベルを使う |
 
 Request 例:
 
@@ -300,7 +320,7 @@ Response 例:
 
 ### languages
 
-`languages` は 2 件以上が必要です。実装では先頭 2 件を `lang0`、`lang1` として使います。2 件未満の場合は HTTP 400 で `two languages are required` を返します。
+`languages` はちょうど 2 件が必要です。1 件目を `lang0`、2 件目を `lang1` として使います。2 件でない場合は HTTP 400 で `two languages are required` を返します。対応言語でない `id` や同じ言語の 2 件は、HTTP 400 で `invalid languages` を返します。
 
 ### translatedText
 
@@ -376,10 +396,12 @@ OpenAI Audio Speech API の呼び出しに失敗した場合は HTTP 502 で `tt
 | `audio` がない | 400 | `{"error":"audio is required","code":"invalid_request"}` |
 | `audio` が 1 MiB を超える | 413 | `{"error":"request body too large","code":"input_too_large"}` |
 | 音声データの読み込み失敗 | 500 | `{"error":"failed to read audio","code":"internal_error"}` |
-| `myLanguage` の JSON が不正、または `id` が空 | 400 | `{"error":"invalid myLanguage","code":"invalid_request"}` |
-| `theirLanguage` の JSON が不正、または `id` が空 | 400 | `{"error":"invalid theirLanguage","code":"invalid_request"}` |
+| `audio` 以外のフィールドが上限（`transcript` は 4 KiB、それ以外は 1 KiB）を超える | 413 | `{"error":"request body too large","code":"input_too_large"}` |
+| `myLanguage` の JSON が不正（未知のフィールドを含む）、または `id` が空 | 400 | `{"error":"invalid myLanguage","code":"invalid_request"}` |
+| `theirLanguage` の JSON が不正（未知のフィールドを含む）、または `id` が空 | 400 | `{"error":"invalid theirLanguage","code":"invalid_request"}` |
+| `myLanguage` か `theirLanguage` が対応言語でない、または同じ言語 | 400 | `{"error":"invalid languages","code":"invalid_request"}` |
 | `transcript` が 500 文字を超える | 400 | `{"error":"text must be at most 500 characters","code":"input_too_large"}` |
-| `transcript` があり、`speaker` が選択言語のどちらにも一致しない | 400 | `{"error":"invalid speaker","code":"invalid_request"}` |
+| `speaker` が選択言語のどちらにも一致しない（`transcript` がある場合は、`speaker` がない場合も） | 400 | `{"error":"invalid speaker","code":"invalid_request"}` |
 | `whisper-1` の呼び出し失敗、または判定言語が空 | 502 | `{"error":"language detection failed","code":"upstream_error"}` |
 | 判定言語が選択言語のどちらにも一致しない | 422 | `{"error":"language_mismatch","code":"language_mismatch"}` |
 | 文字起こしの呼び出し失敗 | 502 | `{"error":"transcription failed","code":"upstream_error"}` |
@@ -402,7 +424,8 @@ OpenAI Audio Speech API の呼び出しに失敗した場合は HTTP 502 で `tt
 | request body の JSON decode 失敗（未知のフィールド、2つ目の値を含む） | 400 | `{"error":"invalid request body","code":"invalid_request"}` |
 | `text` が空白のみ | 400 | `{"error":"text is required","code":"invalid_request"}` |
 | `text` が 500 文字を超える | 400 | `{"error":"text must be at most 500 characters","code":"input_too_large"}` |
-| `languages` が 2 件未満 | 400 | `{"error":"two languages are required","code":"invalid_request"}` |
+| `languages` が 2 件でない | 400 | `{"error":"two languages are required","code":"invalid_request"}` |
+| `languages` に対応言語でない `id` がある、または同じ言語が 2 件 | 400 | `{"error":"invalid languages","code":"invalid_request"}` |
 | OpenAI Responses API 呼び出し失敗（出力が `max_output_tokens` で打ち切られた場合を含む） | 502 | `{"error":"translation failed","code":"upstream_error"}` |
 | OpenAI の JSON 応答 parse 失敗 | 502 | `{"error":"translation failed","code":"upstream_error"}` |
 | 保護なし経路で翻訳元言語が候補外または `unknown` | 422 | `{"error":"language_mismatch","code":"language_mismatch"}` |
