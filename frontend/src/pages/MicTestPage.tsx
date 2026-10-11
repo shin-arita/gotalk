@@ -219,7 +219,8 @@ export default function MicTestPage() {
     // 終わった後と失敗した後は止めるものがないので、理由も付けない（後で届く拒否でも「再生を止めた」を出さない）
     if (!playback || playback.finished || playback.stopReason !== null) return
     playback.stopReason = reason
-    if (playback.settled && !playback.finished) logPlaybackStopped(playback)
+    // finished は上の早い return で除いているので、ここでは play() の Promise が決まったかだけを見る
+    if (playback.settled) logPlaybackStopped(playback)
   }
 
   // 直前の録音を捨てる。再生中なら止め、object URL を解放する
