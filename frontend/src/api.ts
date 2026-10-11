@@ -34,8 +34,17 @@ export function messageKeyForCode(code: string | null): MessageKey | null {
   return code !== null && Object.hasOwn(API_ERROR_MESSAGE_KEYS, code) ? API_ERROR_MESSAGE_KEYS[code] : null
 }
 
+// ログに残す reason の形式。Backend のログ（backend/logsafe.go の openAIErrorTokenRe）と同じく、
+// これに一致しない値（Backend 以外の proxy などが返した code など）は、そのまま残さずに invalid にする
+const LOG_REASON_RE = /^[a-z0-9_]{1,64}$/
+
+function safeReason(reason: string | null): string | null {
+  return reason === null || LOG_REASON_RE.test(reason) ? reason : 'invalid'
+}
+
 // API の呼び出しのエラー。利用者には messageKey の文言だけを表示し、status と reason（Backend の code、
-// または Frontend で判定した理由）はログにだけ残す。messageKey が null のときは、表示する文言がない
+// または Frontend で判定した理由）はログにだけ残す。messageKey が null のときは、表示する文言がない。
+// reason は形式で絞る（safeReason）。表示の判定（messageKeyForCode）は、絞る前の code で行う
 export class ApiError extends Error {
   readonly messageKey: MessageKey | null
   readonly endpoint: string
@@ -43,12 +52,13 @@ export class ApiError extends Error {
   readonly reason: string | null
 
   constructor(messageKey: MessageKey | null, endpoint: string, status: number | null, reason: string | null) {
-    super(`${endpoint} failed (status: ${status ?? '-'}, reason: ${reason ?? '-'})`)
+    const loggedReason = safeReason(reason)
+    super(`${endpoint} failed (status: ${status ?? '-'}, reason: ${loggedReason ?? '-'})`)
     this.name = 'ApiError'
     this.messageKey = messageKey
     this.endpoint = endpoint
     this.status = status
-    this.reason = reason
+    this.reason = loggedReason
   }
 }
 

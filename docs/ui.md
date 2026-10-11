@@ -26,6 +26,8 @@ HTTP の status、内部のエラーコード、OpenAI などの内部の情報�
 
 API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/src/api.ts`）の `messageKey` で扱い、表示の直前に文言にします。デバッグのため、`console.warn` にエンドポイント、status、エラーの種類（Backend の `code`、`frontend_timeout`、`TypeError` などのエラーの名前）を残します。発話の内容、翻訳の結果、音声のデータ、`e.message`、Backend の `error` の文字列はログにも残しません。
 
+ログのエラーの種類（`reason`）に入れる応答の `code` は、Backend のログ（`backend/logsafe.go`）と同じく、`^[a-z0-9_]{1,64}$` に一致する場合だけそのまま残し、一致しない場合（大文字、空白、日本語を含む、65 文字以上、空文字など）は `invalid` にします。Backend 以外（nginx の設定の誤りや別の proxy）が JSON の `code` を返した場合に、その文字列がそのままログに出ないようにするためです。表示の判定（`messageKeyForCode` の許可リスト）は、絞る前の `code` で行います。
+
 ## 3. 文言のキーと出る場面
 
 | キー | 文言（日本語） | 出る場面 |

@@ -1533,6 +1533,19 @@ describe('InterpreterPage messages in the two selected languages', () => {
       expect(warn).toHaveBeenCalledWith('[GoTalk] API error', { endpoint: '/api/interpret', status: null, reason: 'frontend_timeout' })
     })
 
+    it('logs a code from /api/tts that does not match the format as invalid', async () => {
+      const warn = vi.mocked(console.warn)
+      setupAudioMock()
+      const fetchMock = vi.spyOn(globalThis, 'fetch')
+      fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+      fetchMock.mockResolvedValueOnce(makeErrorResponse(502, { error: 'x', code: 'Proxy Error: 秘密' }))
+      await renderAndInterpret()
+      await clickSpeak()
+      await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled())
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(warn.mock.calls).toEqual([['[GoTalk] API error', { endpoint: '/api/tts', status: 502, reason: 'invalid' }]])
+    })
+
     it('logs the size check before sending', async () => {
       const warn = vi.mocked(console.warn)
       vi.spyOn(globalThis, 'fetch')

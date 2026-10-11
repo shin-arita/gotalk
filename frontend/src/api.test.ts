@@ -59,6 +59,39 @@ describe('messageKeyForError', () => {
       ['[GoTalk] API error', { endpoint: '/api/interpret', status: null, reason: 'SyntaxError' }],
     ])
   })
+
+  // Backend のログ（backend/logsafe.go）と同じく、code は ^[a-z0-9_]{1,64}$ に一致する場合だけそのまま残す
+  it('logs a code that does not match ^[a-z0-9_]{1,64}$ as invalid, without the original string', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const invalidCodes = ['Upstream_Busy', 'upstream busy', 'a'.repeat(65), '混雑中', 'upstream_busy\n', '']
+    for (const code of invalidCodes) {
+      const e = await apiErrorFromResponse('/api/translate', res({ error: 'x', code }, true, 502))
+      expect(e.messageKey).toBe('generic_error')
+      expect(messageKeyForError('/api/translate', e)).toBe('generic_error')
+    }
+    expect(warn.mock.calls).toEqual(invalidCodes.map(() =>
+      ['[GoTalk] API error', { endpoint: '/api/translate', status: 502, reason: 'invalid' }],
+    ))
+    const logged = JSON.stringify(warn.mock.calls)
+    for (const code of invalidCodes.filter(c => c !== '')) expect(logged).not.toContain(code)
+  })
+
+  it('logs a code that matches ^[a-z0-9_]{1,64}$ as it is, even if it has no message', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    for (const code of ['upstream_busy', 'some_new_code', 'a'.repeat(64)]) {
+      messageKeyForError('/api/translate', await apiErrorFromResponse('/api/translate', res({ error: 'x', code }, true, 503)))
+    }
+    expect(warn.mock.calls).toEqual([
+      ['[GoTalk] API error', { endpoint: '/api/translate', status: 503, reason: 'upstream_busy' }],
+      ['[GoTalk] API error', { endpoint: '/api/translate', status: 503, reason: 'some_new_code' }],
+      ['[GoTalk] API error', { endpoint: '/api/translate', status: 503, reason: 'a'.repeat(64) }],
+    ])
+  })
+
+  it('keeps the message key of a known code', async () => {
+    expect((await apiErrorFromResponse('/api/tts', res({ error: 'x', code: 'upstream_busy' }, true, 503))).messageKey).toBe('upstream_busy')
+    expect((await apiErrorFromResponse('/api/tts', res({ error: 'x', code: 'Upstream_Busy' }, true, 503))).messageKey).toBe('generic_error')
+  })
 })
 
 describe('isTooLongForTts', () => {
