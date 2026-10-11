@@ -12,6 +12,8 @@ HTTP の status、内部のエラーコード、OpenAI などの内部の情報�
 
 利用者向けの文言は、共通の関数を通して表示します。新しい文言を加えるときは、7言語（`ja`、`en`、`zh-CN`、`zh-TW`、`ko`、`th`、`vi`）の文言を用意します。
 
+この決まりの対象は、画面に表示する文言です。画面に見えない `aria-label` と、`<html lang="ja">` は対象に入っていません（[5. 決まりの対象に入っていないもの](#5-決まりの対象に入っていないもの)）。
+
 ## 2. 共通の関数
 
 共通の関数は `frontend/src/messages.ts` の `getLocalizedMessage(messageKey, language1, language2)` です。文言の辞書（`MESSAGES`）と、文言のキーの型（`MessageKey`）も同じファイルにあります。
@@ -52,7 +54,23 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 - 「話し終わったらもう一度国旗をタップして終了してください」（`FLAG_FINISH_MESSAGES`）：録音中の国旗の言語で表示します
 - 逆翻訳の見出し（`BACK_TRANSLATION_LABELS`）：選んだ2つの言語を ` / ` で並べます
 
-## 5. 関連ドキュメント
+## 5. 決まりの対象に入っていないもの
+
+画面に見えない `aria-label` と、`frontend/index.html` の `<html lang="ja">` は、今は日本語だけで、[1. 利用者向けの文言の言語](#1-利用者向けの文言の言語) の決まりの対象に入っていません。4. の文言（画面に表示する文言で、今後共通の関数に寄せるもの）とは別の扱いです。
+
+スクリーンリーダーの利用者への対応として、これらを2つの言語にするか、どの言語にするか（2つの言語を続けて読み上げるとどう聞こえるか、など）を、今後別に検討します。
+
+| 箇所 | 今の値 | 対象の要素 |
+| --- | --- | --- |
+| `frontend/src/pages/LanguageSelectPage.tsx:34` | `使用する言語を2つ選択` | 言語の選択の画面の、言語のカードの一覧 |
+| `frontend/src/pages/InterpreterPage.tsx:534` | `トップ画面へ戻る` | 通訳の画面の「GoTalk」の見出し（タップで戻る） |
+| `frontend/src/pages/InterpreterPage.tsx:559` | `${lang.label}で話す`、`${lang.label}の録音を停止` | 国旗のボタン |
+| `frontend/src/pages/InterpreterPage.tsx:602` | `原文を編集` | 原文の編集の textarea |
+| `frontend/src/pages/InterpreterPage.tsx:614` | `編集` | 原文の編集のボタン |
+| `frontend/src/pages/InterpreterPage.tsx:662` | `発声する` | 読み上げのボタン |
+| `frontend/index.html` | `<html lang="ja">` | ページの言語（スクリーンリーダーの読み上げの言語の判定に使われます） |
+
+## 6. 関連ドキュメント
 
 - [api.md](api.md)
 - [speech-flow.md](speech-flow.md)
