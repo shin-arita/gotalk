@@ -105,7 +105,7 @@ JSON error response は次の形式です。`error` は人が読む文、`code` 
   - 支出上限やクレジットの枯渇：再試行しても回復しません。503 `service_unavailable` を返します
   - 一時的な rate limit：時間をおけば（OpenAI の `Retry-After` の後なら）再試行できます。ただし Backend の中では再試行せず、503 `upstream_busy` として返し、再実行は利用者の操作に任せます
 - 応答には、金額や OpenAI の内部のエラーコードを含めません
-- Frontend は `error` が `language_mismatch` かどうかで言語不明の表示をし、それ以外は `code` で表示を決めます（[9. Frontend からの利用](#9-frontend-からの利用)）
+- Frontend は `error` が `language_mismatch` かどうかで言語不明の表示をし、それ以外は `code` で表示を決めます。`error` の文字列、`code`、status は利用者に表示しません（[9. Frontend からの利用](#9-frontend-からの利用)、[ui.md](ui.md)）
 
 ### 処理の deadline とキャンセル
 
@@ -487,22 +487,26 @@ Frontend の API 呼び出しは `frontend/src/pages/InterpreterPage.tsx` に実
 
 再翻訳は、原文を編集して確定した場合に `callTranslateApi(trimmed)` で実行されます。翻訳方向は Backend が決めます。
 
-`/api/interpret` と `/api/translate`（再翻訳）が HTTP 422 で `language_mismatch` を返した場合、Frontend は選択言語ごとの言語不明メッセージを表示し、翻訳文とバックトランスレーションを空にして `idle` に戻します。
+エラーの文言は、選んだ2つの言語で、選んだ順に空行をはさんで表示します（文言がない言語は英語）。Frontend はエラーを文言のキー（`frontend/src/api.ts` の `ApiError` の `messageKey`）で扱い、表示の直前に `frontend/src/messages.ts` の `getLocalizedMessage` で文言にします。HTTP の status、`e.message`、Backend の `error` の文字列は表示せず、エンドポイント、status、エラーの種類を `console.warn` に残します。文言のキーと7言語の文言の決まりは [ui.md](ui.md) を参照してください。以下の表示の文言は、日本語の文言で示します。
 
-それ以外のエラーでは、エラーの応答の `code` に応じて次の表示をします（`frontend/src/api.ts` の `API_ERROR_MESSAGES`）。表にない `code` では、これまでどおり `HTTP 502` のような status を表示します。`/api/tts` のエラーは、表にある `code` の場合だけ表示します。ただし `/api/tts` の `input_too_large` では、表の文言ではなく「この翻訳は長いため、読み上げできません（500文字まで）」を表示します。
+`/api/interpret` と `/api/translate`（再翻訳）が HTTP 422 で `language_mismatch` を返した場合、Frontend は「言語不明、もう一度お話ください」（`language_unclear`）を表示し、翻訳文とバックトランスレーションを空にして `idle` に戻します。
 
-`/api/interpret` の 413 は、`code` を見ずに（Backend の JSON の `input_too_large` でも、nginx の HTML でも）「録音が長すぎます。短く区切って話してください。」を表示します。録音の Blob が 1,032,192 バイトを超える場合は、`/api/interpret` を呼ばずに同じ文言を表示します。表示した後の画面の状態は、`/api/interpret` のほかのエラーのときと同じです（`idle` に戻ります）。`/api/interpret` の 400 `input_too_large`（`transcript` が長すぎる場合）と、`/api/translate` と `/api/tts` の 413 の表示は変わりません。
+それ以外のエラーでは、エラーの応答の `code` に応じて次の表示をします（`frontend/src/api.ts` の `API_ERROR_MESSAGE_KEYS`）。表にない `code`（502 `upstream_error` など）や、本文が JSON でない場合は、汎用のエラー「エラーが発生しました。もう一度お試しください。」（`generic_error`）を表示します。ネットワークのエラー（`fetch` の reject）も汎用のエラーです。Frontend の `fetch` の timeout（`AbortController` の abort）では「うまく翻訳できませんでした。もう一度お願いします。」（`request_timeout`）を表示し、Backend の 504 `timeout` の表示とは区別します。
 
-| `code` | 表示 |
-| --- | --- |
-| `input_too_large` | 入力が長すぎます。短くしてもう一度お試しください |
-| `service_unavailable` | 現在サービスを利用できません |
-| `upstream_busy` | 混み合っています。しばらくしてからお試しください |
-| `timeout` | 処理に時間がかかっています。もう一度お試しください |
+`/api/tts` のエラーは、表にある `code` の場合だけ表示します。ただし `/api/tts` の `input_too_large` では、表の文言ではなく「この翻訳は長いため、読み上げできません（500文字まで）」（`tts_too_long`）を表示します。表にない `code`、ネットワークのエラー、timeout では何も表示しません（ログには残します）。
+
+`/api/interpret` の 413 は、`code` を見ずに（Backend の JSON の `input_too_large` でも、nginx の HTML でも）「録音が長すぎます。短く区切って話してください。」（`recording_too_long`）を表示します。録音の Blob が 1,032,192 バイトを超える場合は、`/api/interpret` を呼ばずに同じ文言を表示します。表示した後の画面の状態は、`/api/interpret` のほかのエラーのときと同じです（`idle` に戻ります）。`/api/interpret` の 400 `input_too_large`（`transcript` が長すぎる場合）と、`/api/translate` の 413 は、表の `input_too_large` の表示です。
+
+| `code` | 文言のキー | 表示（日本語） |
+| --- | --- | --- |
+| `input_too_large` | `input_too_large` | 入力が長すぎます。短くしてもう一度お試しください |
+| `service_unavailable` | `service_unavailable` | 現在サービスを利用できません |
+| `upstream_busy` | `upstream_busy` | 混み合っています。しばらくしてからお試しください |
+| `timeout` | `timeout` | 処理に時間がかかっています。もう一度お試しください |
 
 TTS 再生は読み上げボタンから実行されます。Frontend は `/api/tts` の `audio/mpeg` response から object URL を作成し、`Audio` で再生します。
 
-`/api/tts` の 500 文字の上限は、読み上げる翻訳の結果（`ttsText`）に掛かります。500 文字を超える翻訳の結果も、画面には全文を表示しますが、読み上げはできません。Frontend は読み上げボタンが押されたときに `ttsText` の文字数を数え、500 文字を超える場合は `/api/tts` を呼ばずに「この翻訳は長いため、読み上げできません（500文字まで）」を表示します。数え方は Backend と同じく、前後の空白を除かずに Unicode のコードポイント単位です（`frontend/src/api.ts` の `isTooLongForTts`。上限の値 `TTS_MAX_CHARS` は Backend の `maxTextRunes` と同じ値にする必要があります）。Backend の上限は費用を守るためのもので、Frontend の確認があっても残します。`/api/tts` が `input_too_large` を返した場合も、同じ文言を表示します。
+`/api/tts` の 500 文字の上限は、読み上げる翻訳の結果（`ttsText`）に掛かります。500 文字を超える翻訳の結果も、画面には全文を表示しますが、読み上げはできません。Frontend は読み上げボタンが押されたときに `ttsText` の文字数を数え、500 文字を超える場合は `/api/tts` を呼ばずに「この翻訳は長いため、読み上げできません（500文字まで）」（`tts_too_long`）を選んだ2つの言語で表示します。数え方は Backend と同じく、前後の空白を除かずに Unicode のコードポイント単位です（`frontend/src/api.ts` の `isTooLongForTts`。上限の値 `TTS_MAX_CHARS` は Backend の `maxTextRunes` と同じ値にする必要があります）。Backend の上限は費用を守るためのもので、Frontend の確認があっても残します。`/api/tts` が `input_too_large` を返した場合も、同じ文言を表示します。
 
 ## 10. OpenAI API との関係
 
@@ -529,3 +533,4 @@ Audio Speech API 呼び出しでは、request body に `model`、`input`、`voic
 - [speech-flow.md](speech-flow.md)
 - [proper-noun-protection.md](proper-noun-protection.md)
 - [rate-limit-design.md](rate-limit-design.md)
+- [ui.md](ui.md)
