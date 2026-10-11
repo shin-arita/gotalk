@@ -15,12 +15,17 @@ import (
 // Helpers for log output. Logs must not contain the user's utterance (transcripts, text to
 // translate, translations), OpenAI response bodies, or arbitrary strings sent by the client.
 
-// logLangIDs lists the language IDs the frontend can send (frontend/src/languages.ts),
-// plus "unknown", which the translate prompt asks OpenAI to return when detection fails.
-var logLangIDs = map[string]struct{}{
-	"ja": {}, "en": {}, "zh-CN": {}, "zh-TW": {}, "ko": {}, "th": {}, "vi": {},
-	"unknown": {},
-}
+// logLangIDs lists the supported language IDs (supportedLanguages, the same as the frontend's
+// frontend/src/languages.ts), plus "unknown", which the translate prompt asks OpenAI to return
+// when detection fails.
+var logLangIDs = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(supportedLanguages)+1)
+	for _, l := range supportedLanguages {
+		m[l.ID] = struct{}{}
+	}
+	m["unknown"] = struct{}{}
+	return m
+}()
 
 // logLang returns id when it is a known language ID, otherwise "other".
 func logLang(id string) string {

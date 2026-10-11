@@ -170,8 +170,8 @@ func TestLogging_TranslateDoesNotLogUtterance(t *testing.T) {
 			text:     "the secret plan is ready",
 			langs:    `[{"id":"EVILLANG","label":"x"},{"id":"en","label":"English"}]`,
 			replies:  []string{openAITextResponse(`{"sourceLanguage":"en","targetLanguage":"EVILLANG","translatedText":"SECRETOUT"}`), openAITextResponse("SECRETBT")},
-			wantCode: http.StatusOK,
-			wantLog:  "lang0=other lang1=en",
+			wantCode: http.StatusBadRequest, // unsupported language IDs are rejected before OpenAI is called
+			wantLog:  "translate: invalid languages lang0=other lang1=en",
 			secrets:  []string{"secret plan", "SECRETOUT", "SECRETBT", "EVILLANG"},
 		},
 	}

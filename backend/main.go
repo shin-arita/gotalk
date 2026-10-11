@@ -450,13 +450,27 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var myLang, theirLang LangInfo
-	if err := json.Unmarshal([]byte(r.FormValue("myLanguage")), &myLang); err != nil || myLang.ID == "" {
+	if err := checkInterpretFields(r.MultipartForm.Value); err != nil {
+		writeBodyTooLarge(w, endpoint)
+		return
+	}
+
+	// Only supported language IDs are accepted, and the labels come from supportedLanguages.
+	myLang, err := decodeLangField(r.FormValue("myLanguage"))
+	if err != nil || myLang.ID == "" {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid myLanguage")
 		return
 	}
-	if err := json.Unmarshal([]byte(r.FormValue("theirLanguage")), &theirLang); err != nil || theirLang.ID == "" {
+	theirLang, err := decodeLangField(r.FormValue("theirLanguage"))
+	if err != nil || theirLang.ID == "" {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid theirLanguage")
+		return
+	}
+	clientMyID, clientTheirID := myLang.ID, theirLang.ID
+	myLang, theirLang, ok := resolveLanguagePair(myLang, theirLang)
+	if !ok {
+		log.Printf("interpret: invalid languages myLang=%s theirLang=%s", logLang(clientMyID), logLang(clientTheirID))
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid languages")
 		return
 	}
 	speaker := r.FormValue("speaker")
@@ -473,6 +487,12 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("interpret: myLang=%s theirLang=%s speaker=%s fileExt=%s size=%d hasTranscript=%v",
 		logLang(myLang.ID), logLang(theirLang.ID), logSpeaker(speaker, myLang, theirLang),
 		logFileExt(fileHeader.Filename), len(audioData), clientTranscript != "")
+
+	// speaker is optional without a transcript, but when sent it must be one of the two languages.
+	if speaker != "" && speaker != myLang.ID && speaker != theirLang.ID {
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid speaker")
+		return
+	}
 
 	var srcLang, tgtLang LangInfo
 	var transcribedText string
@@ -685,8 +705,15 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 		writeTextTooLong(w, endpoint)
 		return
 	}
-	if len(req.Languages) < 2 {
+	if len(req.Languages) != 2 {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "two languages are required")
+		return
+	}
+	// Only supported language IDs are accepted, and the labels come from supportedLanguages.
+	lang0, lang1, ok := resolveLanguagePair(req.Languages[0], req.Languages[1])
+	if !ok {
+		log.Printf("translate: invalid languages lang0=%s lang1=%s", logLang(req.Languages[0].ID), logLang(req.Languages[1].ID))
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid languages")
 		return
 	}
 
@@ -694,8 +721,6 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	ctx = withCallBudget(ctx, maxTranslateRequestCalls)
 
-	lang0 := req.Languages[0]
-	lang1 := req.Languages[1]
 	log.Printf("translate: text runes=%d lang0=%s lang1=%s", logRunes(req.Text), logLang(lang0.ID), logLang(lang1.ID))
 	debugLog("受信テキスト: %q", req.Text)
 
