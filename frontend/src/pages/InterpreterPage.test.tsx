@@ -1022,7 +1022,7 @@ describe('InterpreterPage error codes', () => {
       await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(message))
     })
 
-    it(`shows the message for ${code} from /api/tts`, async () => {
+    it(`shows the message for ${code} from /api/tts (input_too_large uses the TTS message)`, async () => {
       setupAudioMock()
       const fetchMock = vi.spyOn(globalThis, 'fetch')
       fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
@@ -1032,7 +1032,9 @@ describe('InterpreterPage error codes', () => {
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: '発声する' }))
       })
-      await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(message))
+      // /api/tts の input_too_large は、読み上げ用の文言にする（TTS length limit のテストを参照）
+      const ttsMessage = code === 'input_too_large' ? 'この翻訳は長いため、読み上げできません（500文字まで）' : message
+      await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(ttsMessage))
       expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
     })
   }
@@ -1057,5 +1059,81 @@ describe('InterpreterPage error codes', () => {
     })
     await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled())
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('InterpreterPage TTS length limit', () => {
+  const TOO_LONG = 'この翻訳は長いため、読み上げできません（500文字まで）'
+
+  // 翻訳の結果（ttsText と translatedText）を text にして、読み上げボタンを押す
+  async function speak(text: string, ttsResponse: Response = makeAudioOkResponse()) {
+    setupAudioMock()
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse({ translatedText: text, ttsText: text })))
+    fetchMock.mockResolvedValueOnce(ttsResponse)
+    await renderAndInterpret()
+    await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument())
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '発声する' }))
+    })
+    return fetchMock
+  }
+
+  const ttsCalls = (fetchMock: { mock: { calls: unknown[][] } }) =>
+    fetchMock.mock.calls.filter(([url]) => url === '/api/tts')
+
+  it('calls /api/tts for exactly 500 characters', async () => {
+    const fetchMock = await speak('あ'.repeat(500))
+    expect(ttsCalls(fetchMock)).toHaveLength(1)
+    expect(screen.queryByText(TOO_LONG)).not.toBeInTheDocument()
+  })
+
+  it('does not call /api/tts for 501 characters, shows the message, and keeps the full translation', async () => {
+    const text = 'あ'.repeat(500) + 'い'
+    const fetchMock = await speak(text)
+    expect(ttsCalls(fetchMock)).toHaveLength(0)
+    expect(screen.getByRole('alert').textContent).toBe(TOO_LONG)
+    expect(screen.getByText(text, { selector: '.translation-card__text' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
+  })
+
+  // Backend の textTooLong は前後の空白を除かずに数えるので、Frontend も空白を数える
+  it('counts surrounding spaces like the backend', async () => {
+    const fetchMock = await speak(' ' + 'a'.repeat(499) + ' ')
+    expect(ttsCalls(fetchMock)).toHaveLength(0)
+    expect(screen.getByRole('alert').textContent).toBe(TOO_LONG)
+  })
+
+  it('calls /api/tts when the text with its surrounding spaces is within 500 characters', async () => {
+    const fetchMock = await speak(' ' + 'a'.repeat(498) + ' ')
+    expect(ttsCalls(fetchMock)).toHaveLength(1)
+  })
+
+  it('counts surrogate-pair characters as one', async () => {
+    const fetchMock = await speak('😀'.repeat(500))
+    expect(ttsCalls(fetchMock)).toHaveLength(1)
+  })
+
+  it('does not call /api/tts for 501 surrogate-pair characters', async () => {
+    const fetchMock = await speak('😀'.repeat(501))
+    expect(ttsCalls(fetchMock)).toHaveLength(0)
+    expect(screen.getByRole('alert').textContent).toBe(TOO_LONG)
+  })
+
+  it('shows the message when /api/tts returns 400 input_too_large', async () => {
+    await speak('short text', makeErrorResponse(400, { error: 'text must be at most 500 characters', code: 'input_too_large' }))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(TOO_LONG))
+    expect(screen.getByText('short text', { selector: '.translation-card__text' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
+  })
+
+  it('keeps the input_too_large message of /api/translate', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+    fetchMock.mockResolvedValueOnce(makeErrorResponse(400, { error: 'x', code: 'input_too_large' }))
+    await renderAndInterpret()
+    await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument())
+    await editAndRetranslate('Good evening')
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('入力が長すぎます。短くしてもう一度お試しください'))
   })
 })

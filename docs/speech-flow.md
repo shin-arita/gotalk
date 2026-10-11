@@ -214,7 +214,8 @@ TTS model は `OPENAI_TTS_MODEL` を使い、未設定時は `gpt-4o-mini-tts` �
 - `/api/interpret` または `/api/translate`（再翻訳）が `422` で `language_mismatch` を返した場合、Frontend は選択言語ごとの言語不明メッセージを表示し、`idle` に戻します。
 - `/api/interpret` または `/api/translate`（再翻訳）がタイムアウトした場合、Frontend は「通信がタイムアウトしました。もう一度お試しください。」を表示し、`idle` に戻します。
 - それ以外で確定翻訳または再翻訳が失敗した場合、エラーの応答の `code` が `input_too_large`、`service_unavailable`、`upstream_busy`、`timeout` の場合は、それぞれ「入力が長すぎます。短くしてもう一度お試しください」「現在サービスを利用できません」「混み合っています。しばらくしてからお試しください」「処理に時間がかかっています。もう一度お試しください」を表示します（[api.md](api.md) の「9. Frontend からの利用」）。それ以外の `code` では、Frontend は `HTTP 500` のような status 表示などのエラー内容を表示して `idle` に戻します。
-- TTS が失敗した場合、Frontend は `ready` に戻します。`code` が上の4つのどれかの場合は、その表示も出します。Backend では OpenAI Audio Speech API の呼び出し失敗時に `tts failed` を返します。
+- 読み上げる翻訳の結果が 500 文字を超える場合、Frontend は `/api/tts` を呼ばずに「この翻訳は長いため、読み上げできません（500文字まで）」を表示します。翻訳の結果の表示は変えません（[api.md](api.md) の「9. Frontend からの利用」）。
+- TTS が失敗した場合、Frontend は `ready` に戻します。`code` が上の4つのどれかの場合は、その表示も出します（`input_too_large` の場合は、上の読み上げ用の文言）。Backend では OpenAI Audio Speech API の呼び出し失敗時に `tts failed` を返します。
 
 ## 10. 関連ドキュメント
 

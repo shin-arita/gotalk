@@ -363,7 +363,7 @@ Request body:
 
 | Field | Type | 必須 | 内容 |
 | --- | --- | --- | --- |
-| `text` | string | yes | 読み上げ対象テキスト。空白のみはエラー。500 文字（rune）まで |
+| `text` | string | yes | 読み上げ対象テキスト。空白のみはエラー。前後の空白を含めて 500 文字（rune）まで。Frontend は翻訳の結果の `ttsText` を送る |
 
 Request 例:
 
@@ -480,7 +480,7 @@ Frontend の API 呼び出しは `frontend/src/pages/InterpreterPage.tsx` に実
 
 `/api/interpret` と `/api/translate`（再翻訳）が HTTP 422 で `language_mismatch` を返した場合、Frontend は選択言語ごとの言語不明メッセージを表示し、翻訳文とバックトランスレーションを空にして `idle` に戻します。
 
-それ以外のエラーでは、エラーの応答の `code` に応じて次の表示をします（`frontend/src/api.ts` の `API_ERROR_MESSAGES`）。表にない `code` では、これまでどおり `HTTP 502` のような status を表示します。`/api/tts` のエラーは、表にある `code` の場合だけ表示します。
+それ以外のエラーでは、エラーの応答の `code` に応じて次の表示をします（`frontend/src/api.ts` の `API_ERROR_MESSAGES`）。表にない `code` では、これまでどおり `HTTP 502` のような status を表示します。`/api/tts` のエラーは、表にある `code` の場合だけ表示します。ただし `/api/tts` の `input_too_large` では、表の文言ではなく「この翻訳は長いため、読み上げできません（500文字まで）」を表示します。
 
 | `code` | 表示 |
 | --- | --- |
@@ -490,6 +490,8 @@ Frontend の API 呼び出しは `frontend/src/pages/InterpreterPage.tsx` に実
 | `timeout` | 処理に時間がかかっています。もう一度お試しください |
 
 TTS 再生は読み上げボタンから実行されます。Frontend は `/api/tts` の `audio/mpeg` response から object URL を作成し、`Audio` で再生します。
+
+`/api/tts` の 500 文字の上限は、読み上げる翻訳の結果（`ttsText`）に掛かります。500 文字を超える翻訳の結果も、画面には全文を表示しますが、読み上げはできません。Frontend は読み上げボタンが押されたときに `ttsText` の文字数を数え、500 文字を超える場合は `/api/tts` を呼ばずに「この翻訳は長いため、読み上げできません（500文字まで）」を表示します。数え方は Backend と同じく、前後の空白を除かずに Unicode のコードポイント単位です（`frontend/src/api.ts` の `isTooLongForTts`。上限の値 `TTS_MAX_CHARS` は Backend の `maxTextRunes` と同じ値にする必要があります）。Backend の上限は費用を守るためのもので、Frontend の確認があっても残します。`/api/tts` が `input_too_large` を返した場合も、同じ文言を表示します。
 
 ## 10. OpenAI API との関係
 

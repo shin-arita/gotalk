@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import type { Language } from '../languages'
-import { API_TIMEOUT_MS, apiErrorMessage } from '../api'
+import { API_TIMEOUT_MS, TTS_TOO_LONG_MESSAGE, apiErrorCode, apiErrorMessage, isTooLongForTts, messageForCode } from '../api'
 import './InterpreterPage.css'
 
 type InterpreterStatus = 'idle' | 'recording' | 'processing' | 'ready' | 'speaking'
@@ -453,8 +453,13 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
   }
 
   const handleSpeak = async () => {
-    setStatus('speaking')
     setErrorMessage('')
+    // 上限を超える翻訳の結果は読み上げない（翻訳の結果の表示はそのまま）
+    if (isTooLongForTts(ttsText)) {
+      setErrorMessage(TTS_TOO_LONG_MESSAGE)
+      return
+    }
+    setStatus('speaking')
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS.tts)
     try {
@@ -465,8 +470,10 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
         signal: controller.signal,
       })
       if (!res.ok) {
-        // 利用者に知らせるべきエラー（混み合っている、など）だけを表示する
-        const msg = await apiErrorMessage(res)
+        // 利用者に知らせるべきエラー（混み合っている、など）だけを表示する。
+        // input_too_large は、Frontend と Backend の文字数の判定がずれた場合などへの備え
+        const code = await apiErrorCode(res)
+        const msg = code === 'input_too_large' ? TTS_TOO_LONG_MESSAGE : messageForCode(code)
         if (msg) setErrorMessage(msg)
         throw new Error(`TTS HTTP ${res.status}`)
       }
