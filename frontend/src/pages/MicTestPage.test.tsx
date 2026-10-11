@@ -49,6 +49,19 @@ function setupGetUserMediaMock() {
   return getUserMedia
 }
 
+// getUserMedia を待たせ、テストの中で成功させる
+function setupDeferredGetUserMediaMock() {
+  let resolve: () => void = () => {}
+  const getUserMedia = vi.fn(() => new Promise(r => {
+    resolve = () => {
+      const track = makeTrack()
+      r({ getTracks: () => [track] })
+    }
+  }))
+  Object.defineProperty(globalThis.navigator, 'mediaDevices', { value: { getUserMedia }, writable: true, configurable: true })
+  return { getUserMedia, resolve: () => resolve() }
+}
+
 // --- MediaRecorder mock ---
 
 interface MockRecorder {
@@ -359,6 +372,91 @@ describe('MicTestPage', () => {
     expect(rejections.handler).not.toHaveBeenCalled()
   })
 
+  it('GG3: S3: getUserMedia は最初の1回だけで、enabled は true のまま、録音せず、停止で track を閉じない', async () => {
+    const getUserMedia = setupGetUserMediaMock()
+    setupRecognitionMock()
+    await renderPage()
+
+    await click('S3 開始')
+    expect(recognitions[0].start).toHaveBeenCalledTimes(1)
+    await click('S3 停止')
+    expect(recognitions[0].stop).toHaveBeenCalledTimes(1)
+    await click('S3 開始')
+    await click('S3 停止')
+
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+    expect(recognitions).toHaveLength(2)
+    expect(recognitions[1].stop).toHaveBeenCalledTimes(1)
+    expect(tracks[0].enabled).toBe(true)
+    expect(tracks[0].stop).not.toHaveBeenCalled()
+    expect(MediaRecorder).not.toHaveBeenCalled()
+  })
+
+  it('GG3: S5: getUserMedia は最初の1回だけで、enabled を切り替え、録音と音声認識を始めて止める', async () => {
+    const getUserMedia = setupGetUserMediaMock()
+    setupRecognitionMock()
+    await renderPage()
+
+    await click('S5 開始')
+    expect(tracks[0].enabled).toBe(true)
+    expect(recorders[0].start).toHaveBeenCalled()
+    expect(recognitions[0].start).toHaveBeenCalledTimes(1)
+    await click('S5 停止')
+    expect(tracks[0].enabled).toBe(false)
+    expect(recorders[0].stop).toHaveBeenCalled()
+    expect(recognitions[0].stop).toHaveBeenCalledTimes(1)
+
+    await click('S5 開始')
+    expect(tracks[0].enabled).toBe(true)
+    await click('S5 停止')
+    expect(tracks[0].enabled).toBe(false)
+
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+    expect(recorders).toHaveLength(2)
+    expect(recognitions).toHaveLength(2)
+    expect(tracks[0].stop).not.toHaveBeenCalled()
+  })
+
+  it('GG3: getUserMedia を待っている間に pagehide で閉じたら、後から成功した track を stop() する', async () => {
+    const gum = setupDeferredGetUserMediaMock()
+    await renderPage()
+
+    await click('S2 開始')
+    // 待っている間は、ほかのボタン（S6 を含む）を押せない
+    expect(screen.getByRole('button', { name: 'S6 すべて閉じる' })).toBeDisabled()
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    await act(async () => { gum.resolve() })
+
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(logText()).toContain('getUserMedia 成功したが、閉じた後のため track を stop()（S2）')
+    expect(MediaRecorder).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'S2 開始' })).toBeEnabled()
+  })
+
+  it('GG3: getUserMedia を待っている間にコンポーネントが外れたら、後から成功した track を stop() する', async () => {
+    const gum = setupDeferredGetUserMediaMock()
+    const { unmount } = render(<MicTestPage />)
+    await click('S7 開始')
+    unmount()
+    await act(async () => { gum.resolve() })
+
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(MediaRecorder).not.toHaveBeenCalled()
+  })
+
+  it('GG3: 音声認識が動いている S4 から別のテストに切り替えると、音声認識を stop() する', async () => {
+    setupRecognitionMock()
+    await renderPage()
+
+    await click('S4 開始')
+    await click('S3 開始')
+    expect(recognitions[0].stop).toHaveBeenCalledTimes(1)
+    expect(recognitions[1].start).toHaveBeenCalledTimes(1)
+
+    await click('S7 開始')
+    expect(recognitions[1].stop).toHaveBeenCalledTimes(1)
+  })
+
   it('S7: getUserMedia は最初の1回だけで、track.enabled は true のまま', async () => {
     const getUserMedia = setupGetUserMediaMock()
     await renderPage()
@@ -393,6 +491,7 @@ describe('MicTestPage', () => {
     await click('S4 開始')
     expect(recognitions).toHaveLength(2)
     expect(getUserMedia).not.toHaveBeenCalled()
+    expect(MediaRecorder).not.toHaveBeenCalled()
   })
 
   it('音声認識がないブラウザでは、S3、S4、S5 で対応していないとログに出す', async () => {
