@@ -38,6 +38,17 @@ export async function apiErrorMessage(res: Response): Promise<string | null> {
   return messageForCode(await apiErrorCode(res))
 }
 
+// /api/interpret の 413（録音が大きすぎる）のときの表示。本文の形式（Backend の JSON か、nginx の HTML か）に
+// かかわらず、この文言にする
+export const INTERPRET_TOO_LONG_MESSAGE = '録音が長すぎます。短く区切って話してください。'
+
+// /api/interpret に送る録音の Blob の最大のバイト数（1,032,192 バイト）。本番の nginx の client_max_body_size
+// （既定の 1m = 1,048,576 バイト）から、multipart のほかのフィールドの分の余白として 16 KiB（16,384 バイト）を引いた値。
+// 明らかに大きい録音の無駄な送信を避けるための、使い勝手のための事前の確認で、nginx の 413 を完全に予測するものでは
+// ない（multipart の boundary や各 part の header、ほかのフィールドも body に含まれるため）。費用やセキュリティの
+// 境界ではない（境界は Backend と nginx の上限）。第2段階で nginx の上限を Backend と合わせるときに見直すこと
+export const MAX_INTERPRET_AUDIO_BYTES = 1_048_576 - 16_384
+
 // /api/tts が受け付ける最大の文字数。Backend の上限（backend/limits.go の maxTextRunes）と
 // 同じ値にすること。Frontend の確認は使い勝手のため、費用の防御は Backend の確認が担う
 export const TTS_MAX_CHARS = 500

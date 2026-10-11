@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import type { Language } from '../languages'
-import { API_TIMEOUT_MS, TTS_TOO_LONG_MESSAGE, apiErrorCode, apiErrorMessage, isTooLongForTts, messageForCode } from '../api'
+import { API_TIMEOUT_MS, INTERPRET_TOO_LONG_MESSAGE, MAX_INTERPRET_AUDIO_BYTES, TTS_TOO_LONG_MESSAGE, apiErrorCode, apiErrorMessage, isTooLongForTts, messageForCode } from '../api'
 import './InterpreterPage.css'
 
 type InterpreterStatus = 'idle' | 'recording' | 'processing' | 'ready' | 'speaking'
@@ -213,7 +213,13 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS.interpret)
     try {
+      // 明らかに大きい録音は送らない（nginx の 413 になるため。MAX_INTERPRET_AUDIO_BYTES を参照）
+      if (audioBlob.size > MAX_INTERPRET_AUDIO_BYTES) throw new Error(INTERPRET_TOO_LONG_MESSAGE)
+
       const res = await fetch('/api/interpret', { method: 'POST', body: formData, signal: controller.signal })
+
+      // 413 は、Backend の JSON（input_too_large）でも nginx の HTML でも、同じ文言にする
+      if (res.status === 413) throw new Error(INTERPRET_TOO_LONG_MESSAGE)
 
       if (res.status === 422) {
         const data = await res.json()
