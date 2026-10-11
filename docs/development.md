@@ -333,6 +333,7 @@ npm run build
 
   - S2、S3、S5、S7 で持っているマイクの track を、ブラウザや OS が終わらせていた（`readyState` が `live` でない）場合は、次の開始で「track が終わっているため開き直す」とログに出し、閉じてから `getUserMedia` で開き直します（ログの `getUserMedia` の開始の行に「開き直し」と付きます）。開き直しでブラウザのお知らせや許可の画面が出る場合があるため、実機の記録と対応を取ってください。
   - 開始の途中で `getUserMedia`、`MediaRecorder`（作成と `start()`）、音声認識（作成と `start()`）のどれかに失敗した場合は、失敗をログに出し、途中まで開いたマイク、録音、音声認識をすべて閉じて、そのテストは始まっていない状態に戻します。
+  - `getUserMedia` を待っている間に `pagehide` などで閉じられた場合は、開始の失敗とは区別して「S2 の開始をやめる（開始を待っている間に閉じられたため）」の形でログに出します。このときは「開始に失敗したため、すべて閉じる」は出しません。
   - ログには、テストの操作（開始は何回目か）、`getUserMedia` の開始・成功・失敗（エラーの `name`）、track の `readyState` と `enabled`、track の `ended`（どのテストの何回目の開始の後か）、S1 の停止と S6 で track を `stop()` したこと、`MediaRecorder` の `start`・`stop`・mimeType・録音したデータのバイト数・失敗、音声認識の `onstart`・`onaudiostart`・`onaudioend`・`onend`・`onerror`・`onresult`（結果の文字数だけ）、`navigator.permissions.query({ name: 'microphone' })` の状態（対応していないブラウザでは `unsupported`）、`document.visibilityState` の変化を出します。
   - 録音した音声と音声認識の結果は、GoTalk の Backend や OpenAI API には送信も保存もせず、ページの中に表示するだけです（音声認識の結果は文字数だけを表示し、文字列そのものは表示しません）。ただし、音声認識を使うテスト（S3、S4、S5）では、ブラウザまたは OS の音声認識サービスへ音声が送信される場合があります。
   - ページを離れたとき（`pagehide`）と、ページのコンポーネントが外れたときは、マイク、録音、音声認識をすべて閉じます。

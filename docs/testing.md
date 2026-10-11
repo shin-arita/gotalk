@@ -161,7 +161,8 @@ Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeOb
 - S5 では `getUserMedia` を最初の1回だけ呼び、開始と停止で `track.enabled` を true と false に切り替え、録音と音声認識の両方を始めて止めること
 - track が `ended` になった後に S2 や S3 を始めると、古い track の `stop()` を呼んでマイクを開き直し、そのことと、`ended` がどのテストの何回目の開始の後に起きたかをログに出すこと
 - `MediaRecorder` の作成や `start()`、音声認識の `start()` が例外になる場合に、失敗をログに出し、開いたマイクと録音を閉じて、テストが始まっていない状態に戻ること。もう一度始めても前の track が残らないこと。未処理の Promise の拒否が出ないこと（Node の `unhandledRejection` で確かめます）
-- `getUserMedia` を待っている間に `pagehide` やコンポーネントが外れて閉じた場合に、後から成功した track の `stop()` を呼ぶこと。待っている間は S6 を含むほかのボタンを押せないこと
+- `getUserMedia` を待っている間に `pagehide` やコンポーネントが外れて閉じた場合に、後から成功した track の `stop()` を呼ぶこと。待っている間は S6 を含むほかのボタンを押せないこと。コンポーネントが外れた後も、React の警告（`console.error`）や未処理の Promise の拒否が出ないこと
+- S2 と S1 の `getUserMedia` を待っている間に `pagehide` が起きた場合に、「開始をやめる（開始を待っている間に閉じられたため）」を出し、「開始に失敗したため、すべて閉じる」を出さず、閉じる処理が `pagehide` の1回だけであること。閉じられていない本当の失敗（`MediaRecorder` の作成の例外）では、これまでどおり「開始に失敗したため、すべて閉じる」を出すこと。別のテストからの切り替え（S2 の後の S3、動いている S7 からの S1）では「開始をやめる」を出さず、新しいテストが始まること
 - S6 ではすべての track の `stop()` と音声認識の `stop()` を呼び、その後の S2 でマイクを開き直すこと。別のテストを始めるときは前のテストのマイクを閉じ、音声認識が動いている場合（S4 など）は音声認識の `stop()` を呼ぶこと
 - `navigator.permissions.query` が例外になる場合に `unsupported` と表示すること
 - Backend への `fetch` を呼ばないこと
