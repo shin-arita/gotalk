@@ -23,7 +23,7 @@ func TestSupportedLanguagesMatchFrontend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read frontend/src/languages.ts: %v", err)
 	}
-	body, elements, err := arrayLiteral(string(src), "LANGUAGES")
+	body, bodyLine, elements, err := arrayLiteral(string(src), "LANGUAGES")
 	if err != nil {
 		t.Fatalf("frontend/src/languages.ts: %v; update arrayLiteral in this test", err)
 	}
@@ -44,15 +44,15 @@ func TestSupportedLanguagesMatchFrontend(t *testing.T) {
 	//      counts every kind of element (objects, spreads such as "...OTHER" or "{ ...FR }",
 	//      shorthand such as "{ id, ... }", bare identifiers) and ignores brackets and commas inside
 	//      strings and comments. The count must equal the number of pattern matches.
-	//   2. Every line with an "id" key, bare or quoted with ", ' or ` ("id":, 'id':, `id`:), whatever
-	//      its value, must match the pattern by itself, so the failure message names the line. The
-	//      interface's type annotation "id: string" (optionally followed by a comment) is skipped.
+	//   2. Every line of the array (with its comments removed) that has an "id" key, bare or quoted
+	//      with ", ' or ` ("id":, 'id':, `id`:), whatever its value, must match the pattern by itself,
+	//      so the failure message names the line (its line number in languages.ts). Code outside the
+	//      array, such as the interface's "id: string" or another object with an id, is not checked.
 	idRe := regexp.MustCompile("\\bid['\"`]?\\s*:")
-	idTypeRe := regexp.MustCompile(`^\s*id\s*:\s*string\s*;?\s*(//.*|/\*.*\*/\s*)?$`)
 	var unmatched []string
-	for i, line := range strings.Split(string(src), "\n") {
-		if idRe.MatchString(line) && !idTypeRe.MatchString(line) && !re.MatchString(line) {
-			unmatched = append(unmatched, fmt.Sprintf("line %d: %s", i+1, strings.TrimSpace(line)))
+	for i, line := range strings.Split(body, "\n") {
+		if idRe.MatchString(line) && !re.MatchString(line) {
+			unmatched = append(unmatched, fmt.Sprintf("line %d: %s", bodyLine+i, strings.TrimSpace(line)))
 		}
 	}
 	if elements != len(frontend) || len(unmatched) > 0 {
@@ -79,18 +79,19 @@ func TestSupportedLanguagesMatchFrontend(t *testing.T) {
 
 // arrayLiteral finds the array literal assigned to name in TypeScript source src
 // ("name ... = [ ... ]") and returns its body (the text between the brackets, with every comment
-// replaced by spaces except its newlines, so that lines keep their positions) and the number of its
-// top-level elements. The array is split at the commas whose
+// replaced by spaces except its newlines, so that lines keep their positions), the line number in
+// src of the first line of the body (line i of the body, counted from 0, is line line+i of src), and
+// the number of its top-level elements. The array is split at the commas whose
 // bracket depth ({}, [], ()) is that of the array itself; commas and brackets inside strings ('...',
 // "...", `...`) and comments (// and /* */) are ignored. A trailing comma after the last element
 // does not start a new element, but an empty element between two commas (a hole) is counted, so
 // that it cannot hide a missing entry. An error is returned when the array is not found, when the
 // brackets do not match, or when the source ends inside the array. Template literals are treated
 // as plain strings: a backtick inside ${...} is not supported.
-func arrayLiteral(src, name string) (body string, count int, err error) {
+func arrayLiteral(src, name string) (body string, line, count int, err error) {
 	start := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b[^=;]*=\s*\[`).FindStringIndex(src)
 	if start == nil {
-		return "", 0, fmt.Errorf("array %s not found", name)
+		return "", 0, 0, fmt.Errorf("array %s not found", name)
 	}
 	closing := map[byte]byte{'{': '}', '[': ']', '(': ')'}
 	clean := []byte(src) // src with the comments inside the array blanked out
@@ -109,14 +110,14 @@ func arrayLiteral(src, name string) (body string, count int, err error) {
 		case c == '/' && i+1 < len(src) && src[i+1] == '/':
 			end := strings.IndexByte(src[i:], '\n')
 			if end < 0 {
-				return "", 0, fmt.Errorf("array %s is not closed", name)
+				return "", 0, 0, fmt.Errorf("array %s is not closed", name)
 			}
 			blank(i, i+end)
 			i += end
 		case c == '/' && i+1 < len(src) && src[i+1] == '*':
 			end := strings.Index(src[i+2:], "*/")
 			if end < 0 {
-				return "", 0, fmt.Errorf("unterminated comment in array %s", name)
+				return "", 0, 0, fmt.Errorf("unterminated comment in array %s", name)
 			}
 			blank(i, i+2+end+2)
 			i += 2 + end + 1
@@ -126,11 +127,11 @@ func arrayLiteral(src, name string) (body string, count int, err error) {
 				if src[j] == '\\' {
 					j++
 				} else if c != '`' && src[j] == '\n' {
-					return "", 0, fmt.Errorf("unterminated string in array %s", name)
+					return "", 0, 0, fmt.Errorf("unterminated string in array %s", name)
 				}
 			}
 			if j >= len(src) {
-				return "", 0, fmt.Errorf("unterminated string in array %s", name)
+				return "", 0, 0, fmt.Errorf("unterminated string in array %s", name)
 			}
 			i = j
 			hasContent = true
@@ -140,15 +141,15 @@ func arrayLiteral(src, name string) (body string, count int, err error) {
 		case c == '}' || c == ']' || c == ')':
 			if len(stack) == 0 {
 				if c != ']' {
-					return "", 0, fmt.Errorf("unexpected %q in array %s", c, name)
+					return "", 0, 0, fmt.Errorf("unexpected %q in array %s", c, name)
 				}
 				if hasContent {
 					count++
 				}
-				return string(clean[start[1]:i]), count, nil
+				return string(clean[start[1]:i]), strings.Count(src[:start[1]], "\n") + 1, count, nil
 			}
 			if stack[len(stack)-1] != c {
-				return "", 0, fmt.Errorf("unexpected %q in array %s", c, name)
+				return "", 0, 0, fmt.Errorf("unexpected %q in array %s", c, name)
 			}
 			stack = stack[:len(stack)-1]
 		case c == ',' && len(stack) == 0:
@@ -159,7 +160,7 @@ func arrayLiteral(src, name string) (body string, count int, err error) {
 			hasContent = true
 		}
 	}
-	return "", 0, fmt.Errorf("array %s is not closed", name)
+	return "", 0, 0, fmt.Errorf("array %s is not closed", name)
 }
 
 func TestArrayLiteral(t *testing.T) {
@@ -186,7 +187,7 @@ func TestArrayLiteral(t *testing.T) {
 	}
 	t.Run("comments are blanked out of the body, keeping the newlines", func(t *testing.T) {
 		src := "const L = [\n  // { id: 'x' },\n  1, /* a\n  { id: 'y' } */ 2,\n]"
-		body, n, err := arrayLiteral(src, "L")
+		body, _, n, err := arrayLiteral(src, "L")
 		want := "\n" + strings.Repeat(" ", 2+len("// { id: 'x' },")) + "\n  1, " + strings.Repeat(" ", len("/* a")) +
 			"\n" + strings.Repeat(" ", len("  { id: 'y' } */")) + " 2,\n"
 		if err != nil || n != 2 || body != want {
@@ -197,20 +198,36 @@ func TestArrayLiteral(t *testing.T) {
 		}
 	})
 	t.Run("comment markers inside strings are kept", func(t *testing.T) {
-		body, n, err := arrayLiteral(`const L = [ { url: 'https://example.com' }, { s: 'a /* b' }, { s: "c // d" } ]`, "L")
+		body, _, n, err := arrayLiteral(`const L = [ { url: 'https://example.com' }, { s: 'a /* b' }, { s: "c // d" } ]`, "L")
 		if err != nil || n != 3 || body != ` { url: 'https://example.com' }, { s: 'a /* b' }, { s: "c // d" } ` {
 			t.Fatalf("body=%q n=%d err=%v", body, n, err)
 		}
 	})
 	t.Run("body is the text between the brackets", func(t *testing.T) {
-		body, _, err := arrayLiteral("const FR = { a: 1 }\nconst L = [ { ...FR }, 2 ]\nconst M = [3]", "L")
+		body, _, _, err := arrayLiteral("const FR = { a: 1 }\nconst L = [ { ...FR }, 2 ]\nconst M = [3]", "L")
 		if err != nil || body != " { ...FR }, 2 " {
 			t.Fatalf("body=%q err=%v", body, err)
 		}
 	})
+	t.Run("line maps body lines to source lines", func(t *testing.T) {
+		src := "interface X {\n  id: string\n}\n\nconst L = [ { a: 1 },\n  { b: 2 },\n  { c: 3 },\n]\n"
+		body, line, _, err := arrayLiteral(src, "L")
+		if err != nil || line != 5 {
+			t.Fatalf("line=%d err=%v, want 5", line, err)
+		}
+		srcLines := strings.Split(src, "\n")
+		for i, l := range strings.Split(body, "\n") {
+			if l != "" && !strings.Contains(srcLines[line+i-1], l) {
+				t.Errorf("body line %d (%q) is not in source line %d (%q)", i, l, line+i, srcLines[line+i-1])
+			}
+		}
+		if _, line, _, _ := arrayLiteral("const L = [1]", "L"); line != 1 {
+			t.Errorf("line=%d, want 1 for an array on the first line", line)
+		}
+	})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, got, err := arrayLiteral(tt.src, "L")
+			_, _, got, err := arrayLiteral(tt.src, "L")
 			if (err != nil) != tt.wantErr || got != tt.want {
 				t.Fatalf("got %d, %v; want %d, error %v", got, err, tt.want, tt.wantErr)
 			}
