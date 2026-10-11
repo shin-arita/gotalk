@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import type { Language } from '../languages'
-import { API_TIMEOUT_MS, INTERPRET_TOO_LONG_MESSAGE, MAX_INTERPRET_AUDIO_BYTES, TTS_TOO_LONG_MESSAGE, apiErrorCode, apiErrorMessage, isTooLongForTts, messageForCode } from '../api'
+import { API_TIMEOUT_MS, ApiError, MAX_INTERPRET_AUDIO_BYTES, apiErrorCode, apiErrorFromResponse, isTooLongForTts, logApiError, messageKeyForCode, messageKeyForError } from '../api'
+import { getLocalizedMessage } from '../messages'
+import type { MessageKey } from '../messages'
 import './InterpreterPage.css'
 
 type InterpreterStatus = 'idle' | 'recording' | 'processing' | 'ready' | 'speaking'
@@ -79,16 +81,6 @@ const FLAG_FINISH_MESSAGES: Record<string, string> = {
   'ko':    '말이 끝나면 국기를 다시 탭하여 종료하세요.',
   'th':    'เมื่อพูดเสร็จแล้ว แตะธงอีกครั้งเพื่อสิ้นสุด',
   'vi':    'Khi nói xong, nhấn vào cờ một lần nữa để kết thúc.',
-}
-
-const LANGUAGE_UNCLEAR_MESSAGES: Record<string, string> = {
-  'ja':    '言語不明、もう一度お話ください',
-  'en':    'Language unclear. Please speak again.',
-  'zh-CN': '语言不明，请再说一次',
-  'zh-TW': '語言不明，請再說一次',
-  'ko':    '언어를 알 수 없습니다. 다시 말씀해 주세요.',
-  'th':    'ไม่ทราบภาษา กรุณาพูดอีกครั้ง',
-  'vi':    'Không rõ ngôn ngữ. Vui lòng nói lại.',
 }
 
 function getSupportedMimeType(): string {
@@ -177,11 +169,13 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
     }, ...prev])
   }
 
+  // 利用者向けの文言を、選んだ2つの言語で表示する（docs/ui.md）
+  const showMessage = (messageKey: MessageKey) => {
+    setErrorMessage(getLocalizedMessage(messageKey, selectedLanguages[0]?.id, selectedLanguages[1]?.id))
+  }
+
   const handleLangMismatch = () => {
-    const msgs = selectedLanguages
-      .map(l => LANGUAGE_UNCLEAR_MESSAGES[l.id] ?? 'Language unclear. Please speak again.')
-      .join('\n\n')
-    setErrorMessage(msgs)
+    showMessage('language_unclear')
     setTranslatedText('')
     setBackTranslation('')
     setStatus('idle')
@@ -214,18 +208,18 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
     const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS.interpret)
     try {
       // 明らかに大きい録音は送らない（nginx の 413 になるため。MAX_INTERPRET_AUDIO_BYTES を参照）
-      if (audioBlob.size > MAX_INTERPRET_AUDIO_BYTES) throw new Error(INTERPRET_TOO_LONG_MESSAGE)
+      if (audioBlob.size > MAX_INTERPRET_AUDIO_BYTES) throw new ApiError('recording_too_long', '/api/interpret', null, 'recording_too_large_before_send')
 
       const res = await fetch('/api/interpret', { method: 'POST', body: formData, signal: controller.signal })
 
       // 413 は、Backend の JSON（input_too_large）でも nginx の HTML でも、同じ文言にする
-      if (res.status === 413) throw new Error(INTERPRET_TOO_LONG_MESSAGE)
+      if (res.status === 413) throw new ApiError('recording_too_long', '/api/interpret', 413, 'request_too_large')
 
       if (res.status === 422) {
         const data = await res.json()
         if (data.error === 'language_mismatch') { handleLangMismatch(); return }
       }
-      if (!res.ok) throw new Error((await apiErrorMessage(res)) ?? `HTTP ${res.status}`)
+      if (!res.ok) throw await apiErrorFromResponse('/api/interpret', res)
 
       const data = await res.json()
       if (!hasLiveTranscriptRef.current) { recognizedTextRef.current = data.text; setRecognizedText(data.text) }
@@ -236,10 +230,7 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
       setStatus('ready')
       addHistoryEntry(data.text, data.translatedText, data.backTranslation, data.sourceLanguage, data.targetLanguage)
     } catch (e) {
-      const msg = e instanceof DOMException && e.name === 'AbortError'
-        ? '通信がタイムアウトしました。もう一度お試しください。'
-        : e instanceof Error ? e.message : '処理に失敗しました'
-      setErrorMessage(msg)
+      showMessage(messageKeyForError('/api/interpret', e))
       setStatus('idle')
     } finally {
       clearTimeout(timer)
@@ -267,7 +258,7 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
         const data = await res.json()
         if (data.error === 'language_mismatch') { handleLangMismatch(); return }
       }
-      if (!res.ok) throw new Error((await apiErrorMessage(res)) ?? `HTTP ${res.status}`)
+      if (!res.ok) throw await apiErrorFromResponse('/api/translate', res)
       const data = await res.json()
       setTranslatedText(data.translatedText)
       setTtsText(data.ttsText ?? data.translatedText)
@@ -275,10 +266,7 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
       setStatus('ready')
       addHistoryEntry(text, data.translatedText, data.backTranslation, data.sourceLanguage, data.targetLanguage)
     } catch (e) {
-      const msg = e instanceof DOMException && e.name === 'AbortError'
-        ? '通信がタイムアウトしました。もう一度お試しください。'
-        : e instanceof Error ? e.message : '翻訳に失敗しました'
-      setErrorMessage(msg)
+      showMessage(messageKeyForError('/api/translate', e))
       setStatus('idle')
     } finally {
       clearTimeout(timer)
@@ -415,8 +403,9 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
           speechRecognitionRef.current = recognition
         } catch { /* SpeechRecognition unavailable, Whisper handles final result */ }
       }
-    } catch {
-      setErrorMessage('マイクへのアクセスが許可されていません')
+    } catch (e) {
+      console.warn('[GoTalk] microphone error', { reason: e instanceof Error ? e.name : typeof e })
+      showMessage('microphone_denied')
       setStatus('idle')
       setRecordingFlagIndex(null)
     }
@@ -462,7 +451,7 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
     setErrorMessage('')
     // 上限を超える翻訳の結果は読み上げない（翻訳の結果の表示はそのまま）
     if (isTooLongForTts(ttsText)) {
-      setErrorMessage(TTS_TOO_LONG_MESSAGE)
+      showMessage('tts_too_long')
       return
     }
     setStatus('speaking')
@@ -479,9 +468,8 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
         // 利用者に知らせるべきエラー（混み合っている、など）だけを表示する。
         // input_too_large は、Frontend と Backend の文字数の判定がずれた場合などへの備え
         const code = await apiErrorCode(res)
-        const msg = code === 'input_too_large' ? TTS_TOO_LONG_MESSAGE : messageForCode(code)
-        if (msg) setErrorMessage(msg)
-        throw new Error(`TTS HTTP ${res.status}`)
+        const messageKey = code === 'input_too_large' ? 'tts_too_long' : messageKeyForCode(code)
+        throw new ApiError(messageKey, '/api/tts', res.status, code)
       }
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
@@ -495,7 +483,10 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
       audio.onended = cleanup
       audio.onerror = cleanup
       await audio.play()
-    } catch {
+    } catch (e) {
+      // 表示する文言がないエラー（ネットワークのエラー、timeout など）は、ログにだけ残して何も表示しない
+      logApiError('/api/tts', e)
+      if (e instanceof ApiError && e.messageKey) showMessage(e.messageKey)
       setStatus('ready')
     } finally {
       clearTimeout(timer)

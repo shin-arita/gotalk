@@ -209,13 +209,14 @@ TTS model は `OPENAI_TTS_MODEL` を使い、未設定時は `gpt-4o-mini-tts` �
 
 エラー処理の詳細は [api.md](api.md) を参照してください。この文書では音声処理に関係する概要のみ整理します。
 
+- 利用者に表示するエラーの文言は、選んだ2つの言語で表示します（[ui.md](ui.md)）。以下では日本語の文言で示します。HTTP の status やブラウザのエラーの文字列は表示しません。
 - `getUserMedia` や `MediaRecorder` の作成に失敗した場合、Frontend は「マイクへのアクセスが許可されていません」を表示し、`idle` に戻します。
 - `SpeechRecognition` に対応していない場合や `recognition.start()` に失敗した場合、エラーは表示せずに録音を継続します。この場合 `transcript` は送られず、Backend が録音音声から文字起こしします。
-- `/api/interpret` または `/api/translate`（再翻訳）が `422` で `language_mismatch` を返した場合、Frontend は選択言語ごとの言語不明メッセージを表示し、`idle` に戻します。
-- `/api/interpret` または `/api/translate`（再翻訳）がタイムアウトした場合、Frontend は「通信がタイムアウトしました。もう一度お試しください。」を表示し、`idle` に戻します。
-- それ以外で確定翻訳または再翻訳が失敗した場合、エラーの応答の `code` が `input_too_large`、`service_unavailable`、`upstream_busy`、`timeout` の場合は、それぞれ「入力が長すぎます。短くしてもう一度お試しください」「現在サービスを利用できません」「混み合っています。しばらくしてからお試しください」「処理に時間がかかっています。もう一度お試しください」を表示します（[api.md](api.md) の「9. Frontend からの利用」）。それ以外の `code` では、Frontend は `HTTP 500` のような status 表示などのエラー内容を表示して `idle` に戻します。
+- `/api/interpret` または `/api/translate`（再翻訳）が `422` で `language_mismatch` を返した場合、Frontend は「言語不明、もう一度お話ください」を表示し、`idle` に戻します。
+- `/api/interpret` または `/api/translate`（再翻訳）が Frontend でタイムアウトした場合、Frontend は「うまく翻訳できませんでした。もう一度お願いします。」を表示し、`idle` に戻します。
+- それ以外で確定翻訳または再翻訳が失敗した場合、エラーの応答の `code` が `input_too_large`、`service_unavailable`、`upstream_busy`、`timeout` の場合は、それぞれ「入力が長すぎます。短くしてもう一度お試しください」「現在サービスを利用できません」「混み合っています。しばらくしてからお試しください」「処理に時間がかかっています。もう一度お試しください」を表示します（[api.md](api.md) の「9. Frontend からの利用」）。それ以外の `code`、ネットワークのエラーなどでは、Frontend は「エラーが発生しました。もう一度お試しください。」を表示して `idle` に戻します。
 - 読み上げる翻訳の結果が 500 文字を超える場合、Frontend は `/api/tts` を呼ばずに「この翻訳は長いため、読み上げできません（500文字まで）」を表示します。翻訳の結果の表示は変えません（[api.md](api.md) の「9. Frontend からの利用」）。
-- TTS が失敗した場合、Frontend は `ready` に戻します。`code` が上の4つのどれかの場合は、その表示も出します（`input_too_large` の場合は、上の読み上げ用の文言）。Backend では OpenAI Audio Speech API の呼び出し失敗時に `tts failed` を返します。
+- TTS が失敗した場合、Frontend は `ready` に戻します。`code` が上の4つのどれかの場合は、その表示も出します（`input_too_large` の場合は、上の読み上げ用の文言）。それ以外の場合は何も表示しません。Backend では OpenAI Audio Speech API の呼び出し失敗時に `tts failed` を返します。
 
 ## 10. 関連ドキュメント
 

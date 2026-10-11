@@ -172,6 +172,7 @@ GoTalk では、公開環境の死活監視と障害通知のために Uptime Ku
 - [翻訳処理フロー](docs/translation-flow.md)
 - [固有名詞保護](docs/proper-noun-protection.md)
 - [Backend API](docs/api.md)
+- [UI の文言](docs/ui.md)
 - [Docker 構成](docs/docker.md)
 - [ローカル開発](docs/development.md)
 - [テスト](docs/testing.md)

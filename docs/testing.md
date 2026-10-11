@@ -83,9 +83,10 @@ Frontend のテストファイルは次のとおりです。
 | ファイル | 主な対象 |
 | --- | --- |
 | `frontend/src/languages.test.ts` | 言語定義 |
-| `frontend/src/api.test.ts` | API の timeout の値、エラーの `code` ごとの表示、読み上げの文字数の判定（`isTooLongForTts`）、`/api/interpret` に送る録音の大きさの上限（`MAX_INTERPRET_AUDIO_BYTES`）と、録音が長すぎるときの文言 |
+| `frontend/src/api.test.ts` | API の timeout の値、エラーの `code` ごとの文言のキー（`apiErrorFromResponse`）、エラーの文言のキーとログ（`messageKeyForError`）、読み上げの文字数の判定（`isTooLongForTts`）、`/api/interpret` に送る録音の大きさの上限（`MAX_INTERPRET_AUDIO_BYTES`） |
+| `frontend/src/messages.test.ts` | 利用者向けの文言の共通の関数（`getLocalizedMessage`）と、10 の文言の7言語の辞書 |
 | `frontend/src/pages/LanguageSelectPage.test.tsx` | 言語選択画面 |
-| `frontend/src/pages/InterpreterPage.test.tsx` | 通訳画面、録音、確定翻訳、再翻訳、TTS、読み上げの文字数の上限、状態遷移 |
+| `frontend/src/pages/InterpreterPage.test.tsx` | 通訳画面、録音、確定翻訳、再翻訳、TTS、読み上げの文字数の上限、状態遷移、エラーの文言を選んだ2つの言語で表示すること |
 
 実行コマンド:
 
@@ -112,26 +113,37 @@ npm test
 - 左右どちらの国旗で録音したかに応じて、その言語を `speaker` と `myLanguage`、もう一方を `theirLanguage` として送ること
 - `getUserMedia` が失敗した場合にマイクアクセスのエラーを表示すること
 - `SpeechRecognition` の mock で認識結果を返した場合に、その文字列を `transcript` として `/api/interpret` に送り、レスポンスの `text` ではなく認識結果を原文として表示し続けること
-- `/api/interpret` が 422 `language_mismatch` を返した場合に、選択言語ごとの言語不明メッセージを表示し、翻訳文を空にして `idle` に戻すこと（3 件）
+- `/api/interpret` が 422 `language_mismatch` を返した場合に、選択言語ごとの言語不明メッセージを選んだ順に空行をはさんで表示し、翻訳文を空にして `idle` に戻すこと（3 件）
 - 確定翻訳の成功時に `translatedText`、`backTranslation`、読み上げボタン、履歴を表示すること
 - 履歴は展開ボタンなしで全件を表示すること
-- `/api/interpret` が 500 を返した場合のエラー表示
+- `/api/interpret` が 500 を返した場合に、汎用のエラーの文言を表示すること
 - 再翻訳で `/api/translate` が 422 `language_mismatch` を返した場合のエラー表示
-- 再翻訳で `/api/translate` が 500 を返した場合のエラー表示と、直前の翻訳文と読み上げボタンが残ること
+- 再翻訳で `/api/translate` が 500 を返した場合に汎用のエラーの文言を表示することと、直前の翻訳文と読み上げボタンが残ること
 - `/api/tts` に `ttsText` を送ること
 - TTS fetch 中の button disabled、audio `onended` 後の復帰、TTS 失敗後の復帰
 - `recording` 中は翻訳カードを隠し、録音終了後に表示すること
 - すべての `fetch`（`/api/interpret`、リアルタイム翻訳と再翻訳の `/api/translate`、`/api/tts`）に `AbortSignal` が渡され、Backend が受け付けるフィールドだけを送ること
-- `/api/interpret` は 65 秒、`/api/translate` と `/api/tts` は 30 秒で `fetch` が abort されること
+- `/api/interpret` は 65 秒、`/api/translate` と `/api/tts` は 30 秒で `fetch` が abort されること。`/api/interpret` と再翻訳の `/api/translate` の abort では「うまく翻訳できませんでした」の文言を表示すること
 - リアルタイム翻訳の `fetch` が、認識テキストが変わったときと録音を止めたときに abort されること
-- エラーの応答の `code`（`input_too_large`、`service_unavailable`、`upstream_busy`、`timeout`）に応じた表示をし、それ以外の `code` では OpenAI の内部のエラーコードを表示しないこと。`/api/tts` のエラーは、表示のない `code` では何も表示しないこと
-- `isTooLongForTts` が、Backend の `textTooLong` と同じく、前後の空白を除かずに Unicode のコードポイント単位で数えること（500 文字は可、501 文字は不可。サロゲートペアと対になっていないサロゲートは 1 文字）。読み上げ用の文言が「この翻訳は長いため、読み上げできません（500文字まで）」であること
+- エラーの応答の `code`（`input_too_large`、`service_unavailable`、`upstream_busy`、`timeout`）に応じた表示をし、それ以外の `code` では OpenAI の内部のエラーコードや status を表示せずに汎用のエラーの文言を表示すること。`/api/tts` のエラーは、表示のない `code` では何も表示しないこと
+- `isTooLongForTts` が、Backend の `textTooLong` と同じく、前後の空白を除かずに Unicode のコードポイント単位で数えること（500 文字は可、501 文字は不可。サロゲートペアと対になっていないサロゲートは 1 文字）
 - 500 文字ちょうどの翻訳の結果では `/api/tts` を呼ぶこと。500 文字を超える翻訳の結果では `/api/tts` を呼ばずに読み上げ用の文言を表示し、翻訳の結果の全文は表示されたままで、読み上げボタンも押せること。前後の空白と、サロゲートペアの文字（絵文字）の数え方が Backend と同じであること
 - `/api/tts` が `input_too_large` を返したときに読み上げ用の文言を表示すること。`/api/translate` の `input_too_large` は、これまでの文言のままであること
-- `/api/interpret` が 413 を返したときに、本文が nginx の HTML でも、Backend の JSON（`input_too_large`）でも、空でも「録音が長すぎます。短く区切って話してください。」を表示すること。413 以外のエラー（502 `upstream_error` など）は、これまでの文言のままであること
+- `/api/interpret` が 413 を返したときに、本文が nginx の HTML でも、Backend の JSON（`input_too_large`）でも、空でも「録音が長すぎます。短く区切って話してください。」を表示すること。413 以外のエラー（502 `upstream_error` など）は、汎用のエラーの文言であること
 - 録音の Blob が 1,032,192 バイトちょうどなら `/api/interpret` を呼び、1 バイトでも超えたら呼ばずに同じ文言を表示すること
 - `/api/translate` と `/api/tts` の 413 の表示は変わらないこと
 - 録音が長すぎる文言を表示した後の画面の状態（録音していない、両方の国旗が押せる、読み上げボタンがない、翻訳カードが処理中でない、履歴が増えない）が、`/api/interpret` のほかのエラー（502）のときと同じであること
+
+利用者向けの文言を選んだ2つの言語で表示すること（[ui.md](ui.md)）は、次のテストで確かめます。画面のテストの期待する文言は、既定の日本語と英語の組み合わせでは helper `jaEn` で作ります。エラーのときの `console.warn` は、ログを確かめるテスト以外では `beforeEach` で出力を止めています。
+
+- `getLocalizedMessage` が、2つの言語（`ja` と `en`、`th` と `vi` など）の文言を選んだ順に空行をはさんで連結すること、辞書にない言語では英語になること、選んだ言語が1つだけのときはその言語の文言だけ、1つもないときは英語の文言になること（`messages.test.ts`）
+- 10 の文言のすべてのキーに、7言語の空でない文言がそろっていること。読み上げの文言の 500 が `TTS_MAX_CHARS` から作られること。`request_timeout` の英語の文言のアポストロフィが U+2019 であること（`messages.test.ts`）
+- 10 の文言のそれぞれが、実際の画面で選んだ2つの言語（主にタイ語とベトナム語。ほかにベトナム語とタイ語の順、韓国語と英語）で表示されること（`InterpreterPage messages in the two selected languages`）
+- 対応する文言がない status（502）、ネットワークのエラー（`fetch` の reject）、JSON として読めない応答で汎用のエラーの文言を表示し、`HTTP`、`502`、`Failed to fetch`、Backend の `error` の文字列を表示しないこと
+- Frontend の timeout では「うまく翻訳できませんでした」、Backend の 504 では「処理に時間がかかっています」を表示すること
+- エラーのとき、`console.warn` にエンドポイント、status、エラーの種類（Backend の `code`、`frontend_timeout`、`recording_too_large_before_send`、`TypeError` など）が残り、発話の内容、翻訳の結果、`e.message`、Backend の `error` の文字列が残らないこと（`api.test.ts` と `InterpreterPage.test.tsx`）
+- ログの `reason` に入る `code` が `^[a-z0-9_]{1,64}$` に一致しない場合（大文字、空白、65 文字、日本語、改行、空文字）は `invalid` になり、元の文字列がログに出ないこと。一致する場合（`upstream_busy`、許可リストにない `some_new_code`、64 文字）はそのまま出ること。表示の判定は変わらないこと（`api.test.ts`。`/api/tts` は `InterpreterPage.test.tsx`）
+- 読み上げで表示する文言がない場合（502、ネットワークのエラー）に、何も表示しないこと
 
 `/api/interpret` の結果表示やエラー処理のテストは、`MediaRecorder` と `navigator.mediaDevices.getUserMedia` を mock し、実際の操作と同じく国旗をタップして録音を開始し、同じ国旗をタップして停止することで `/api/interpret` を呼びます（共通の手順は helper `renderAndInterpret` にまとめています）。これらのテストでは `SpeechRecognition` を mock していないため、`transcript` は送られません。`transcript` の送信は、`SpeechRecognition` を mock した国旗タップのテスト 1 件で検証します。
 
@@ -223,3 +235,4 @@ coverage は Frontend だけを計測しています。`npm run test:coverage`�
 - [speech-flow.md](speech-flow.md)
 - [proper-noun-protection.md](proper-noun-protection.md)
 - [api.md](api.md)
+- [ui.md](ui.md)

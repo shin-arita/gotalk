@@ -3,10 +3,15 @@ import { render, screen, fireEvent, act, waitFor, cleanup } from '@testing-libra
 import InterpreterPage from './InterpreterPage'
 import { LANGUAGES } from '../languages'
 import type { Language } from '../languages'
+import { MESSAGES, getLocalizedMessage } from '../messages'
+import type { MessageKey } from '../messages'
 
 // --- Shared fixtures ---
 
 const [ja, en] = LANGUAGES
+
+// renderPage の既定の言語（日本語と英語）で表示する文言
+const jaEn = (key: MessageKey) => getLocalizedMessage(key, 'ja', 'en')
 
 function renderPage(
   selectedLanguages: Language[] = [ja, en],
@@ -172,6 +177,8 @@ function saveProperty(target: object, key: string) {
 }
 
 beforeEach(() => {
+  // エラーのときのログ（console.warn）は、ログを確かめるテスト以外では出さない
+  vi.spyOn(console, 'warn').mockImplementation(() => {})
   savedProperties = []
   saveProperty(globalThis.navigator, 'mediaDevices')
   saveProperty(globalThis.URL, 'createObjectURL')
@@ -203,8 +210,8 @@ describe('InterpreterPage language mismatch (interpret API)', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
 
     const msg = screen.getByRole('alert').textContent ?? ''
-    expect(msg).toContain('言語不明、もう一度お話ください')
-    expect(msg).toContain('Language unclear. Please speak again.')
+    // 選んだ順に、空行をはさんで並べる（共通の関数に寄せる前と同じ表示）
+    expect(msg).toBe('言語不明、もう一度お話ください\n\nLanguage unclear. Please speak again.')
   })
 
   it('clears translated text on mismatch (speak button hidden)', async () => {
@@ -286,11 +293,11 @@ describe('InterpreterPage translation response', () => {
     )
   })
 
-  it('shows error message on HTTP 500', async () => {
+  it('shows the generic error message on HTTP 500', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(make500Response())
     await renderAndInterpret()
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
-    expect(screen.getByRole('alert').textContent).toContain('HTTP 500')
+    expect(screen.getByRole('alert').textContent).toBe(jaEn('generic_error'))
   })
 })
 
@@ -439,7 +446,7 @@ describe('InterpreterPage TTS (OpenAI)', () => {
 // ============================================================
 
 describe('InterpreterPage translate API 500', () => {
-  it('shows HTTP 500 error on retranslation failure', async () => {
+  it('shows the generic error message on retranslation failure (HTTP 500)', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
     fetchMock.mockResolvedValueOnce(make500Response())
@@ -457,7 +464,7 @@ describe('InterpreterPage translate API 500', () => {
     })
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
-    expect(screen.getByRole('alert').textContent).toContain('HTTP 500')
+    expect(screen.getByRole('alert').textContent).toBe(jaEn('generic_error'))
   })
 
   it('retains previous translatedText and keeps speak button accessible after 500', async () => {
@@ -709,7 +716,7 @@ describe('InterpreterPage flag-tap recording', () => {
     })
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
-    expect(screen.getByRole('alert').textContent).toContain('マイクへのアクセスが許可されていません')
+    expect(screen.getByRole('alert').textContent).toBe(jaEn('microphone_denied'))
   })
 
   it('sends the live SpeechRecognition transcript and keeps it as the source text', async () => {
@@ -891,7 +898,7 @@ describe('InterpreterPage fetch signal and timeout', () => {
     expect(signal!.aborted).toBe(false)
     await act(async () => { vi.advanceTimersByTime(1_000) })
     expect(signal!.aborted).toBe(true)
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('通信がタイムアウトしました'))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(jaEn('request_timeout')))
   })
 
   it('aborts /api/translate after 30 seconds', async () => {
@@ -911,7 +918,7 @@ describe('InterpreterPage fetch signal and timeout', () => {
     expect(signal!.aborted).toBe(false)
     await act(async () => { vi.advanceTimersByTime(1_000) })
     expect(signal!.aborted).toBe(true)
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('通信がタイムアウトしました'))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(jaEn('request_timeout')))
   })
 
   it('aborts /api/tts after 30 seconds and re-enables the speak button', async () => {
@@ -996,10 +1003,10 @@ describe('InterpreterPage fetch signal and timeout', () => {
 
 describe('InterpreterPage error codes', () => {
   const cases: [string, string][] = [
-    ['input_too_large', '入力が長すぎます。短くしてもう一度お試しください'],
-    ['service_unavailable', '現在サービスを利用できません'],
-    ['upstream_busy', '混み合っています。しばらくしてからお試しください'],
-    ['timeout', '処理に時間がかかっています。もう一度お試しください'],
+    ['input_too_large', jaEn('input_too_large')],
+    ['service_unavailable', jaEn('service_unavailable')],
+    ['upstream_busy', jaEn('upstream_busy')],
+    ['timeout', jaEn('timeout')],
   ]
   const statusFor: Record<string, number> = { input_too_large: 413, service_unavailable: 503, upstream_busy: 503, timeout: 504 }
 
@@ -1036,18 +1043,18 @@ describe('InterpreterPage error codes', () => {
         fireEvent.click(screen.getByRole('button', { name: '発声する' }))
       })
       // /api/tts の input_too_large は、読み上げ用の文言にする（TTS length limit のテストを参照）
-      const ttsMessage = code === 'input_too_large' ? 'この翻訳は長いため、読み上げできません（500文字まで）' : message
+      const ttsMessage = code === 'input_too_large' ? jaEn('tts_too_long') : message
       await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(ttsMessage))
       expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
     })
   }
 
-  it('does not show unknown codes or OpenAI details, and keeps the HTTP status message', async () => {
+  it('does not show unknown codes or OpenAI details, and shows the generic error message', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       makeErrorResponse(502, { error: 'translation failed', code: 'insufficient_quota' }),
     )
     await renderAndInterpret()
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('HTTP 502'))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(jaEn('generic_error')))
   })
 
   it('keeps the TTS error silent for codes without a message', async () => {
@@ -1066,7 +1073,7 @@ describe('InterpreterPage error codes', () => {
 })
 
 describe('InterpreterPage TTS length limit', () => {
-  const TOO_LONG = 'この翻訳は長いため、読み上げできません（500文字まで）'
+  const TOO_LONG = jaEn('tts_too_long')
 
   // 翻訳の結果（ttsText と translatedText）を text にして、読み上げボタンを押す
   async function speak(text: string, ttsResponse: Response = makeAudioOkResponse()) {
@@ -1137,12 +1144,12 @@ describe('InterpreterPage TTS length limit', () => {
     await renderAndInterpret()
     await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument())
     await editAndRetranslate('Good evening')
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('入力が長すぎます。短くしてもう一度お試しください'))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(jaEn('input_too_large')))
   })
 })
 
 describe('InterpreterPage /api/interpret 413 (recording too long)', () => {
-  const TOO_LONG = '録音が長すぎます。短く区切って話してください。'
+  const TOO_LONG = jaEn('recording_too_long')
   const LIMIT = 1_032_192
 
   // nginx の client_max_body_size を超えたときの応答（本文は HTML で、JSON として読めない）
@@ -1211,12 +1218,12 @@ describe('InterpreterPage /api/interpret 413 (recording too long)', () => {
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(TOO_LONG))
   })
 
-  it('keeps the existing message for other errors (502 upstream_error)', async () => {
+  it('shows the generic error message for other errors (502 upstream_error)', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       makeErrorResponse(502, { error: 'translation failed', code: 'upstream_error' }),
     )
     await renderAndInterpret()
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('HTTP 502'))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(jaEn('generic_error')))
   })
 
   it('sends a recording of exactly the limit (1,032,192 bytes)', async () => {
@@ -1243,7 +1250,7 @@ describe('InterpreterPage /api/interpret 413 (recording too long)', () => {
     await renderAndInterpret()
     await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument())
     await editAndRetranslate('Good evening')
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('入力が長すぎます。短くしてもう一度お試しください'))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(jaEn('input_too_large')))
   })
 
   it('keeps the TTS message for a 413 input_too_large from /api/tts', async () => {
@@ -1256,7 +1263,7 @@ describe('InterpreterPage /api/interpret 413 (recording too long)', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: '発声する' }))
     })
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('この翻訳は長いため、読み上げできません（500文字まで）'))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(jaEn('tts_too_long')))
   })
 
   it('leaves the screen in the same state as other /api/interpret errors', async () => {
@@ -1285,6 +1292,291 @@ describe('InterpreterPage /api/interpret 413 (recording too long)', () => {
     expect(base).toEqual({
       alert: null, leftFlagEnabled: true, rightFlagEnabled: true, recording: false,
       speakButton: false, translationCard: true, processing: false, history: 0,
+    })
+  })
+})
+
+// ============================================================
+// 利用者向けの文言を、選んだ2つの言語で表示する（docs/ui.md）
+// ============================================================
+
+describe('InterpreterPage messages in the two selected languages', () => {
+  const th = LANGUAGES.find(l => l.id === 'th')!
+  const vi_ = LANGUAGES.find(l => l.id === 'vi')!
+  const ko = LANGUAGES.find(l => l.id === 'ko')!
+
+  // 選んだ順に、空行をはさんで並べた文言
+  const twoLanguages = (key: MessageKey, l1: string, l2: string) => `${MESSAGES[key][l1]}\n\n${MESSAGES[key][l2]}`
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // langs[0] の国旗をタップして録音し、止めて /api/interpret を呼ぶ
+  async function interpretWith(langs: Language[], size = 5) {
+    mockRecorder = undefined
+    setupMediaRecorderMock()
+    setupGetUserMediaMock()
+    renderPage(langs)
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: `${langs[0].label}で話す` }))
+    })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([new Uint8Array(size)]) }) })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: `${langs[0].label}の録音を停止` }))
+    })
+  }
+
+  async function clickSpeak() {
+    await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument())
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '発声する' }))
+    })
+  }
+
+  const alertText = () => screen.getByRole('alert').textContent
+
+  it('input_too_large (/api/translate)', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+    fetchMock.mockResolvedValueOnce(makeErrorResponse(400, { error: 'text too long', code: 'input_too_large' }))
+    await interpretWith([th, vi_])
+    await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument())
+    await editAndRetranslate('Good evening')
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('input_too_large', 'th', 'vi')))
+  })
+
+  it('service_unavailable', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeErrorResponse(503, { error: 'x', code: 'service_unavailable' }))
+    await interpretWith([th, vi_])
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('service_unavailable', 'th', 'vi')))
+  })
+
+  it('upstream_busy', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeErrorResponse(503, { error: 'x', code: 'upstream_busy' }))
+    await interpretWith([vi_, th])
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('upstream_busy', 'vi', 'th')))
+  })
+
+  it('timeout (the backend 504)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeErrorResponse(504, { error: 'x', code: 'timeout' }))
+    await interpretWith([th, vi_])
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('timeout', 'th', 'vi')))
+    expect(alertText()).not.toContain(MESSAGES.request_timeout.th)
+  })
+
+  it('tts_too_long (the frontend check and the /api/tts input_too_large)', async () => {
+    setupAudioMock()
+    const text = 'あ'.repeat(501)
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse({ translatedText: text, ttsText: text })))
+    await interpretWith([th, vi_])
+    await clickSpeak()
+    expect(alertText()).toBe(twoLanguages('tts_too_long', 'th', 'vi'))
+    expect(alertText()).toContain('500')
+    cleanup()
+    vi.restoreAllMocks()
+
+    setupAudioMock()
+    const fetchMock2 = vi.spyOn(globalThis, 'fetch')
+    fetchMock2.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+    fetchMock2.mockResolvedValueOnce(makeErrorResponse(400, { error: 'x', code: 'input_too_large' }))
+    await interpretWith([ko, en])
+    await clickSpeak()
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('tts_too_long', 'ko', 'en')))
+  })
+
+  it('recording_too_long (the /api/interpret 413 and the check before sending)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeErrorResponse(413, { error: 'x', code: 'input_too_large' }))
+    await interpretWith([th, vi_])
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('recording_too_long', 'th', 'vi')))
+    cleanup()
+    vi.restoreAllMocks()
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    await interpretWith([th, vi_], 1_032_193)
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('recording_too_long', 'th', 'vi')))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('microphone_denied', async () => {
+    setupMediaRecorderMock()
+    setupGetUserMediaMock(true)
+    renderPage([th, vi_])
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Thaiで話す' }))
+    })
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('microphone_denied', 'th', 'vi')))
+  })
+
+  it('generic_error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeErrorResponse(502, { error: 'translation failed', code: 'upstream_error' }))
+    await interpretWith([th, vi_])
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('generic_error', 'th', 'vi')))
+  })
+
+  it('language_unclear', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(make422Response({ error: 'language_mismatch' }))
+    await interpretWith([th, vi_])
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('language_unclear', 'th', 'vi')))
+  })
+
+  it('request_timeout (the frontend timeout of /api/interpret and /api/translate)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, options) => pendingUntilAborted(options))
+    await interpretWith([th, vi_])
+    await act(async () => { vi.advanceTimersByTime(65_000) })
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('request_timeout', 'th', 'vi')))
+    cleanup()
+    vi.restoreAllMocks()
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+    fetchMock.mockImplementationOnce((_url, options) => pendingUntilAborted(options))
+    await interpretWith([th, vi_])
+    await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument())
+    await editAndRetranslate('Good evening')
+    await act(async () => { vi.advanceTimersByTime(30_000) })
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('request_timeout', 'th', 'vi')))
+  })
+
+  it('distinguishes the frontend timeout from the backend 504', async () => {
+    expect(MESSAGES.request_timeout.ja).not.toBe(MESSAGES.timeout.ja)
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeErrorResponse(504, { error: 'x', code: 'timeout' }))
+    await renderAndInterpret()
+    await waitFor(() => expect(alertText()).toBe(jaEn('timeout')))
+  })
+
+  describe('generic error', () => {
+    it('does not show the HTTP status for a status without a message (502)', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeErrorResponse(502, { error: 'translation failed', code: 'upstream_error' }))
+      await renderAndInterpret()
+      await waitFor(() => expect(alertText()).toBe(jaEn('generic_error')))
+      expect(alertText()).not.toContain('HTTP')
+      expect(alertText()).not.toContain('502')
+      expect(alertText()).not.toContain('translation failed')
+    })
+
+    it('does not show the browser error when fetch rejects (/api/interpret)', async () => {
+      vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      await renderAndInterpret()
+      await waitFor(() => expect(alertText()).toBe(jaEn('generic_error')))
+      expect(alertText()).not.toContain('Failed to fetch')
+    })
+
+    it('does not show the browser error when fetch rejects (/api/translate)', async () => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch')
+      fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+      fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      await interpretWith([th, vi_])
+      await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument())
+      await editAndRetranslate('Good evening')
+      await waitFor(() => expect(alertText()).toBe(twoLanguages('generic_error', 'th', 'vi')))
+      expect(alertText()).not.toContain('Failed to fetch')
+    })
+
+    it('shows the generic error message when the response is not JSON', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.reject(new SyntaxError('Unexpected token < in JSON')),
+      } as unknown as Response)
+      await renderAndInterpret()
+      await waitFor(() => expect(alertText()).toBe(jaEn('generic_error')))
+    })
+  })
+
+  describe('console log', () => {
+    it('logs the endpoint, status, and kind of error, but not the speech or the translation', async () => {
+      const warn = vi.mocked(console.warn)
+      const recognition = setupSpeechRecognitionMock()
+      const fetchMock = vi.spyOn(globalThis, 'fetch')
+      fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse({ text: '秘密の発話', translatedText: 'secret translation', backTranslation: '(秘密の逆翻訳)' })))
+      fetchMock.mockResolvedValueOnce(makeErrorResponse(502, { error: 'translation failed: 秘密の原文', code: 'upstream_error' }))
+      fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+
+      mockRecorder = undefined
+      setupMediaRecorderMock()
+      setupGetUserMediaMock()
+      renderPage([ja, en])
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
+      })
+      act(() => { recognition.onresult?.({ results: [[{ transcript: '秘密の発話' }]] }) })
+      act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
+      })
+      await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument())
+      await editAndRetranslate('秘密の原文')
+      await waitFor(() => expect(alertText()).toBe(jaEn('generic_error')))
+      await editAndRetranslate('秘密の原文その2')
+      await waitFor(() => expect(warn).toHaveBeenCalledTimes(2))
+
+      expect(warn.mock.calls).toEqual([
+        ['[GoTalk] API error', { endpoint: '/api/translate', status: 502, reason: 'upstream_error' }],
+        ['[GoTalk] API error', { endpoint: '/api/translate', status: null, reason: 'TypeError' }],
+      ])
+      const logged = JSON.stringify(warn.mock.calls)
+      for (const secret of ['秘密', 'secret', 'translation failed', 'Failed to fetch']) {
+        expect(logged).not.toContain(secret)
+      }
+    })
+
+    it('logs the frontend timeout', async () => {
+      const warn = vi.mocked(console.warn)
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      vi.spyOn(globalThis, 'fetch').mockImplementation((_url, options) => pendingUntilAborted(options))
+      await renderAndInterpret()
+      await act(async () => { vi.advanceTimersByTime(65_000) })
+      await waitFor(() => expect(alertText()).toBe(jaEn('request_timeout')))
+      expect(warn).toHaveBeenCalledWith('[GoTalk] API error', { endpoint: '/api/interpret', status: null, reason: 'frontend_timeout' })
+    })
+
+    it('logs a code from /api/tts that does not match the format as invalid', async () => {
+      const warn = vi.mocked(console.warn)
+      setupAudioMock()
+      const fetchMock = vi.spyOn(globalThis, 'fetch')
+      fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+      fetchMock.mockResolvedValueOnce(makeErrorResponse(502, { error: 'x', code: 'Proxy Error: 秘密' }))
+      await renderAndInterpret()
+      await clickSpeak()
+      await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled())
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(warn.mock.calls).toEqual([['[GoTalk] API error', { endpoint: '/api/tts', status: 502, reason: 'invalid' }]])
+    })
+
+    it('logs the size check before sending', async () => {
+      const warn = vi.mocked(console.warn)
+      vi.spyOn(globalThis, 'fetch')
+      await interpretWith([ja, en], 1_032_193)
+      await waitFor(() => expect(alertText()).toBe(jaEn('recording_too_long')))
+      expect(warn).toHaveBeenCalledWith('[GoTalk] API error', { endpoint: '/api/interpret', status: null, reason: 'recording_too_large_before_send' })
+    })
+  })
+
+  describe('TTS without a message', () => {
+    it('shows nothing when /api/tts fails with a network error', async () => {
+      setupAudioMock()
+      const fetchMock = vi.spyOn(globalThis, 'fetch')
+      fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+      fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      await renderAndInterpret()
+      await clickSpeak()
+      await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled())
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(vi.mocked(console.warn)).toHaveBeenCalledWith('[GoTalk] API error', { endpoint: '/api/tts', status: null, reason: 'TypeError' })
+    })
+
+    it('shows nothing when /api/tts returns a status without a message (502)', async () => {
+      setupAudioMock()
+      const fetchMock = vi.spyOn(globalThis, 'fetch')
+      fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+      fetchMock.mockResolvedValueOnce(makeErrorResponse(502, { error: 'tts failed', code: 'upstream_error' }))
+      await renderAndInterpret()
+      await clickSpeak()
+      await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled())
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     })
   })
 })
