@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { API_TIMEOUT_MS, TTS_MAX_CHARS, TTS_TOO_LONG_MESSAGE, apiErrorMessage, isTooLongForTts } from './api'
+import { API_TIMEOUT_MS, INTERPRET_TOO_LONG_MESSAGE, MAX_INTERPRET_AUDIO_BYTES, TTS_MAX_CHARS, TTS_TOO_LONG_MESSAGE, apiErrorMessage, isTooLongForTts } from './api'
 
 function res(body: unknown, json = true): Response {
   return {
@@ -55,5 +55,12 @@ describe('isTooLongForTts', () => {
 
   it('uses the limit in the message', () => {
     expect(TTS_TOO_LONG_MESSAGE).toBe('この翻訳は長いため、読み上げできません（500文字まで）')
+  })
+})
+
+describe('MAX_INTERPRET_AUDIO_BYTES', () => {
+  it('is the nginx limit (1 MiB) minus a 16 KiB margin for the other multipart fields', () => {
+    expect(MAX_INTERPRET_AUDIO_BYTES).toBe(1_032_192)
+    expect(INTERPRET_TOO_LONG_MESSAGE).toBe('録音が長すぎます。短く区切って話してください。')
   })
 })

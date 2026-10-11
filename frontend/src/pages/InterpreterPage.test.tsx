@@ -1005,8 +1005,11 @@ describe('InterpreterPage error codes', () => {
 
   for (const [code, message] of cases) {
     it(`shows the message for ${code} from /api/interpret`, async () => {
+      // /api/interpret の 413 は録音用の文言になる（interpret 413 のテストを参照）ので、input_too_large は
+      // 400（transcript が長すぎる場合）で確かめる
+      const status = code === 'input_too_large' ? 400 : statusFor[code]
       vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-        makeErrorResponse(statusFor[code], { error: 'upstream busy', code }),
+        makeErrorResponse(status, { error: 'upstream busy', code }),
       )
       await renderAndInterpret()
       await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(message))
@@ -1135,5 +1138,141 @@ describe('InterpreterPage TTS length limit', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument())
     await editAndRetranslate('Good evening')
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('入力が長すぎます。短くしてもう一度お試しください'))
+  })
+})
+
+describe('InterpreterPage /api/interpret 413 (recording too long)', () => {
+  const TOO_LONG = '録音が長すぎます。短く区切って話してください。'
+  const LIMIT = 1_032_192
+
+  // nginx の client_max_body_size を超えたときの応答（本文は HTML で、JSON として読めない）
+  function makeNginx413Response(): Response {
+    return {
+      ok: false,
+      status: 413,
+      headers: new Headers({ 'Content-Type': 'text/html' }),
+      json: () => Promise.reject(new SyntaxError('Unexpected token < in JSON')),
+      text: () => Promise.resolve('<html><head><title>413 Request Entity Too Large</title></head><body><center><h1>413 Request Entity Too Large</h1></center><hr><center>nginx</center></body></html>'),
+    } as unknown as Response
+  }
+
+  // size バイトの録音で国旗をタップして録音し、止めて /api/interpret を呼ぶ
+  async function renderAndInterpretWithSize(size: number) {
+    mockRecorder = undefined
+    setupMediaRecorderMock()
+    setupGetUserMediaMock()
+    renderPage([ja, en])
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
+    })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([new Uint8Array(size)]) }) })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
+    })
+  }
+
+  // エラーを表示した後の画面の状態
+  function screenState() {
+    return {
+      alert: screen.queryByRole('alert')?.textContent ?? null,
+      leftFlagEnabled: !(screen.getByRole('button', { name: 'Japaneseで話す' }) as HTMLButtonElement).disabled,
+      rightFlagEnabled: !(screen.getByRole('button', { name: 'Englishで話す' }) as HTMLButtonElement).disabled,
+      recording: screen.queryByRole('button', { name: 'Japaneseの録音を停止' }) !== null,
+      speakButton: screen.queryByRole('button', { name: '発声する' }) !== null,
+      translationCard: document.querySelector('.translation-card') !== null,
+      processing: document.querySelector('.translation-card__text--processing') !== null,
+      history: document.querySelectorAll('.history-item').length,
+    }
+  }
+
+  it('shows the recording message when nginx returns an HTML 413', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeNginx413Response())
+    await renderAndInterpret()
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(TOO_LONG))
+  })
+
+  it('shows the recording message when the backend returns a JSON 413 input_too_large', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeErrorResponse(413, { error: 'request body too large', code: 'input_too_large' }),
+    )
+    await renderAndInterpret()
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(TOO_LONG))
+  })
+
+  it('keeps the existing message for other errors (502 upstream_error)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeErrorResponse(502, { error: 'translation failed', code: 'upstream_error' }),
+    )
+    await renderAndInterpret()
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('HTTP 502'))
+  })
+
+  it('sends a recording of exactly the limit (1,032,192 bytes)', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+    await renderAndInterpretWithSize(LIMIT)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    const [url, options] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/interpret')
+    expect(((options as RequestInit).body as FormData).get('audio')).toHaveProperty('size', LIMIT)
+    expect(screen.queryByText(TOO_LONG)).not.toBeInTheDocument()
+  })
+
+  it('does not send a recording one byte over the limit and shows the recording message', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    await renderAndInterpretWithSize(LIMIT + 1)
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(TOO_LONG))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps the existing message for a 413 from /api/translate', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+    fetchMock.mockResolvedValueOnce(makeErrorResponse(413, { error: 'request body too large', code: 'input_too_large' }))
+    await renderAndInterpret()
+    await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument())
+    await editAndRetranslate('Good evening')
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('入力が長すぎます。短くしてもう一度お試しください'))
+  })
+
+  it('keeps the TTS message for a 413 input_too_large from /api/tts', async () => {
+    setupAudioMock()
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+    fetchMock.mockResolvedValueOnce(makeErrorResponse(413, { error: 'request body too large', code: 'input_too_large' }))
+    await renderAndInterpret()
+    await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument())
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '発声する' }))
+    })
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('この翻訳は長いため、読み上げできません（500文字まで）'))
+  })
+
+  it('leaves the screen in the same state as other /api/interpret errors', async () => {
+    // 比べる基準：502 のとき
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeErrorResponse(502, { error: 'x', code: 'upstream_error' }))
+    await renderAndInterpret()
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    const base = { ...screenState(), alert: null }
+    cleanup()
+    vi.restoreAllMocks()
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeNginx413Response())
+    await renderAndInterpret()
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(TOO_LONG))
+    expect({ ...screenState(), alert: null }).toEqual(base)
+    cleanup()
+    vi.restoreAllMocks()
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    await renderAndInterpretWithSize(LIMIT + 1)
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(TOO_LONG))
+    expect({ ...screenState(), alert: null }).toEqual(base)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    // 基準の状態：録音していない、両方の国旗が押せる、読み上げボタンがない、翻訳カードがあり処理中でない、履歴がない
+    expect(base).toEqual({
+      alert: null, leftFlagEnabled: true, rightFlagEnabled: true, recording: false,
+      speakButton: false, translationCard: true, processing: false, history: 0,
+    })
   })
 })
