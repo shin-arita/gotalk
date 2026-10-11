@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest'
-import { API_TIMEOUT_MS, INTERPRET_TOO_LONG_MESSAGE, MAX_INTERPRET_AUDIO_BYTES, TTS_MAX_CHARS, TTS_TOO_LONG_MESSAGE, apiErrorMessage, isTooLongForTts } from './api'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { API_TIMEOUT_MS, ApiError, MAX_INTERPRET_AUDIO_BYTES, TTS_MAX_CHARS, apiErrorFromResponse, isTooLongForTts, messageKeyForError } from './api'
 
-function res(body: unknown, json = true): Response {
+function res(body: unknown, json = true, status = 500): Response {
   return {
+    status,
     json: () => (json ? Promise.resolve(body) : Promise.reject(new SyntaxError('not json'))),
   } as unknown as Response
 }
@@ -15,18 +16,48 @@ describe('API_TIMEOUT_MS', () => {
   })
 })
 
-describe('apiErrorMessage', () => {
-  it('returns the message for a known code', async () => {
-    expect(await apiErrorMessage(res({ error: 'x', code: 'upstream_busy' }))).toBe('混み合っています。しばらくしてからお試しください')
+describe('apiErrorFromResponse', () => {
+  it('uses the message key for a known code and keeps the status and code for the log', async () => {
+    const e = await apiErrorFromResponse('/api/translate', res({ error: 'x', code: 'upstream_busy' }, true, 503))
+    expect(e).toBeInstanceOf(ApiError)
+    expect(e.messageKey).toBe('upstream_busy')
+    expect(e.endpoint).toBe('/api/translate')
+    expect(e.status).toBe(503)
+    expect(e.reason).toBe('upstream_busy')
   })
 
-  it('returns null for unknown codes, a missing code, and non-JSON bodies', async () => {
-    expect(await apiErrorMessage(res({ error: 'x', code: 'insufficient_quota' }))).toBeNull()
-    expect(await apiErrorMessage(res({ error: 'x' }))).toBeNull()
-    expect(await apiErrorMessage(res({ error: 'x', code: 'toString' }))).toBeNull()
-    expect(await apiErrorMessage(res(null))).toBeNull()
-    expect(await apiErrorMessage(res('text'))).toBeNull()
-    expect(await apiErrorMessage(res(undefined, false))).toBeNull()
+  it('uses the generic error for unknown codes, a missing code, and non-JSON bodies', async () => {
+    for (const body of [{ error: 'x', code: 'insufficient_quota' }, { error: 'x' }, { error: 'x', code: 'toString' }, null, 'text']) {
+      expect((await apiErrorFromResponse('/api/interpret', res(body))).messageKey).toBe('generic_error')
+    }
+    expect((await apiErrorFromResponse('/api/interpret', res(undefined, false))).messageKey).toBe('generic_error')
+  })
+})
+
+describe('messageKeyForError', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns the key of an ApiError, request_timeout for an abort, and generic_error for other errors', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(messageKeyForError('/api/interpret', new ApiError('recording_too_long', '/api/interpret', 413, null))).toBe('recording_too_long')
+    expect(messageKeyForError('/api/tts', new ApiError(null, '/api/tts', 502, 'upstream_error'))).toBe('generic_error')
+    expect(messageKeyForError('/api/interpret', new DOMException('Aborted', 'AbortError'))).toBe('request_timeout')
+    expect(messageKeyForError('/api/interpret', new TypeError('Failed to fetch'))).toBe('generic_error')
+    expect(messageKeyForError('/api/interpret', 'oops')).toBe('generic_error')
+  })
+
+  it('logs the endpoint, status, and kind of error, but not e.message', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    messageKeyForError('/api/translate', new ApiError('generic_error', '/api/translate', 502, 'upstream_error'))
+    messageKeyForError('/api/interpret', new DOMException('Aborted', 'AbortError'))
+    messageKeyForError('/api/interpret', new SyntaxError('Unexpected token in JSON: secret translation'))
+    expect(warn.mock.calls).toEqual([
+      ['[GoTalk] API error', { endpoint: '/api/translate', status: 502, reason: 'upstream_error' }],
+      ['[GoTalk] API error', { endpoint: '/api/interpret', status: null, reason: 'frontend_timeout' }],
+      ['[GoTalk] API error', { endpoint: '/api/interpret', status: null, reason: 'SyntaxError' }],
+    ])
   })
 })
 
@@ -52,15 +83,10 @@ describe('isTooLongForTts', () => {
     expect(isTooLongForTts('\ud800' + 'a'.repeat(499))).toBe(false)
     expect(isTooLongForTts('\ud800' + 'a'.repeat(500))).toBe(true)
   })
-
-  it('uses the limit in the message', () => {
-    expect(TTS_TOO_LONG_MESSAGE).toBe('この翻訳は長いため、読み上げできません（500文字まで）')
-  })
 })
 
 describe('MAX_INTERPRET_AUDIO_BYTES', () => {
   it('is the nginx limit (1 MiB) minus a 16 KiB margin for the other multipart fields', () => {
     expect(MAX_INTERPRET_AUDIO_BYTES).toBe(1_032_192)
-    expect(INTERPRET_TOO_LONG_MESSAGE).toBe('録音が長すぎます。短く区切って話してください。')
   })
 })
