@@ -40,6 +40,11 @@ interface Recognition {
   onstart: (() => void) | null
   onaudiostart: (() => void) | null
   onaudioend: (() => void) | null
+  onsoundstart: (() => void) | null
+  onsoundend: (() => void) | null
+  onspeechstart: (() => void) | null
+  onspeechend: (() => void) | null
+  onnomatch: (() => void) | null
   onend: (() => void) | null
   onerror: ((event: { error?: string }) => void) | null
   onresult: ((event: RecognitionResultEvent) => void) | null
@@ -81,7 +86,7 @@ export default function MicTestPage() {
   const streamOwnerRef = useRef<TestId | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recognitionRef = useRef<Recognition | null>(null)
-  // テストごとの開始の回数（track の ended がどの開始の後に起きたかをログに出すため）
+  // テストごとの開始の回数（track の ended、mute、unmute がどの開始の後に起きたかをログに出すため）
   const startCountsRef = useRef<Record<TestId, number>>({ S1: 0, S2: 0, S3: 0, S4: 0, S5: 0, S7: 0 })
   // すべて閉じるたびに増やし、閉じる前に始めた getUserMedia の結果を捨てるのに使う
   const generationRef = useRef(0)
@@ -105,7 +110,7 @@ export default function MicTestPage() {
       return
     }
     stream.getTracks().forEach((t, i) => {
-      addLog(`track[${i}] readyState=${t.readyState} enabled=${t.enabled}（${when}）`)
+      addLog(`track[${i}] readyState=${t.readyState} enabled=${t.enabled} muted=${t.muted}（${when}）`)
     })
   }
 
@@ -126,8 +131,11 @@ export default function MicTestPage() {
       }
       addLog(`getUserMedia 成功（${test}）`)
       stream.getTracks().forEach((t, i) => {
-        t.addEventListener('ended', () =>
-          addLog(`track[${i}] ended（${test} ${startCountsRef.current[test]}回目の開始の後）`))
+        // mute は、track が live のままでも音が届いていないときに起きる
+        for (const type of ['ended', 'mute', 'unmute']) {
+          t.addEventListener(type, () =>
+            addLog(`track[${i}] ${type}（${test} ${startCountsRef.current[test]}回目の開始の後）`))
+        }
       })
       streamRef.current = stream
       streamOwnerRef.current = test
@@ -205,6 +213,12 @@ export default function MicTestPage() {
     recognition.onstart = () => addLog('音声認識 onstart')
     recognition.onaudiostart = () => addLog('音声認識 onaudiostart')
     recognition.onaudioend = () => addLog('音声認識 onaudioend')
+    // 音声認識が音や声を受け取ったかを確かめるため
+    recognition.onsoundstart = () => addLog('音声認識 onsoundstart')
+    recognition.onsoundend = () => addLog('音声認識 onsoundend')
+    recognition.onspeechstart = () => addLog('音声認識 onspeechstart')
+    recognition.onspeechend = () => addLog('音声認識 onspeechend')
+    recognition.onnomatch = () => addLog('音声認識 onnomatch')
     recognition.onend = () => addLog('音声認識 onend')
     recognition.onerror = e => addLog(`音声認識 onerror error=${e.error ?? 'unknown'}`)
     recognition.onresult = e => {

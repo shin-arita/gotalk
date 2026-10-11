@@ -11,6 +11,7 @@ const DESCRIPTION =
 interface MockTrack {
   enabled: boolean
   readyState: string
+  muted: boolean
   stop: ReturnType<typeof vi.fn>
   addEventListener: ReturnType<typeof vi.fn>
   listeners: Record<string, (() => void)[]>
@@ -22,6 +23,7 @@ function makeTrack(): MockTrack {
   const track: MockTrack = {
     enabled: true,
     readyState: 'live',
+    muted: false,
     // 実際のブラウザと同じく、stop() では ended のイベントを出さない
     stop: vi.fn(() => { track.readyState = 'ended' }),
     addEventListener: vi.fn((type: string, fn: () => void) => {
@@ -31,6 +33,12 @@ function makeTrack(): MockTrack {
   }
   tracks.push(track)
   return track
+}
+
+// track に音が届かなくなったとき（mute）と、届くようになったとき（unmute）の動き
+function setTrackMuted(track: MockTrack, muted: boolean) {
+  track.muted = muted
+  track.listeners[muted ? 'mute' : 'unmute']?.forEach(fn => fn())
 }
 
 // ブラウザや OS が track を終わらせたときの動き
@@ -122,6 +130,11 @@ interface MockRecognition {
   continuous: boolean
   interimResults: boolean
   onresult: ((e: unknown) => void) | null
+  onsoundstart: (() => void) | null
+  onsoundend: (() => void) | null
+  onspeechstart: (() => void) | null
+  onspeechend: (() => void) | null
+  onnomatch: (() => void) | null
   start: ReturnType<typeof vi.fn>
   stop: ReturnType<typeof vi.fn>
 }
@@ -135,6 +148,11 @@ function setupRecognitionMock(startThrows = false) {
       continuous: false,
       interimResults: false,
       onresult: null,
+      onsoundstart: null,
+      onsoundend: null,
+      onspeechstart: null,
+      onspeechend: null,
+      onnomatch: null,
       start: vi.fn(() => {
         if (startThrows) throw new DOMException('not allowed', 'NotAllowedError')
       }),
@@ -259,7 +277,7 @@ describe('MicTestPage', () => {
     expect(tracks[1].stop).toHaveBeenCalledTimes(1)
     expect(logText()).toContain('MediaRecorder stop bytes=5')
     // GG5: S6 と同じように、track を閉じたことと、閉じる前の状態がログで分かる
-    expect(logText()).toContain('track[0] readyState=live enabled=true（S1 停止、stop() の前）')
+    expect(logText()).toContain('track[0] readyState=live enabled=true muted=false（S1 停止、stop() の前）')
     expect(logText()).toContain('track を stop()（S1）')
     expect(logText()).toContain('track なし（S1 停止）')
   })
@@ -280,7 +298,7 @@ describe('MicTestPage', () => {
     expect(getUserMedia).toHaveBeenCalledTimes(1)
     expect(recorders).toHaveLength(2)
     expect(tracks[0].stop).not.toHaveBeenCalled()
-    expect(logText()).toContain('track[0] readyState=live enabled=false（S2 停止）')
+    expect(logText()).toContain('track[0] readyState=live enabled=false muted=false（S2 停止）')
   })
 
   it('GG1: track が ended になった後に S2 を始めると、古い track を stop() してマイクを開き直す', async () => {
@@ -318,7 +336,7 @@ describe('MicTestPage', () => {
     await click('S3 開始')
     expect(getUserMedia).toHaveBeenCalledTimes(2)
     expect(tracks[0].stop).toHaveBeenCalledTimes(1)
-    expect(logText()).toContain('track[0] readyState=live enabled=true（S3 開始）')
+    expect(logText()).toContain('track[0] readyState=live enabled=true muted=false（S3 開始）')
   })
 
   it('GG2: S1 で MediaRecorder の作成が例外になると、ログに出し、開いた track を閉じ、未処理の拒否にしない', async () => {
@@ -377,6 +395,39 @@ describe('MicTestPage', () => {
 
     await rejections.settle()
     expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('track の mute と unmute を、テストの番号と開始の回数を入れてログに出す', async () => {
+    setupRecognitionMock()
+    await renderPage()
+
+    await click('S3 開始')
+    await click('S3 停止')
+    await click('S3 開始')
+    act(() => { setTrackMuted(tracks[0], true) })
+    expect(logText()).toContain('track[0] mute（S3 2回目の開始の後）')
+    await click('S3 停止')
+    expect(logText()).toContain('track[0] readyState=live enabled=true muted=true（S3 停止）')
+    act(() => { setTrackMuted(tracks[0], false) })
+    expect(logText()).toContain('track[0] unmute（S3 2回目の開始の後）')
+  })
+
+  it('track の状態のログに muted を出す', async () => {
+    await renderPage()
+    await click('S2 開始')
+    expect(logText()).toContain('track[0] readyState=live enabled=true muted=false（S2 開始）')
+  })
+
+  it('音声認識の onsoundstart、onsoundend、onspeechstart、onspeechend、onnomatch をログに出す', async () => {
+    setupRecognitionMock()
+    await renderPage()
+    await click('S4 開始')
+
+    const events = ['onsoundstart', 'onspeechstart', 'onspeechend', 'onsoundend', 'onnomatch'] as const
+    act(() => { events.forEach(name => recognitions[0][name]?.()) })
+    for (const name of events) {
+      expect(logText()).toContain(`音声認識 ${name}`)
+    }
   })
 
   it('GG3: S3: getUserMedia は最初の1回だけで、enabled は true のまま、録音せず、停止で track を閉じない', async () => {
