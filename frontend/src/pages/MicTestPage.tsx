@@ -60,6 +60,17 @@ function getRecognitionCtor(): RecognitionCtor | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null
 }
 
+// 再生ごとの状態。「再生を止めた」を、止めたタイミングにかかわらず1回だけ出すために使う
+interface Playback {
+  label: string
+  // play() の Promise が解決または拒否された
+  settled: boolean
+  // 再生が終わったか、本当に失敗して、止めるものがない
+  finished: boolean
+  // stopAudio で止めた理由
+  stopReason: string | null
+}
+
 // 直前の録音。Blob は object URL を通してメモリにだけ持つ
 interface LastRecording {
   test: TestId
@@ -105,8 +116,8 @@ export default function MicTestPage() {
   const [lastRecording, setLastRecording] = useState<LastRecording | null>(null)
   const lastRecordingRef = useRef<LastRecording | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  // 止めた Audio と止めた理由。play() が止めたことで拒否されたときに、再生の失敗と出し分けるため
-  const stoppedAudiosRef = useRef(new WeakMap<HTMLAudioElement, string>())
+  // Audio ごとの再生の状態
+  const playbacksRef = useRef(new WeakMap<HTMLAudioElement, Playback>())
   // 録音を始めるときと、録音を捨てるたびに増やす。止めた後に遅れて来る onstop のうち、
   // 古い録音のものや、捨てた後のものを持たないために使う
   const recordingTokenRef = useRef(0)
@@ -191,12 +202,22 @@ export default function MicTestPage() {
     streamOwnerRef.current = null
   }
 
+  const logPlaybackStopped = (playback: Playback, name?: string) => {
+    addLog(`再生を止めた（${playback.stopReason}）（${playback.label}）${name ? `name=${name}` : ''}`)
+    logTracks('再生を止めた')
+  }
+
+  // 再生を止める。「再生を止めた」は、play() の Promise が決まった後ならここで出し、
+  // 決まる前なら、決まったときに handlePlay の側で出す（どちらか一方だけで1回）
   const stopAudio = (reason: string) => {
     const audio = audioRef.current
     audioRef.current = null
     if (!audio) return
-    stoppedAudiosRef.current.set(audio, reason)
+    const playback = playbacksRef.current.get(audio)
     audio.pause()
+    if (!playback || playback.stopReason !== null) return
+    playback.stopReason = reason
+    if (playback.settled && !playback.finished) logPlaybackStopped(playback)
   }
 
   // 直前の録音を捨てる。再生中なら止め、object URL を解放する
@@ -468,23 +489,34 @@ export default function MicTestPage() {
     logTracks('再生の前')
     const audio = new Audio(recording.url)
     audioRef.current = audio
+    const playback: Playback = { label, settled: false, finished: false, stopReason: null }
+    playbacksRef.current.set(audio, playback)
     audio.onplaying = () => addLog(`再生の開始（${label}）`)
     audio.onended = () => {
+      playback.finished = true
       addLog(`再生の終わり（${label}）`)
       logTracks('再生の終わり')
     }
+    const succeed = () => {
+      if (playback.settled) return
+      playback.settled = true
+      // 開始を待っている間に止めたが、拒否されずに解決した場合
+      if (playback.stopReason !== null) logPlaybackStopped(playback)
+    }
     const fail = (e: unknown) => {
+      if (playback.settled) return
+      playback.settled = true
       // 開始を待っている間に止めた場合は、ブラウザによっては AbortError で拒否される。本当の失敗と出し分ける
-      const stoppedReason = stoppedAudiosRef.current.get(audio)
-      if (audioRef.current !== audio && stoppedReason) {
-        addLog(`再生を止めた（${stoppedReason}）（${label}）name=${errorName(e)}`)
+      if (playback.stopReason !== null) {
+        logPlaybackStopped(playback, errorName(e))
         return
       }
+      playback.finished = true
       addLog(`再生の失敗 name=${errorName(e)}（${label}）`)
       logTracks('再生の失敗')
     }
     try {
-      void Promise.resolve(audio.play()).catch(fail)
+      void Promise.resolve(audio.play()).then(succeed, fail)
     } catch (e) {
       fail(e)
     }
