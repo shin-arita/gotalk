@@ -1010,4 +1010,50 @@ describe('MicTestPage', () => {
     await click('S3 停止')
     expect(playButton()).toBeEnabled()
   })
+
+  it('HH3: GG1 で開き直した track の mute を、テストの番号と正しい開始の回数でログに出す', async () => {
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    act(() => { endTrack(tracks[0]) })
+    await click('S2 開始')
+    expect(tracks).toHaveLength(2)
+
+    act(() => { setTrackMuted(tracks[1], true) })
+    expect(logText()).toContain('track[0] mute（S2 2回目の開始の後）')
+    await click('S2 停止')
+    await click('S2 開始')
+    act(() => { setTrackMuted(tracks[1], false) })
+    expect(logText()).toContain('track[0] unmute（S2 3回目の開始の後）')
+  })
+
+  it('HH3: S6 の後に開き直した track でも、mute と unmute をログに出す', async () => {
+    await renderPage()
+    await click('S7 開始')
+    await click('S6 すべて閉じる')
+    await click('S7 開始')
+    expect(tracks).toHaveLength(2)
+
+    act(() => { setTrackMuted(tracks[1], true) })
+    expect(logText()).toContain('track[0] mute（S7 2回目の開始の後）')
+    act(() => { setTrackMuted(tracks[1], false) })
+    expect(logText()).toContain('track[0] unmute（S7 2回目の開始の後）')
+  })
+
+  it('HH3: 2回目の開始で作った音声認識の onsoundstart と onspeechstart をログに出す', async () => {
+    setupRecognitionMock()
+    await renderPage()
+    await click('S3 開始')
+    await click('S3 停止')
+    await click('S3 開始')
+    expect(recognitions).toHaveLength(2)
+    expect(logText()).not.toContain('onsoundstart')
+
+    act(() => {
+      recognitions[1].onsoundstart?.()
+      recognitions[1].onspeechstart?.()
+    })
+    expect(logText()).toContain('音声認識 onsoundstart')
+    expect(logText()).toContain('音声認識 onspeechstart')
+  })
 })
