@@ -78,7 +78,8 @@ func TestSupportedLanguagesMatchFrontend(t *testing.T) {
 }
 
 // arrayLiteral finds the array literal assigned to name in TypeScript source src
-// ("name ... = [ ... ]") and returns its body (the text between the brackets) and the number of its
+// ("name ... = [ ... ]") and returns its body (the text between the brackets, with every comment
+// replaced by spaces except its newlines, so that lines keep their positions) and the number of its
 // top-level elements. The array is split at the commas whose
 // bracket depth ({}, [], ()) is that of the array itself; commas and brackets inside strings ('...',
 // "...", `...`) and comments (// and /* */) are ignored. A trailing comma after the last element
@@ -92,6 +93,14 @@ func arrayLiteral(src, name string) (body string, count int, err error) {
 		return "", 0, fmt.Errorf("array %s not found", name)
 	}
 	closing := map[byte]byte{'{': '}', '[': ']', '(': ')'}
+	clean := []byte(src) // src with the comments inside the array blanked out
+	blank := func(from, to int) {
+		for k := from; k < to; k++ {
+			if clean[k] != '\n' {
+				clean[k] = ' '
+			}
+		}
+	}
 	var stack []byte    // open brackets inside the array
 	hasContent := false // the current element has a token
 	for i := start[1]; i < len(src); i++ {
@@ -102,12 +111,14 @@ func arrayLiteral(src, name string) (body string, count int, err error) {
 			if end < 0 {
 				return "", 0, fmt.Errorf("array %s is not closed", name)
 			}
+			blank(i, i+end)
 			i += end
 		case c == '/' && i+1 < len(src) && src[i+1] == '*':
 			end := strings.Index(src[i+2:], "*/")
 			if end < 0 {
 				return "", 0, fmt.Errorf("unterminated comment in array %s", name)
 			}
+			blank(i, i+2+end+2)
 			i += 2 + end + 1
 		case c == '\'' || c == '"' || c == '`':
 			j := i + 1
@@ -134,7 +145,7 @@ func arrayLiteral(src, name string) (body string, count int, err error) {
 				if hasContent {
 					count++
 				}
-				return src[start[1]:i], count, nil
+				return string(clean[start[1]:i]), count, nil
 			}
 			if stack[len(stack)-1] != c {
 				return "", 0, fmt.Errorf("unexpected %q in array %s", c, name)
@@ -173,6 +184,24 @@ func TestArrayLiteral(t *testing.T) {
 		{"unterminated string", "const L = [ 'abc ]\n", 0, true},
 		{"unterminated comment", `const L = [ /* , ]`, 0, true},
 	}
+	t.Run("comments are blanked out of the body, keeping the newlines", func(t *testing.T) {
+		src := "const L = [\n  // { id: 'x' },\n  1, /* a\n  { id: 'y' } */ 2,\n]"
+		body, n, err := arrayLiteral(src, "L")
+		want := "\n" + strings.Repeat(" ", 2+len("// { id: 'x' },")) + "\n  1, " + strings.Repeat(" ", len("/* a")) +
+			"\n" + strings.Repeat(" ", len("  { id: 'y' } */")) + " 2,\n"
+		if err != nil || n != 2 || body != want {
+			t.Fatalf("body=%q n=%d err=%v\nwant %q", body, n, err, want)
+		}
+		if strings.Count(body, "\n") != strings.Count(src[strings.Index(src, "[")+1:strings.LastIndex(src, "]")], "\n") {
+			t.Fatal("the newlines must be kept")
+		}
+	})
+	t.Run("comment markers inside strings are kept", func(t *testing.T) {
+		body, n, err := arrayLiteral(`const L = [ { url: 'https://example.com' }, { s: 'a /* b' }, { s: "c // d" } ]`, "L")
+		if err != nil || n != 3 || body != ` { url: 'https://example.com' }, { s: 'a /* b' }, { s: "c // d" } ` {
+			t.Fatalf("body=%q n=%d err=%v", body, n, err)
+		}
+	})
 	t.Run("body is the text between the brackets", func(t *testing.T) {
 		body, _, err := arrayLiteral("const FR = { a: 1 }\nconst L = [ { ...FR }, 2 ]\nconst M = [3]", "L")
 		if err != nil || body != " { ...FR }, 2 " {
