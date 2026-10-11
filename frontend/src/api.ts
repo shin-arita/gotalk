@@ -46,7 +46,7 @@ export const INTERPRET_TOO_LONG_MESSAGE = '録音が長すぎます。短く区�
 // （既定の 1m = 1,048,576 バイト）から、multipart のほかのフィールドの分の余白として 16 KiB（16,384 バイト）を引いた値。
 // 明らかに大きい録音の無駄な送信を避けるための、使い勝手のための事前の確認で、nginx の 413 を完全に予測するものでは
 // ない（multipart の boundary や各 part の header、ほかのフィールドも body に含まれるため）。費用やセキュリティの
-// 境界ではない（境界は Backend と nginx の上限）。Stage 2 で nginx の上限を Backend と合わせるときに見直すこと
+// 境界ではない（境界は Backend と nginx の上限）。第2段階で nginx の上限を Backend と合わせるときに見直すこと
 export const MAX_INTERPRET_AUDIO_BYTES = 1_048_576 - 16_384
 
 // /api/tts が受け付ける最大の文字数。Backend の上限（backend/limits.go の maxTextRunes）と

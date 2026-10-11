@@ -54,7 +54,7 @@ Backend は CORS のヘッダ（`Access-Control-Allow-*`）を付けません。
 
 `/api/interpret` は、フィールドの値を multipart の body からだけ読みます（`r.PostFormValue`）。URL の query の値（例：`/api/interpret?transcript=...`）は使いません。そのため、上限を確かめた値だけが使われます。
 
-Stage 1 では、本番の nginx の `client_max_body_size`（既定の 1m）が Backend の上限（body 全体 1.5 MiB）より先に効き、HTML の 413 を返します。費用の防御としては安全側ですが、Backend の構造化されたエラー（JSON の `code`）が返らないため、利用者への表示に問題があることが、本番の確認で分かりました。Frontend は `/api/interpret` の 413 を、本文の形式にかかわらず「録音が長すぎます。短く区切って話してください。」として表示します。また、送る前に録音の Blob のサイズを確かめ、1,032,192 バイト（nginx の 1 MiB から、ほかのフィールドの分の余白として 16 KiB を引いた値。`frontend/src/api.ts` の `MAX_INTERPRET_AUDIO_BYTES`）を超える場合は送らずに同じ文言を表示します。この確認は使い勝手のための事前の確認で、nginx の 413 を完全に予測するものではありません（multipart の boundary や各 part の header、ほかのフィールドも body に含まれるため）。費用やセキュリティの境界でもありません。nginx の上限は Stage 2 で Backend の上限と合わせます。
+第1段階では、本番の nginx の `client_max_body_size`（既定の 1m）が Backend の上限（body 全体 1.5 MiB）より先に効き、HTML の 413 を返します。費用の防御としては安全側ですが、Backend の構造化されたエラー（JSON の `code`）が返らないため、利用者への表示に問題があることが、本番の確認で分かりました。Frontend は `/api/interpret` の 413 を、本文の形式にかかわらず「録音が長すぎます。短く区切って話してください。」として表示します。また、送る前に録音の Blob のサイズを確かめ、1,032,192 バイト（nginx の 1 MiB から、ほかのフィールドの分の余白として 16 KiB を引いた値。`frontend/src/api.ts` の `MAX_INTERPRET_AUDIO_BYTES`）を超える場合は送らずに同じ文言を表示します。この確認は使い勝手のための事前の確認で、nginx の 413 を完全に予測するものではありません（multipart の boundary や各 part の header、ほかのフィールドも body に含まれるため）。費用やセキュリティの境界でもありません。nginx の上限は第2段階で Backend の上限と合わせます。
 
 JSON の request body は、表にないフィールド（例：`/api/tts` の `speed` や `instructions`）があるとき、または 1つ目の JSON の値の後ろに別の値があるときに、400 `invalid_request` になります。`/api/interpret` の `myLanguage` と `theirLanguage` の JSON も同じです。
 
