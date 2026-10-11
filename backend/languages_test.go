@@ -32,15 +32,17 @@ func TestSupportedLanguagesMatchFrontend(t *testing.T) {
 		t.Fatal("no languages found in frontend/src/languages.ts; update the pattern in this test")
 	}
 
-	// Count the language entries independently of the pattern above: every "id:" with a string
-	// value (the interface's "id: string" has no quote). An entry written differently (other quotes,
-	// split over lines, fields in another order) is counted here but not matched above, so the test
-	// fails instead of silently skipping it.
-	idRe := regexp.MustCompile("\\bid\\s*:\\s*['\"`]")
+	// Count the language entries independently of the pattern above: every "id" key, bare or quoted
+	// with ", ' or ` ("id":, 'id':, `id`:), whatever its value, except the interface's type
+	// annotation "id: string". An entry written differently (other quotes on the key or the value,
+	// split over lines, fields in another order, a value that is not a string literal) is counted
+	// here but not matched above, so the test fails instead of silently skipping it.
+	idRe := regexp.MustCompile("\\bid['\"`]?\\s*:")
+	idTypeRe := regexp.MustCompile(`^\s*id\s*:\s*string\s*;?\s*$`)
 	var unmatched []string
 	idCount := 0
 	for i, line := range strings.Split(string(src), "\n") {
-		if !idRe.MatchString(line) {
+		if !idRe.MatchString(line) || idTypeRe.MatchString(line) {
 			continue
 		}
 		idCount++
