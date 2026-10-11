@@ -99,7 +99,9 @@ JSON error response は次の形式です。`error` は人が読む文、`code` 
 | `timeout` | 504 | Backend 自身の処理の deadline に達した |
 | `internal_error` | 500 | `OPENAI_API_KEY` が未設定など、Backend の内部の問題 |
 
-- Backend は OpenAI の 429 を自動では再試行しません。支出上限やクレジットの枯渇は再試行しても回復しないためです
+- OpenAI の 429 は、次の2つを分けて扱います（[rate-limit-design.md](rate-limit-design.md) の 5.7）
+  - 支出上限やクレジットの枯渇：再試行しても回復しません。503 `service_unavailable` を返します
+  - 一時的な rate limit：時間をおけば（OpenAI の `Retry-After` の後なら）再試行できます。ただし Backend の中では再試行せず、503 `upstream_busy` として返し、再実行は利用者の操作に任せます
 - 応答には、金額や OpenAI の内部のエラーコードを含めません
 - Frontend は `error` が `language_mismatch` かどうかで言語不明の表示をし、それ以外は `code` で表示を決めます（[9. Frontend からの利用](#9-frontend-からの利用)）
 
