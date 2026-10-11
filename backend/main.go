@@ -234,14 +234,20 @@ func callOpenAI(ctx context.Context, apiKey, model, prompt string) (string, erro
 		return "", fmt.Errorf("decode OpenAI response: %s", jsonErrSummary(err))
 	}
 
-	// A missing status is accepted; any status other than "completed" is a failure.
-	if result.Status != "" && result.Status != "completed" {
+	// Only "completed" proves that the generation finished. Any other status, including a missing,
+	// null, or empty one, is a failure (fail closed), so that a partial or malformed output is never
+	// used. The log shows the status as "missing" when there is none, and "invalid" when it is not a
+	// safe token; the response body and the output text are never logged.
+	if result.Status != "completed" {
 		reason := "none"
 		if result.IncompleteDetails != nil {
 			reason = openAIErrorToken(result.IncompleteDetails.Reason)
 		}
 		status := "invalid"
-		if openAIErrorTokenRe.MatchString(result.Status) {
+		switch {
+		case result.Status == "":
+			status = "missing"
+		case openAIErrorTokenRe.MatchString(result.Status):
 			status = result.Status
 		}
 		return "", fmt.Errorf("%w (status=%s reason=%s)", errResponseIncomplete, status, reason)

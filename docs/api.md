@@ -514,7 +514,7 @@ Backend は OpenAI API を 3 系統で使います。
 
 Audio Transcriptions API 呼び出し（`callWhisper`）では、multipart form で `file`、`model`、`response_format` を送り、指定がある場合は `language` と `prompt` も送ります。`response_format` はモデル名が `whisper-1` のときだけ `verbose_json`、それ以外は `json` です。成功時は response の `text` と `language` を使います。HTTP 200 以外、JSON decode 失敗、HTTP client の失敗は呼び出し失敗として扱います。
 
-Responses API 呼び出しでは、request body に `model`、`input`、`max_output_tokens`（1024）を送ります。成功時は response の `output[0].content[0].text` を使います。HTTP 200 以外、JSON decode 失敗、空 response、`status` が `completed` 以外（`max_output_tokens` で打ち切られた `incomplete` など）は呼び出し失敗として扱います。
+Responses API 呼び出しでは、request body に `model`、`input`、`max_output_tokens`（1024）を送ります。成功時は response の `output[0].content[0].text` を使います。HTTP 200 以外、JSON decode 失敗、空 response、`status` が `completed` 以外（`max_output_tokens` で打ち切られた `incomplete` など）は呼び出し失敗として扱います。成功は `status` が `completed` の場合だけです。応答に `status` がない場合や、空の値や `null` の場合も、出力の文字列があっても失敗として扱います（完了したことが確かめられないため）。ログには、`status` がない場合は `status=missing` と出し、出力の文字列は出しません。
 
 Audio Speech API 呼び出しでは、request body に `model`、`input`、`voice` を送ります。成功時は response body をそのまま `audio/mpeg` として Frontend に返します。HTTP 200 以外または HTTP client の失敗は `tts failed` になります。
 

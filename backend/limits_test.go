@@ -336,6 +336,11 @@ func TestCallOpenAI_IncompleteIsFailure(t *testing.T) {
 		{"content_filter", `{"status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[]}`, "status=incomplete reason=content_filter"},
 		{"failed", `{"status":"failed","output":[]}`, "status=failed reason=none"},
 		{"odd status", `{"status":"SECRET status","output":[]}`, "status=invalid reason=none"},
+		// Only "completed" is a success: a missing, empty, or null status fails too (fail closed),
+		// even when the response carries output text.
+		{"missing status", `{"output":[{"content":[{"type":"output_text","text":"SECRET output"}]}]}`, "status=missing reason=none"},
+		{"empty status", `{"status":"","output":[{"content":[{"type":"output_text","text":"SECRET output"}]}]}`, "status=missing reason=none"},
+		{"null status", `{"status":null,"output":[{"content":[{"type":"output_text","text":"SECRET output"}]}]}`, "status=missing reason=none"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -360,6 +365,31 @@ func TestCallOpenAI_IncompleteIsFailure(t *testing.T) {
 			t.Fatalf("got %q err=%v", got, err)
 		}
 	})
+
+	for name, body := range map[string]string{
+		"missing status": `{"output":[{"content":[{"type":"output_text","text":"SECRETOUTPUT"}]}]}`,
+		"empty status":   `{"status":"","output":[{"content":[{"type":"output_text","text":"SECRETOUTPUT"}]}]}`,
+	} {
+		t.Run("translate returns 502 for a "+name+" and does not use the output", func(t *testing.T) {
+			t.Setenv("OPENAI_API_KEY", "test-key")
+			logs := captureLog(t)
+			calls := 0
+			setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+				calls++
+				return fakeHTTPResponse(http.StatusOK, body), nil
+			})
+			rec := postJSON(translateHandler, "/api/translate", translateBodyLangs("hello", enKo))
+			assertErrorCode(t, rec, http.StatusBadGateway, codeUpstreamError)
+			if calls != 1 {
+				t.Errorf("calls=%d want 1", calls)
+			}
+			if strings.Contains(rec.Body.String(), "SECRETOUTPUT") {
+				t.Errorf("the output must not reach the client: %s", rec.Body.String())
+			}
+			assertLogIncludes(t, logs.String(), "status=missing reason=none")
+			assertLogExcludes(t, logs.String(), "SECRETOUTPUT")
+		})
+	}
 
 	t.Run("translate returns 502 for an incomplete response", func(t *testing.T) {
 		t.Setenv("OPENAI_API_KEY", "test-key")

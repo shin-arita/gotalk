@@ -43,7 +43,7 @@ func jsonString(s string) string {
 }
 
 func openAITextResponse(text string) string {
-	return fmt.Sprintf(`{"output":[{"content":[{"type":"text","text":%s}]}]}`, jsonString(text))
+	return fmt.Sprintf(`{"status":"completed","output":[{"content":[{"type":"text","text":%s}]}]}`, jsonString(text))
 }
 
 func buildInterpretRequestWithTranscript(audioData []byte, myLang, theirLang, speaker, transcript string) (*http.Request, error) {
@@ -697,21 +697,21 @@ func TestCallOpenAI_InvalidJSON(t *testing.T) {
 
 func TestCallOpenAI_EmptyOutput(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
-		return fakeHTTPResponse(http.StatusOK, `{"output":[]}`), nil
+		return fakeHTTPResponse(http.StatusOK, `{"status":"completed","output":[]}`), nil
 	})
 	_, err := callOpenAI(context.Background(), "test-key", "gpt-4o-mini", "hello")
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err == nil || !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("err=%v, want the empty response error", err)
 	}
 }
 
 func TestCallOpenAI_EmptyContent(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
-		return fakeHTTPResponse(http.StatusOK, `{"output":[{"content":[]}]}`), nil
+		return fakeHTTPResponse(http.StatusOK, `{"status":"completed","output":[{"content":[]}]}`), nil
 	})
 	_, err := callOpenAI(context.Background(), "test-key", "gpt-4o-mini", "hello")
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err == nil || !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("err=%v, want the empty response error", err)
 	}
 }
 
