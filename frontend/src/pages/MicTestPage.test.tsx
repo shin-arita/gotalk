@@ -258,6 +258,10 @@ describe('MicTestPage', () => {
     await click('S1 停止')
     expect(tracks[1].stop).toHaveBeenCalledTimes(1)
     expect(logText()).toContain('MediaRecorder stop bytes=5')
+    // GG5: S6 と同じように、track を閉じたことと、閉じる前の状態がログで分かる
+    expect(logText()).toContain('track[0] readyState=live enabled=true（S1 停止、stop() の前）')
+    expect(logText()).toContain('track を stop()（S1）')
+    expect(logText()).toContain('track なし（S1 停止）')
   })
 
   it('S2: getUserMedia は最初の1回だけで、track.enabled を切り替え、track を stop() しない', async () => {

@@ -315,7 +315,9 @@ export default function MicTestPage() {
     switch (test) {
       case 'S1':
         stopRecorder()
+        logTracks('S1 停止、stop() の前')
         stopStream()
+        addLog('track を stop()（S1）')
         break
       case 'S2':
         stopRecorder()
