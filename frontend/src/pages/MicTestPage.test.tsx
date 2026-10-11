@@ -246,6 +246,18 @@ function setupPlayMock(rejects = false) {
   return { play, pause }
 }
 
+// play() の Promise を解決せずに待たせ、pause() で AbortError にして拒否する（Chrome などの動き）
+function setupAbortOnPausePlayMock() {
+  const rejects = new Map<HTMLMediaElement, (e: unknown) => void>()
+  const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(function (this: HTMLMediaElement) {
+    return new Promise<void>((_, reject) => { rejects.set(this, reject) })
+  })
+  const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(function (this: HTMLMediaElement) {
+    rejects.get(this)?.(new DOMException('interrupted by pause', 'AbortError'))
+  })
+  return { play, pause }
+}
+
 function playButton() {
   return screen.getByRole('button', { name: '直前の録音を再生' })
 }
@@ -1055,5 +1067,47 @@ describe('MicTestPage', () => {
     })
     expect(logText()).toContain('音声認識 onsoundstart')
     expect(logText()).toContain('音声認識 onspeechstart')
+  })
+
+  for (const how of ['next', 'S6'] as const) {
+    it(`HH5: 再生の開始を待っている間に${how === 'next' ? '次の録音を始める' : 'S6 を押す'}と、再生の失敗ではなく再生を止めたとログに出す`, async () => {
+      const rejections = watchUnhandledRejections()
+      setupAbortOnPausePlayMock()
+      await renderPage()
+      await click('S2 開始')
+      await click('S2 停止')
+      await click('直前の録音を再生')
+
+      await click(how === 'next' ? 'S2 開始' : 'S6 すべて閉じる')
+      await rejections.settle()
+
+      const text = logText()
+      expect(text).toMatch(/再生を止めた（録音を捨てたため）（S2 1回目の録音、5バイト.*）name=AbortError/)
+      expect(text).not.toContain('再生の失敗')
+      expect(rejections.handler).not.toHaveBeenCalled()
+    })
+  }
+
+  it('HH5: 再生の開始を待っている間にもう一度再生すると、前の再生を止めたとログに出す', async () => {
+    setupAbortOnPausePlayMock()
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+    await click('直前の録音を再生')
+
+    expect(logText()).toMatch(/再生を止めた（もう一度再生したため）（S2 1回目の録音/)
+    expect(logText()).not.toContain('再生の失敗')
+  })
+
+  it('HH5: 捨てていない Audio の本当の失敗は、これまでどおり再生の失敗と出す', async () => {
+    setupPlayMock(true)
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+
+    expect(logText()).toMatch(/再生の失敗 name=NotAllowedError（S2 1回目の録音/)
+    expect(logText()).not.toContain('再生を止めた')
   })
 })

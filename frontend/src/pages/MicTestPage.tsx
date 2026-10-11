@@ -105,6 +105,8 @@ export default function MicTestPage() {
   const [lastRecording, setLastRecording] = useState<LastRecording | null>(null)
   const lastRecordingRef = useRef<LastRecording | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  // 止めた Audio と止めた理由。play() が止めたことで拒否されたときに、再生の失敗と出し分けるため
+  const stoppedAudiosRef = useRef(new WeakMap<HTMLAudioElement, string>())
   // 録音を始めるときと、録音を捨てるたびに増やす。止めた後に遅れて来る onstop のうち、
   // 古い録音のものや、捨てた後のものを持たないために使う
   const recordingTokenRef = useRef(0)
@@ -189,12 +191,18 @@ export default function MicTestPage() {
     streamOwnerRef.current = null
   }
 
+  const stopAudio = (reason: string) => {
+    const audio = audioRef.current
+    audioRef.current = null
+    if (!audio) return
+    stoppedAudiosRef.current.set(audio, reason)
+    audio.pause()
+  }
+
   // 直前の録音を捨てる。再生中なら止め、object URL を解放する
   const discardRecording = (reason: string) => {
     recordingTokenRef.current++
-    const audio = audioRef.current
-    audioRef.current = null
-    audio?.pause()
+    stopAudio('録音を捨てたため')
     const recording = lastRecordingRef.current
     if (!recording) return
     lastRecordingRef.current = null
@@ -455,7 +463,7 @@ export default function MicTestPage() {
   const handlePlay = () => {
     const recording = lastRecordingRef.current
     if (!recording) return
-    audioRef.current?.pause()
+    stopAudio('もう一度再生したため')
     const label = recordingLabel(recording)
     logTracks('再生の前')
     const audio = new Audio(recording.url)
@@ -466,6 +474,12 @@ export default function MicTestPage() {
       logTracks('再生の終わり')
     }
     const fail = (e: unknown) => {
+      // 開始を待っている間に止めた場合は、ブラウザによっては AbortError で拒否される。本当の失敗と出し分ける
+      const stoppedReason = stoppedAudiosRef.current.get(audio)
+      if (audioRef.current !== audio && stoppedReason) {
+        addLog(`再生を止めた（${stoppedReason}）（${label}）name=${errorName(e)}`)
+        return
+      }
       addLog(`再生の失敗 name=${errorName(e)}（${label}）`)
       logTracks('再生の失敗')
     }
