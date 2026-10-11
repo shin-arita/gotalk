@@ -65,7 +65,8 @@ interface Playback {
   label: string
   // play() の Promise が解決または拒否された
   settled: boolean
-  // 再生が終わったか、本当に失敗して、止めるものがない
+  // 再生が終わったか、本当に失敗して（play() の拒否か error のイベント）、止めるものがない。
+  // 「再生の失敗」は、これを true にした側だけが出す
   finished: boolean
   // stopAudio で止めた理由
   stopReason: string | null
@@ -215,7 +216,8 @@ export default function MicTestPage() {
     if (!audio) return
     const playback = playbacksRef.current.get(audio)
     audio.pause()
-    if (!playback || playback.stopReason !== null) return
+    // 終わった後と失敗した後は止めるものがないので、理由も付けない（後で届く拒否でも「再生を止めた」を出さない）
+    if (!playback || playback.finished || playback.stopReason !== null) return
     playback.stopReason = reason
     if (playback.settled && !playback.finished) logPlaybackStopped(playback)
   }
@@ -497,6 +499,13 @@ export default function MicTestPage() {
       addLog(`再生の終わり（${label}）`)
       logTracks('再生の終わり')
     }
+    // 再生の途中のデコードなどのエラー。止めた後に届いたものは、「再生を止めた」で出しているので出さない
+    audio.onerror = () => {
+      if (playback.finished || playback.stopReason !== null) return
+      playback.finished = true
+      addLog(`再生の失敗 code=${audio.error?.code ?? '不明'}（${label}）`)
+      logTracks('再生の失敗')
+    }
     const succeed = () => {
       if (playback.settled) return
       playback.settled = true
@@ -511,6 +520,8 @@ export default function MicTestPage() {
         logPlaybackStopped(playback, errorName(e))
         return
       }
+      // error のイベントで、もう「再生の失敗」を出している
+      if (playback.finished) return
       playback.finished = true
       addLog(`再生の失敗 name=${errorName(e)}（${label}）`)
       logTracks('再生の失敗')

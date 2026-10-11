@@ -269,6 +269,27 @@ function setupResolveAfterPausePlayMock() {
   })
 }
 
+// play() の Promise を待たせ、テストの中で拒否する。pause() では何もしない
+function setupControlledPlayMock() {
+  const rejects = new Map<HTMLMediaElement, (e: unknown) => void>()
+  const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(function (this: HTMLMediaElement) {
+    return new Promise<void>((_, reject) => { rejects.set(this, reject) })
+  })
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+  return {
+    play,
+    reject: async (audio: HTMLMediaElement, name: string) => {
+      await act(async () => { rejects.get(audio)?.(new DOMException('play failed', name)) })
+    },
+  }
+}
+
+// 再生の途中のメディアのエラー（code は MediaError の code）
+function fireMediaError(audio: HTMLMediaElement, code?: number) {
+  if (code !== undefined) Object.defineProperty(audio, 'error', { value: { code }, configurable: true })
+  act(() => { audio.dispatchEvent(new Event('error')) })
+}
+
 function countMatches(text: string, re: RegExp) {
   return text.match(new RegExp(re.source, 'g'))?.length ?? 0
 }
@@ -1205,5 +1226,126 @@ describe('MicTestPage', () => {
     await click('S6 すべて閉じる')
     expect(logText()).toContain('再生の失敗 name=NotAllowedError')
     expect(logText()).not.toContain('再生を止めた')
+  })
+
+  // HH9: 再生の途中のメディアのエラー
+  async function recordAndPlay() {
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+  }
+
+  it('HH9: play() が解決した後に error が起きると、「再生の失敗 code=…」と track の状態を1回だけ出し、その後に捨てても「再生を止めた」を出さない', async () => {
+    const rejections = watchUnhandledRejections()
+    const { play } = setupPlayMock()
+    await recordAndPlay()
+    const audio = play.mock.contexts[0] as HTMLAudioElement
+
+    fireMediaError(audio, 3)
+    let text = logText()
+    expect(countMatches(text, /再生の失敗/)).toBe(2) // 失敗の行と、track の状態の「（再生の失敗）」
+    expect(text).toMatch(/再生の失敗 code=3（S2 1回目の録音、5バイト/)
+    expect(countMatches(text, /（再生の失敗）/)).toBe(1)
+
+    await click('S6 すべて閉じる')
+    await rejections.settle()
+    text = logText()
+    expect(text).toContain('直前の録音を捨てる（S6）')
+    expect(text).not.toContain('再生を止めた')
+    expect(countMatches(text, /再生の失敗 /)).toBe(1)
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('HH9: error の code が分からないときは、その旨を出す', async () => {
+    const { play } = setupPlayMock()
+    await recordAndPlay()
+    fireMediaError(play.mock.contexts[0] as HTMLAudioElement)
+    expect(logText()).toMatch(/再生の失敗 code=不明（S2 1回目の録音/)
+  })
+
+  it('HH9: play() の拒否の後に error が起きても、「再生の失敗」を1回だけ出す', async () => {
+    const rejections = watchUnhandledRejections()
+    const ctl = setupControlledPlayMock()
+    await recordAndPlay()
+    const audio = ctl.play.mock.contexts[0] as HTMLAudioElement
+
+    await ctl.reject(audio, 'NotSupportedError')
+    fireMediaError(audio, 4)
+    await rejections.settle()
+
+    const text = logText()
+    expect(countMatches(text, /再生の失敗 /)).toBe(1)
+    expect(text).toMatch(/再生の失敗 name=NotSupportedError（S2 1回目の録音/)
+    expect(countMatches(text, /（再生の失敗）/)).toBe(1)
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('HH9: error の後に play() が拒否されても、「再生の失敗」を1回だけ出す', async () => {
+    const rejections = watchUnhandledRejections()
+    const ctl = setupControlledPlayMock()
+    await recordAndPlay()
+    const audio = ctl.play.mock.contexts[0] as HTMLAudioElement
+
+    fireMediaError(audio, 4)
+    await ctl.reject(audio, 'NotSupportedError')
+    await rejections.settle()
+
+    const text = logText()
+    expect(countMatches(text, /再生の失敗 /)).toBe(1)
+    expect(text).toMatch(/再生の失敗 code=4（S2 1回目の録音/)
+    expect(countMatches(text, /（再生の失敗）/)).toBe(1)
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('HH9: 再生が始まった後に録音を捨てて止めた後に error が届いても、「再生の失敗」を出さない', async () => {
+    const rejections = watchUnhandledRejections()
+    const { play } = setupPlayMock()
+    await recordAndPlay()
+    const audio = play.mock.contexts[0] as HTMLAudioElement
+
+    await click('S6 すべて閉じる')
+    fireMediaError(audio, 1)
+    await rejections.settle()
+
+    const text = logText()
+    expect(countMatches(text, /再生を止めた（/)).toBe(1)
+    expect(text).not.toContain('再生の失敗')
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('HH9: 開始を待っている間に止め、error の後に AbortError で拒否されても、「再生を止めた」を1回だけ出し、「再生の失敗」を出さない', async () => {
+    const rejections = watchUnhandledRejections()
+    const ctl = setupControlledPlayMock()
+    await recordAndPlay()
+    const audio = ctl.play.mock.contexts[0] as HTMLAudioElement
+
+    await click('S2 開始')
+    fireMediaError(audio, 1)
+    await ctl.reject(audio, 'AbortError')
+    await rejections.settle()
+
+    const text = logText()
+    expect(countMatches(text, /再生を止めた（/)).toBe(1)
+    expect(text).toMatch(/再生を止めた（録音を捨てたため）（S2 1回目の録音[^）]*）name=AbortError/)
+    expect(text).not.toContain('再生の失敗')
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('HH9: 開始を待っている間の error の後に録音を捨てても、「再生を止めた」を出さない', async () => {
+    const rejections = watchUnhandledRejections()
+    const ctl = setupControlledPlayMock()
+    await recordAndPlay()
+    const audio = ctl.play.mock.contexts[0] as HTMLAudioElement
+
+    fireMediaError(audio, 4)
+    await click('S6 すべて閉じる')
+    await ctl.reject(audio, 'AbortError')
+    await rejections.settle()
+
+    const text = logText()
+    expect(countMatches(text, /再生の失敗 /)).toBe(1)
+    expect(text).not.toContain('再生を止めた')
+    expect(rejections.handler).not.toHaveBeenCalled()
   })
 })
