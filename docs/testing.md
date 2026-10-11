@@ -87,6 +87,7 @@ Frontend のテストファイルは次のとおりです。
 | `frontend/src/messages.test.ts` | 利用者向けの文言の共通の関数（`getLocalizedMessage`）と、10 の文言の7言語の辞書 |
 | `frontend/src/pages/LanguageSelectPage.test.tsx` | 言語選択画面 |
 | `frontend/src/pages/InterpreterPage.test.tsx` | 通訳画面、録音、確定翻訳、再翻訳、TTS、読み上げの文字数の上限、状態遷移、エラーの文言を選んだ2つの言語で表示すること |
+| `frontend/src/pages/MicTestPage.test.tsx` | 開発用のマイクの確認のページ（`#mic-test`） |
 
 実行コマンド:
 
@@ -148,6 +149,19 @@ npm test
 `/api/interpret` の結果表示やエラー処理のテストは、`MediaRecorder` と `navigator.mediaDevices.getUserMedia` を mock し、実際の操作と同じく国旗をタップして録音を開始し、同じ国旗をタップして停止することで `/api/interpret` を呼びます（共通の手順は helper `renderAndInterpret` にまとめています）。これらのテストでは `SpeechRecognition` を mock していないため、`transcript` は送られません。`transcript` の送信は、`SpeechRecognition` を mock した国旗タップのテスト 1 件で検証します。
 
 Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeObjectURL` を mock します。`navigator.mediaDevices`、`URL.createObjectURL`、`URL.revokeObjectURL`、`Audio` は各テストの前の状態を `beforeEach` で保存し、`afterEach` で元に戻します。`MediaRecorder` と `window.SpeechRecognition` は `afterEach` で削除します。API 呼び出しは `fetch` mock で検証します。
+
+開発用のマイクの確認のページ（`#mic-test`、`MicTestPage.test.tsx`）のテストでは、`getUserMedia`、`MediaRecorder`、`SpeechRecognition`、`navigator.permissions` を mock し、次を確かめます。ページの使い方は [development.md](development.md) の「8. 注意点」に書いています。
+
+- `#mic-test` のときだけページを表示し、通常の URL では表示しないこと。上部の説明の文を表示すること
+- S1 では開始のたびに `getUserMedia` を呼び、停止で track の `stop()` を呼ぶこと
+- S2 では `getUserMedia` を最初の1回だけ呼び、開始と停止で `track.enabled` を true と false に切り替え、track の `stop()` を呼ばないこと
+- S7 では `getUserMedia` を最初の1回だけ呼び、`track.enabled` が true のままであること
+- S4 では `getUserMedia` を呼ばずに、音声認識の `start()` と `stop()` を呼ぶこと（設定は `ja-JP`、`continuous`、`interimResults`）。音声認識がないブラウザでは、S3、S4、S5 で対応していないとログに出すこと
+- S6 ではすべての track の `stop()` と音声認識の `stop()` を呼び、その後の S2 でマイクを開き直すこと。別のテストを始めるときは前のテストのマイクを閉じること
+- `navigator.permissions.query` が例外になる場合に `unsupported` と表示すること
+- Backend への `fetch` を呼ばないこと
+- 音声認識の結果の文字列を画面に表示せず、文字数だけを表示すること
+- `pagehide` とコンポーネントが外れたときに、マイク、録音、音声認識を閉じること
 
 ## 4. テスト対象
 

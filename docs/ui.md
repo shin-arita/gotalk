@@ -72,6 +72,8 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 | `frontend/src/pages/InterpreterPage.tsx:662` | `発声する` | 読み上げのボタン |
 | `frontend/index.html` | `<html lang="ja">` | ページの言語（スクリーンリーダーの読み上げの言語の判定に使われます） |
 
+開発用の確認のページ（URL の末尾に `#tts-test` を付けたときの `frontend/src/pages/TtsTestPage.tsx` と、`#mic-test` を付けたときの `frontend/src/pages/MicTestPage.tsx`）は、開発者が実機で動作を確かめるためのもので、通常の画面からはリンクしていません。これらのページの文言は日本語だけで、[1. 利用者向けの文言の言語](#1-利用者向けの文言の言語) の決まりの対象外です。
+
 ## 6. 関連ドキュメント
 
 - [api.md](api.md)
