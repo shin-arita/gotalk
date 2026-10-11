@@ -972,4 +972,42 @@ describe('MicTestPage', () => {
     expect(createObjectURL).not.toHaveBeenCalled()
     expect(playButton()).toBeDisabled()
   })
+
+  it('HH2: テストが動いている間は再生のボタンを押せず、止めると押せるようになる', async () => {
+    setupRecognitionMock()
+    await renderPage()
+    await click('S5 開始')
+    await click('S5 停止')
+    expect(playButton()).toBeEnabled()
+    expect(screen.queryByTestId('mic-test-play-blocked')).not.toBeInTheDocument()
+
+    await click('S3 開始')
+    expect(playButton()).toBeDisabled()
+    expect(screen.getByTestId('mic-test-play-blocked')).toHaveTextContent('（テストを止めてから再生できます）')
+    // 録音は捨てていない
+    expect(recordingText()).toContain('S5 1回目の録音')
+
+    await click('S3 停止')
+    expect(playButton()).toBeEnabled()
+    expect(screen.queryByTestId('mic-test-play-blocked')).not.toBeInTheDocument()
+  })
+
+  it('HH2: getUserMedia を待っている間は再生のボタンを押せない', async () => {
+    setupRecognitionMock()
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    expect(playButton()).toBeEnabled()
+
+    // S3 に切り替えると S2 のマイクを閉じて開き直すので、その getUserMedia を待たせる
+    const gum = setupDeferredGetUserMediaMock()
+    await click('S3 開始')
+    expect(gum.getUserMedia).toHaveBeenCalledTimes(1)
+    expect(playButton()).toBeDisabled()
+    expect(screen.getByTestId('mic-test-play-blocked')).toBeInTheDocument()
+
+    await act(async () => { gum.resolve() })
+    await click('S3 停止')
+    expect(playButton()).toBeEnabled()
+  })
 })

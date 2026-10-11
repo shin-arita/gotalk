@@ -448,6 +448,10 @@ export default function MicTestPage() {
     void logPermission('S6 すべて閉じる')
   }
 
+  // 音声認識がスピーカーの音を拾うことや、iPhone で音声のセッションが切り替わることで、
+  // テストの結果に影響しないよう、テストが動いている間と開始を待っている間は再生しない
+  const playBlocked = running !== null || busy
+
   const handlePlay = () => {
     const recording = lastRecordingRef.current
     if (!recording) return
@@ -575,13 +579,16 @@ export default function MicTestPage() {
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
           <button
             onClick={handlePlay}
-            disabled={!lastRecording}
+            disabled={!lastRecording || playBlocked}
             style={{ padding: '10px 14px', fontSize: '15px', flexShrink: 0 }}
           >
             直前の録音を再生
           </button>
           <span data-testid="mic-test-recording" style={{ fontSize: '13px', lineHeight: 1.5 }}>
             {lastRecording ? recordingLabel(lastRecording) : '録音なし（S1、S2、S5、S7 で録音して停止すると再生できます）'}
+            {lastRecording && playBlocked && (
+              <span data-testid="mic-test-play-blocked">（テストを止めてから再生できます）</span>
+            )}
           </span>
         </div>
       </section>
