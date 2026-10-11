@@ -203,8 +203,8 @@ describe('InterpreterPage language mismatch (interpret API)', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
 
     const msg = screen.getByRole('alert').textContent ?? ''
-    expect(msg).toContain('言語不明、もう一度お話ください')
-    expect(msg).toContain('Language unclear. Please speak again.')
+    // 選んだ順に、空行をはさんで並べる（共通の関数に寄せる前と同じ表示）
+    expect(msg).toBe('言語不明、もう一度お話ください\n\nLanguage unclear. Please speak again.')
   })
 
   it('clears translated text on mismatch (speak button hidden)', async () => {

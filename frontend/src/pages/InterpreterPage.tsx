@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import type { Language } from '../languages'
 import { API_TIMEOUT_MS, INTERPRET_TOO_LONG_MESSAGE, MAX_INTERPRET_AUDIO_BYTES, TTS_TOO_LONG_MESSAGE, apiErrorCode, apiErrorMessage, isTooLongForTts, messageForCode } from '../api'
+import { getLocalizedMessage } from '../messages'
+import type { MessageKey } from '../messages'
 import './InterpreterPage.css'
 
 type InterpreterStatus = 'idle' | 'recording' | 'processing' | 'ready' | 'speaking'
@@ -79,16 +81,6 @@ const FLAG_FINISH_MESSAGES: Record<string, string> = {
   'ko':    '말이 끝나면 국기를 다시 탭하여 종료하세요.',
   'th':    'เมื่อพูดเสร็จแล้ว แตะธงอีกครั้งเพื่อสิ้นสุด',
   'vi':    'Khi nói xong, nhấn vào cờ một lần nữa để kết thúc.',
-}
-
-const LANGUAGE_UNCLEAR_MESSAGES: Record<string, string> = {
-  'ja':    '言語不明、もう一度お話ください',
-  'en':    'Language unclear. Please speak again.',
-  'zh-CN': '语言不明，请再说一次',
-  'zh-TW': '語言不明，請再說一次',
-  'ko':    '언어를 알 수 없습니다. 다시 말씀해 주세요.',
-  'th':    'ไม่ทราบภาษา กรุณาพูดอีกครั้ง',
-  'vi':    'Không rõ ngôn ngữ. Vui lòng nói lại.',
 }
 
 function getSupportedMimeType(): string {
@@ -177,11 +169,13 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
     }, ...prev])
   }
 
+  // 利用者向けの文言を、選んだ2つの言語で表示する（docs/ui.md）
+  const showMessage = (messageKey: MessageKey) => {
+    setErrorMessage(getLocalizedMessage(messageKey, selectedLanguages[0]?.id, selectedLanguages[1]?.id))
+  }
+
   const handleLangMismatch = () => {
-    const msgs = selectedLanguages
-      .map(l => LANGUAGE_UNCLEAR_MESSAGES[l.id] ?? 'Language unclear. Please speak again.')
-      .join('\n\n')
-    setErrorMessage(msgs)
+    showMessage('language_unclear')
     setTranslatedText('')
     setBackTranslation('')
     setStatus('idle')
