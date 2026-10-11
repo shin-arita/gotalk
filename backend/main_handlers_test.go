@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,7 +13,7 @@ import (
 	"testing"
 )
 
-// mockTransport intercepts http.DefaultClient calls without modifying main.go.
+// mockTransport intercepts the OpenAI calls made through openAIClient.
 type mockTransport struct {
 	fn func(*http.Request) (*http.Response, error)
 }
@@ -23,9 +24,9 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func setMockTransport(t *testing.T, fn func(*http.Request) (*http.Response, error)) {
 	t.Helper()
-	orig := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &mockTransport{fn: fn}
-	t.Cleanup(func() { http.DefaultClient.Transport = orig })
+	orig := openAIClient.Transport
+	openAIClient.Transport = &mockTransport{fn: fn}
+	t.Cleanup(func() { openAIClient.Transport = orig })
 }
 
 func fakeHTTPResponse(statusCode int, body string) *http.Response {
@@ -42,7 +43,7 @@ func jsonString(s string) string {
 }
 
 func openAITextResponse(text string) string {
-	return fmt.Sprintf(`{"output":[{"content":[{"type":"text","text":%s}]}]}`, jsonString(text))
+	return fmt.Sprintf(`{"status":"completed","output":[{"content":[{"type":"text","text":%s}]}]}`, jsonString(text))
 }
 
 func buildInterpretRequestWithTranscript(audioData []byte, myLang, theirLang, speaker, transcript string) (*http.Request, error) {
@@ -201,7 +202,7 @@ func TestCallOpenAITTS_Success(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return fakeHTTPResponse(http.StatusOK, string(audioBytes)), nil
 	})
-	got, err := callOpenAITTS("test-key", "gpt-4o-mini-tts", "marin", "hello")
+	got, err := callOpenAITTS(context.Background(), "test-key", "gpt-4o-mini-tts", "marin", "hello")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +215,7 @@ func TestCallOpenAITTS_TransportError(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("network error")
 	})
-	_, err := callOpenAITTS("test-key", "gpt-4o-mini-tts", "marin", "hello")
+	_, err := callOpenAITTS(context.Background(), "test-key", "gpt-4o-mini-tts", "marin", "hello")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -224,7 +225,7 @@ func TestCallOpenAITTS_NonOKStatus(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return fakeHTTPResponse(http.StatusUnauthorized, `{"error":"unauthorized"}`), nil
 	})
-	_, err := callOpenAITTS("test-key", "gpt-4o-mini-tts", "marin", "hello")
+	_, err := callOpenAITTS(context.Background(), "test-key", "gpt-4o-mini-tts", "marin", "hello")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -668,7 +669,7 @@ func TestCallOpenAI_TransportError(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("connection refused")
 	})
-	_, err := callOpenAI("test-key", "gpt-4o-mini", "hello")
+	_, err := callOpenAI(context.Background(), "test-key", "gpt-4o-mini", "hello")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -678,7 +679,7 @@ func TestCallOpenAI_NonOKStatus(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return fakeHTTPResponse(http.StatusUnauthorized, `{"error":"unauthorized"}`), nil
 	})
-	_, err := callOpenAI("test-key", "gpt-4o-mini", "hello")
+	_, err := callOpenAI(context.Background(), "test-key", "gpt-4o-mini", "hello")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -688,7 +689,7 @@ func TestCallOpenAI_InvalidJSON(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return fakeHTTPResponse(http.StatusOK, `not json`), nil
 	})
-	_, err := callOpenAI("test-key", "gpt-4o-mini", "hello")
+	_, err := callOpenAI(context.Background(), "test-key", "gpt-4o-mini", "hello")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -696,21 +697,21 @@ func TestCallOpenAI_InvalidJSON(t *testing.T) {
 
 func TestCallOpenAI_EmptyOutput(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
-		return fakeHTTPResponse(http.StatusOK, `{"output":[]}`), nil
+		return fakeHTTPResponse(http.StatusOK, `{"status":"completed","output":[]}`), nil
 	})
-	_, err := callOpenAI("test-key", "gpt-4o-mini", "hello")
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	_, err := callOpenAI(context.Background(), "test-key", "gpt-4o-mini", "hello")
+	if err == nil || !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("err=%v, want the empty response error", err)
 	}
 }
 
 func TestCallOpenAI_EmptyContent(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
-		return fakeHTTPResponse(http.StatusOK, `{"output":[{"content":[]}]}`), nil
+		return fakeHTTPResponse(http.StatusOK, `{"status":"completed","output":[{"content":[]}]}`), nil
 	})
-	_, err := callOpenAI("test-key", "gpt-4o-mini", "hello")
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	_, err := callOpenAI(context.Background(), "test-key", "gpt-4o-mini", "hello")
+	if err == nil || !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("err=%v, want the empty response error", err)
 	}
 }
 
@@ -718,7 +719,7 @@ func TestCallOpenAI_Success(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return fakeHTTPResponse(http.StatusOK, openAITextResponse("  hello world  ")), nil
 	})
-	got, err := callOpenAI("test-key", "gpt-4o-mini", "translate this")
+	got, err := callOpenAI(context.Background(), "test-key", "gpt-4o-mini", "translate this")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -733,7 +734,7 @@ func TestCallWhisper_Whisper1_Success(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return fakeHTTPResponse(http.StatusOK, `{"language":"japanese","text":"こんにちは"}`), nil
 	})
-	text, lang, err := callWhisper("test-key", "whisper-1", []byte("fake audio"), "test.webm", "", "")
+	text, lang, err := callWhisper(context.Background(), "test-key", "whisper-1", []byte("fake audio"), "test.webm", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -746,7 +747,7 @@ func TestCallWhisper_GPT4oTranscribe_Success(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return fakeHTTPResponse(http.StatusOK, `{"text":"hello","language":""}`), nil
 	})
-	text, _, err := callWhisper("test-key", "gpt-4o-transcribe", []byte("fake audio"), "test.webm", "", "")
+	text, _, err := callWhisper(context.Background(), "test-key", "gpt-4o-transcribe", []byte("fake audio"), "test.webm", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,7 +760,7 @@ func TestCallWhisper_NonOKStatus(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return fakeHTTPResponse(http.StatusUnauthorized, `{"error":"unauthorized"}`), nil
 	})
-	_, _, err := callWhisper("test-key", "whisper-1", []byte("fake audio"), "test.webm", "", "")
+	_, _, err := callWhisper(context.Background(), "test-key", "whisper-1", []byte("fake audio"), "test.webm", "", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -769,7 +770,7 @@ func TestCallWhisper_InvalidJSON(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return fakeHTTPResponse(http.StatusOK, `not json`), nil
 	})
-	_, _, err := callWhisper("test-key", "whisper-1", []byte("fake audio"), "test.webm", "", "")
+	_, _, err := callWhisper(context.Background(), "test-key", "whisper-1", []byte("fake audio"), "test.webm", "", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -779,7 +780,7 @@ func TestCallWhisper_TransportError(t *testing.T) {
 	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("network error")
 	})
-	_, _, err := callWhisper("test-key", "whisper-1", []byte("fake audio"), "test.webm", "", "")
+	_, _, err := callWhisper(context.Background(), "test-key", "whisper-1", []byte("fake audio"), "test.webm", "", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

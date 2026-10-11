@@ -17,6 +17,8 @@ services:
     build:
       context: ./backend
     container_name: gotalk-backend
+    # The backend waits up to 25s for in-flight requests on SIGTERM (graceful shutdown).
+    stop_grace_period: 30s
     ports:
       - "127.0.0.1:8080:8080"
     environment:

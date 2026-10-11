@@ -34,35 +34,118 @@ Backend は Go の `net/http` で実装されています。`main()` では次�
 - `/api/interpret`
 - `/api/translate`
 
-CORS middleware は全 API に適用されます。
-
-| Header | 値 |
-| --- | --- |
-| `Access-Control-Allow-Origin` | `*` |
-| `Access-Control-Allow-Methods` | `GET, POST, OPTIONS` |
-| `Access-Control-Allow-Headers` | `Content-Type` |
-
-`OPTIONS` request は handler に渡さず、HTTP 204 を返します。
+Backend は CORS のヘッダ（`Access-Control-Allow-*`）を付けません。本番は nginx、開発環境は Vite の proxy が `/api` を Backend に転送するので、ブラウザから見て Frontend と API は同じオリジンです。`OPTIONS` request は Go の `net/http` の既定の動作に任せ、`/api/*` では HTTP 405 になります（[rate-limit-design.md](rate-limit-design.md) の 5.9）。
 
 `/api/translate` と `/api/tts` は JSON request body を受け取ります。Frontend はどちらも `Content-Type: application/json` を付けて送信します。`/api/interpret` は `multipart/form-data` を受け取ります。
 
-JSON error response は次の形式です。
+### 入力の上限
+
+1回のリクエストあたりの OpenAI の費用を抑えるため、入力の大きさを制限しています（[rate-limit-design.md](rate-limit-design.md) の 5.1）。上限を超えた場合は OpenAI を呼びません。
+
+| 対象 | 上限 | 超えた場合 |
+| --- | --- | --- |
+| `/api/interpret` の body 全体 | 1.5 MiB（解析の前に `http.MaxBytesReader`） | 413 `input_too_large` |
+| `/api/interpret` の `audio` | 1 MiB | 413 `input_too_large` |
+| `/api/interpret` の `transcript` | 前後の空白を除いて 500 文字（rune） | 400 `input_too_large` |
+| `/api/translate`、`/api/tts` の body 全体 | 16 KiB（解析の前に `http.MaxBytesReader`） | 413 `input_too_large` |
+| `/api/translate`、`/api/tts` の `text` | 500 文字（rune） | 400 `input_too_large` |
+| `/api/interpret` の `transcript` 以外の音声でないフィールド（`myLanguage`、`theirLanguage`、`speaker` など） | それぞれ 1 KiB | 413 `input_too_large` |
+| `/api/interpret` の `transcript`（前後の空白を除く前） | 4 KiB | 413 `input_too_large` |
+
+`/api/interpret` は、フィールドの値を multipart の body からだけ読みます（`r.PostFormValue`）。URL の query の値（例：`/api/interpret?transcript=...`）は使いません。そのため、上限を確かめた値だけが使われます。
+
+JSON の request body は、表にないフィールド（例：`/api/tts` の `speed` や `instructions`）があるとき、または 1つ目の JSON の値の後ろに別の値があるときに、400 `invalid_request` になります。`/api/interpret` の `myLanguage` と `theirLanguage` の JSON も同じです。
+
+### 言語の指定
+
+Backend は、Frontend の対応言語（`frontend/src/languages.ts`）と同じ7言語の `id` と、prompt に使う `label` の対応表（`backend/languages.go` の `supportedLanguages`）を持っています。2つの一覧が同じであることは、Backend のテスト（`TestSupportedLanguagesMatchFrontend`）が `frontend/src/languages.ts` を読んで確かめます。
+
+| `id` | prompt に使う `label` |
+| --- | --- |
+| `ja` | `Japanese` |
+| `en` | `English` |
+| `zh-CN` | `Chinese Simplified` |
+| `zh-TW` | `Chinese Traditional` |
+| `ko` | `Korean` |
+| `th` | `Thai` |
+| `vi` | `Tiếng Việt` |
+
+- `/api/translate` の `languages` と、`/api/interpret` の `myLanguage` と `theirLanguage` は、この表にある互いに異なる2つの言語である必要があります。そうでない場合は 400 `invalid_request`（`invalid languages`）で拒否し、OpenAI は呼びません。`id` は大文字と小文字を区別します
+- クライアントが送る `label` は受け取りますが、使いません。prompt には、上の表の `label` を入れます。クライアントの値が OpenAI に送られることはないので、`label` で入力が長くなることも、prompt に任意の文字列を差し込まれることもありません
+- `/api/interpret` の `speaker` は、送る場合は `myLanguage.id` か `theirLanguage.id` のどちらかである必要があります（`transcript` がある場合は必須）
+
+### エラーの応答
+
+JSON error response は次の形式です。`error` は人が読む文、`code` はプログラムが判定に使う値です。
 
 ```json
 {
-  "error": "error message"
+  "error": "error message",
+  "code": "invalid_request"
 }
 ```
 
 `writeError` を使うエラーでは `Content-Type: application/json` が設定されます。`/api/tts`、`/api/interpret`、`/api/translate` の許可されない HTTP method は `http.Error` で処理され、HTTP 405 と本文 `method not allowed` を返します。
 
+| `code` | HTTP status | 状況 |
+| --- | --- | --- |
+| `invalid_request` | 400 | request の形式が不正 |
+| `input_too_large` | 413 / 400 | 入力の上限を超えた（上の表） |
+| `language_mismatch` | 422 | 翻訳元の言語が選択言語のどちらでもない（`error` も `language_mismatch`） |
+| `proper_noun_protection_failed` | 502 | 固有名詞保護のプレースホルダ検証が再試行後も失敗（`error` も `proper_noun_protection_failed`） |
+| `upstream_error` | 502 | OpenAI の呼び出しの失敗（下の3つ以外） |
+| `service_unavailable` | 503 | OpenAI の支出上限やクレジットの枯渇（`insufficient_quota`、`organization_spend_limit_exceeded`、`project_spend_limit_exceeded`、`credit_balance_exhausted`、`organization_usage_limit_exceeded`、`billing_hard_limit_reached`） |
+| `upstream_busy` | 503 | OpenAI の一時的な rate limit（上の支出上限など以外の 429）。OpenAI の `Retry-After` が 1 から 60 秒なら、その値を `Retry-After` で返す |
+| `timeout` | 504 | Backend 自身の処理の deadline に達した |
+| `internal_error` | 500 | `OPENAI_API_KEY` が未設定など、Backend の内部の問題 |
+
+- OpenAI の 429 は、次の2つを分けて扱います（[rate-limit-design.md](rate-limit-design.md) の 5.7）
+  - 支出上限やクレジットの枯渇：再試行しても回復しません。503 `service_unavailable` を返します
+  - 一時的な rate limit：時間をおけば（OpenAI の `Retry-After` の後なら）再試行できます。ただし Backend の中では再試行せず、503 `upstream_busy` として返し、再実行は利用者の操作に任せます
+- 応答には、金額や OpenAI の内部のエラーコードを含めません
+- Frontend は `error` が `language_mismatch` かどうかで言語不明の表示をし、それ以外は `code` で表示を決めます（[9. Frontend からの利用](#9-frontend-からの利用)）
+
+### 処理の deadline とキャンセル
+
+各エンドポイントは、`r.Context()` に次の deadline を付けた context を作り、OpenAI へのすべての呼び出し（文字起こし、Responses API の再試行を含む呼び出し、TTS）に渡します（[rate-limit-design.md](rate-limit-design.md) の 5.11）。
+
+| API | deadline |
+| --- | --- |
+| `/api/interpret` | 55 秒 |
+| `/api/translate` | 25 秒 |
+| `/api/tts` | 25 秒 |
+
+- OpenAI を呼ぶ前に、毎回 context が終わっていないかを確かめます。終わっていたら、残りの OpenAI の呼び出しをせずに処理をやめます
+- クライアントが切断した場合（`context.Canceled`）は応答を書きません。deadline に達した場合（`context.DeadlineExceeded`）は 504 `timeout` を返します
+- OpenAI への HTTP リクエストは、OpenAI 用の専用の `http.Client`（`openAIClient`。`Timeout` 120 秒は安全弁）で送ります。`http.DefaultClient` は使いません
+
+### 1リクエストあたりの OpenAI の呼び出しの最大回数
+
+再試行を含めた OpenAI の呼び出しの回数の上限を、コードの定数（`backend/limits.go`）で固定しています。上限を超える呼び出しはしません。
+
+| API | 最大回数 | 内訳 |
+| --- | --- | --- |
+| `/api/translate` | 4 回 | 固有名詞保護の経路：翻訳、その再試行、バックトランスレーション、その再試行（再試行はそれぞれ1回まで）。保護しない経路は2回（言語判定を含む翻訳、バックトランスレーション） |
+| `/api/interpret`（`transcript` なし） | 6 回 | 言語判定、文字起こし、翻訳の処理（最大4回） |
+| `/api/interpret`（`transcript` あり） | 4 回 | 翻訳の処理（最大4回） |
+| `/api/tts` | 1 回 | TTS |
+
+1回の Responses API の呼び出しに送る入力全体（固定の prompt、固有名詞の置換の後のテキスト、再試行の prompt を含む）の大きさは、次の2つに分けて確かめています（[rate-limit-design.md](rate-limit-design.md) の 5.3）。
+
+- 常に成り立つ上限：UTF-8 のバイト数です。GPT-4o の tokenizer（`o200k_base`）は byte-level BPE なので、トークン数はバイト数を超えません。入力 500 文字の場合に入力全体が 9,000 バイト以下であることを、テスト（`TestResponsesAPI_InputSizeFor500Characters`）で確かめています
+- 測定した例の中の最大：2,870 トークン（7,404 バイト）です。互いに異なる 164 個の固有名詞を「と」でつないだ 499 文字の入力で、プレースホルダがすべて欠けた応答の後の再試行の入力です。テストの mock で記録した実際の入力を、`o200k_base` で数えました。これは測定した例の中の最大で、常に成り立つ上限ではありません
+
+固有名詞保護の経路から保護しない経路へのフォールバックは、OpenAI を呼ぶ前（固有名詞の抽出の段階）にだけ起こるので、2つの経路の回数は足し合わされません。
+
+### OpenAI API キー
+
 OpenAI API キーは `OPENAI_API_KEY` から読みます。未設定時の扱いは API ごとに異なります。
 
 | API | HTTP status | Response |
 | --- | --- | --- |
-| `/api/tts` | 500 | `{"error":"service unavailable"}` |
-| `/api/interpret` | 500 | `{"error":"service unavailable"}` |
-| `/api/translate` | 500 | `{"error":"translation service unavailable"}` |
+| `/api/tts` | 500 | `{"error":"service unavailable","code":"internal_error"}` |
+| `/api/interpret` | 500 | `{"error":"service unavailable","code":"internal_error"}` |
+| `/api/translate` | 500 | `{"error":"translation service unavailable","code":"internal_error"}` |
 
 `/health` は OpenAI API キーを参照しません。
 
@@ -83,7 +166,7 @@ Response:
 }
 ```
 
-実装上、`healthHandler` は HTTP method を判定していません。CORS middleware が `OPTIONS` を 204 で処理し、それ以外の method では同じ JSON response を返します。
+実装上、`healthHandler` は HTTP method を判定していません。`OPTIONS` を含むどの method でも同じ JSON response を返します。`/health` は入力の上限や deadline の対象外で、OpenAI を呼びません。
 
 ## 5. POST /api/interpret
 
@@ -95,17 +178,17 @@ Response:
 | Request Content-Type | `multipart/form-data` |
 | Response Content-Type | `application/json` |
 
-Backend は `r.ParseMultipartForm(32 << 20)` で request を parse します。
+Backend は body を `http.MaxBytesReader` で 1.5 MiB に制限してから、`r.ParseMultipartForm` で request を parse します。メモリに置く上限も 1.5 MiB です。
 
 Request form fields:
 
 | Field | Type | 必須 | 内容 |
 | --- | --- | --- | --- |
-| `audio` | file | yes | 録音音声。Frontend はファイル名を `recording.webm`、`recording.mp4`、`recording.ogg` のいずれかにして送る |
-| `myLanguage` | string | yes | 話者側の言語。`{"id","label"}` 形式の JSON 文字列。`id` が空の場合はエラー |
-| `theirLanguage` | string | yes | 相手側の言語。`{"id","label"}` 形式の JSON 文字列。`id` が空の場合はエラー |
-| `speaker` | string | 条件付き | 話者の言語 ID。`transcript` がある場合は `myLanguage.id` または `theirLanguage.id` に一致する必要がある |
-| `transcript` | string | no | Frontend の `SpeechRecognition` で得た認識テキスト。前後の空白は除去して扱う |
+| `audio` | file | yes | 録音音声。1 MiB まで。Frontend はファイル名を `recording.webm`、`recording.mp4`、`recording.ogg` のいずれかにして送る |
+| `myLanguage` | string | yes | 話者側の言語。`{"id","label"}` 形式の JSON 文字列（1 KiB まで）。`id` は対応言語のどれか（[言語の指定](#言語の指定)）。`label` は使わない |
+| `theirLanguage` | string | yes | 相手側の言語。`{"id","label"}` 形式の JSON 文字列（1 KiB まで）。`id` は対応言語のどれかで、`myLanguage.id` と異なる。`label` は使わない |
+| `speaker` | string | 条件付き | 話者の言語 ID。`transcript` がある場合は必須。送る場合は `myLanguage.id` または `theirLanguage.id` に一致する必要がある |
+| `transcript` | string | no | Frontend の `SpeechRecognition` で得た認識テキスト。前後の空白は除去して扱う。除去した後に 500 文字（rune）まで |
 
 Request 例（`curl`）:
 
@@ -153,7 +236,7 @@ Response 例:
 | transcript 経路 | `transcript` が空でない | `speaker` が `myLanguage.id` に一致すれば `myLanguage` を翻訳元、`theirLanguage.id` に一致すれば `theirLanguage` を翻訳元にする。どちらにも一致しなければ HTTP 400 `invalid speaker` | `transcript` |
 | Whisper 経路 | `transcript` がない、または空白のみ | `whisper-1` で判定した言語を `myLanguage`、`theirLanguage` の順に照合する。どちらにも一致しなければ HTTP 422 `language_mismatch` | `WHISPER_MODEL` による文字起こし結果 |
 
-Whisper 経路では `speaker` は使いません。Whisper 経路の処理は次のとおりです。
+Whisper 経路では `speaker` を翻訳元の決定に使いません（送られた場合は、選択言語のどちらかであることだけを確かめます）。Whisper 経路の処理は次のとおりです。
 
 1. `whisper-1`（`response_format=verbose_json`）に音声を送り、言語を判定する。呼び出しに失敗した場合、または判定言語が空の場合は HTTP 502 `language detection failed` を返す
 2. 判定言語を `whisperLangMatches` で選択言語と照合する。`whisperLangMatches` は `japanese` などの言語名と `ja` などの ISO コードの両方に対応し、`zh` は `zh-CN`、`zh-TW` に一致する
@@ -188,10 +271,10 @@ Request body:
 
 | Field | Type | 必須 | 内容 |
 | --- | --- | --- | --- |
-| `text` | string | yes | 翻訳対象テキスト。空白のみはエラー |
-| `languages` | array | yes | 選択済み言語。2 件以上が必要 |
-| `languages[].id` | string | yes | 言語 ID |
-| `languages[].label` | string | yes | prompt に使う言語ラベル |
+| `text` | string | yes | 翻訳対象テキスト。空白のみはエラー。500 文字（rune）まで |
+| `languages` | array | yes | 選択済み言語。互いに異なる 2 件が必要 |
+| `languages[].id` | string | yes | 言語 ID。対応言語のどれか（[言語の指定](#言語の指定)） |
+| `languages[].label` | string | no | Frontend との互換のために受け取るが、使わない。prompt には Backend の対応表の言語ラベルを使う |
 
 Request 例:
 
@@ -246,7 +329,7 @@ Response 例:
 
 ### languages
 
-`languages` は 2 件以上が必要です。実装では先頭 2 件を `lang0`、`lang1` として使います。2 件未満の場合は HTTP 400 で `two languages are required` を返します。
+`languages` はちょうど 2 件が必要です。1 件目を `lang0`、2 件目を `lang1` として使います。2 件でない場合は HTTP 400 で `two languages are required` を返します。対応言語でない `id` や同じ言語の 2 件は、HTTP 400 で `invalid languages` を返します。
 
 ### translatedText
 
@@ -287,7 +370,7 @@ Request body:
 
 | Field | Type | 必須 | 内容 |
 | --- | --- | --- | --- |
-| `text` | string | yes | 読み上げ対象テキスト。空白のみはエラー |
+| `text` | string | yes | 読み上げ対象テキスト。空白のみはエラー。前後の空白を含めて 500 文字（rune）まで。Frontend は翻訳の結果の `ttsText` を送る |
 
 Request 例:
 
@@ -307,7 +390,7 @@ OpenAI Audio Speech API へ送る値は次のとおりです。
 | `input` | request body の `text` |
 | `voice` | `OPENAI_TTS_VOICE`。未設定時は `marin` |
 
-OpenAI Audio Speech API の呼び出しに失敗した場合は HTTP 502 で `tts failed` を返します。
+OpenAI Audio Speech API の呼び出しに失敗した場合は HTTP 502 で `tts failed` を返します。OpenAI の支出上限、一時的な rate limit、deadline の扱いは [3. 共通仕様](#3-共通仕様) のとおりです。
 
 ## 8. エラー仕様
 
@@ -316,18 +399,27 @@ OpenAI Audio Speech API の呼び出しに失敗した場合は HTTP 502 で `tt
 | 条件 | HTTP status | Response |
 | --- | --- | --- |
 | `POST` 以外 | 405 | `method not allowed` |
-| `OPENAI_API_KEY` 未設定 | 500 | `{"error":"service unavailable"}` |
-| multipart form の parse 失敗 | 400 | `{"error":"invalid multipart form"}` |
-| `audio` がない | 400 | `{"error":"audio is required"}` |
-| 音声データの読み込み失敗 | 500 | `{"error":"failed to read audio"}` |
-| `myLanguage` の JSON が不正、または `id` が空 | 400 | `{"error":"invalid myLanguage"}` |
-| `theirLanguage` の JSON が不正、または `id` が空 | 400 | `{"error":"invalid theirLanguage"}` |
-| `transcript` があり、`speaker` が選択言語のどちらにも一致しない | 400 | `{"error":"invalid speaker"}` |
-| `whisper-1` の呼び出し失敗、または判定言語が空 | 502 | `{"error":"language detection failed"}` |
-| 判定言語が選択言語のどちらにも一致しない | 422 | `{"error":"language_mismatch"}` |
-| 文字起こしの呼び出し失敗 | 502 | `{"error":"transcription failed"}` |
-| 翻訳またはバックトランスレーションの OpenAI Responses API 呼び出し失敗 | 502 | `{"error":"translation failed"}` |
-| 固有名詞保護のプレースホルダ検証が再試行後も失敗 | 502 | `{"error":"proper_noun_protection_failed"}` |
+| `OPENAI_API_KEY` 未設定 | 500 | `{"error":"service unavailable","code":"internal_error"}` |
+| body が 1.5 MiB を超える | 413 | `{"error":"request body too large","code":"input_too_large"}` |
+| multipart form の parse 失敗 | 400 | `{"error":"invalid multipart form","code":"invalid_request"}` |
+| `audio` がない | 400 | `{"error":"audio is required","code":"invalid_request"}` |
+| `audio` が 1 MiB を超える | 413 | `{"error":"request body too large","code":"input_too_large"}` |
+| 音声データの読み込み失敗 | 500 | `{"error":"failed to read audio","code":"internal_error"}` |
+| `audio` 以外のフィールドが上限（`transcript` は 4 KiB、それ以外は 1 KiB）を超える | 413 | `{"error":"request body too large","code":"input_too_large"}` |
+| `myLanguage` の JSON が不正（未知のフィールドを含む）、または `id` が空 | 400 | `{"error":"invalid myLanguage","code":"invalid_request"}` |
+| `theirLanguage` の JSON が不正（未知のフィールドを含む）、または `id` が空 | 400 | `{"error":"invalid theirLanguage","code":"invalid_request"}` |
+| `myLanguage` か `theirLanguage` が対応言語でない、または同じ言語 | 400 | `{"error":"invalid languages","code":"invalid_request"}` |
+| `transcript` が 500 文字を超える | 400 | `{"error":"text must be at most 500 characters","code":"input_too_large"}` |
+| `speaker` が選択言語のどちらにも一致しない（`transcript` がある場合は、`speaker` がない場合も） | 400 | `{"error":"invalid speaker","code":"invalid_request"}` |
+| `whisper-1` の呼び出し失敗、または判定言語が空 | 502 | `{"error":"language detection failed","code":"upstream_error"}` |
+| 判定言語が選択言語のどちらにも一致しない | 422 | `{"error":"language_mismatch","code":"language_mismatch"}` |
+| 文字起こしの呼び出し失敗 | 502 | `{"error":"transcription failed","code":"upstream_error"}` |
+| 翻訳またはバックトランスレーションの OpenAI Responses API 呼び出し失敗（出力が `max_output_tokens` で打ち切られた場合を含む） | 502 | `{"error":"translation failed","code":"upstream_error"}` |
+| 固有名詞保護のプレースホルダ検証が再試行後も失敗 | 502 | `{"error":"proper_noun_protection_failed","code":"proper_noun_protection_failed"}` |
+| OpenAI の支出上限、クレジットの枯渇 | 503 | `{"error":"service unavailable","code":"service_unavailable"}` |
+| OpenAI の一時的な rate limit | 503 | `{"error":"upstream busy","code":"upstream_busy"}` |
+| 処理の deadline（55 秒）に達した | 504 | `{"error":"request timed out","code":"timeout"}` |
+| クライアントが切断した | なし | 応答を書かない |
 
 `POST` 以外の 405 は `http.Error` による応答です。それ以外の表内の JSON error は `writeError` による応答です。
 
@@ -336,14 +428,21 @@ OpenAI Audio Speech API の呼び出しに失敗した場合は HTTP 502 で `tt
 | 条件 | HTTP status | Response |
 | --- | --- | --- |
 | `POST` 以外 | 405 | `method not allowed` |
-| `OPENAI_API_KEY` 未設定 | 500 | `{"error":"translation service unavailable"}` |
-| request body の JSON decode 失敗 | 400 | `{"error":"invalid request body"}` |
-| `text` が空白のみ | 400 | `{"error":"text is required"}` |
-| `languages` が 2 件未満 | 400 | `{"error":"two languages are required"}` |
-| OpenAI Responses API 呼び出し失敗 | 502 | `{"error":"translation failed"}` |
-| OpenAI の JSON 応答 parse 失敗 | 502 | `{"error":"translation failed"}` |
-| 保護なし経路で翻訳元言語が候補外または `unknown` | 422 | `{"error":"language_mismatch"}` |
-| 固有名詞保護のプレースホルダ検証が再試行後も失敗 | 502 | `{"error":"proper_noun_protection_failed"}` |
+| `OPENAI_API_KEY` 未設定 | 500 | `{"error":"translation service unavailable","code":"internal_error"}` |
+| body が 16 KiB を超える | 413 | `{"error":"request body too large","code":"input_too_large"}` |
+| request body の JSON decode 失敗（未知のフィールド、2つ目の値を含む） | 400 | `{"error":"invalid request body","code":"invalid_request"}` |
+| `text` が空白のみ | 400 | `{"error":"text is required","code":"invalid_request"}` |
+| `text` が 500 文字を超える | 400 | `{"error":"text must be at most 500 characters","code":"input_too_large"}` |
+| `languages` が 2 件でない | 400 | `{"error":"two languages are required","code":"invalid_request"}` |
+| `languages` に対応言語でない `id` がある、または同じ言語が 2 件 | 400 | `{"error":"invalid languages","code":"invalid_request"}` |
+| OpenAI Responses API 呼び出し失敗（出力が `max_output_tokens` で打ち切られた場合を含む） | 502 | `{"error":"translation failed","code":"upstream_error"}` |
+| OpenAI の JSON 応答 parse 失敗 | 502 | `{"error":"translation failed","code":"upstream_error"}` |
+| 保護なし経路で翻訳元言語が候補外または `unknown` | 422 | `{"error":"language_mismatch","code":"language_mismatch"}` |
+| 固有名詞保護のプレースホルダ検証が再試行後も失敗 | 502 | `{"error":"proper_noun_protection_failed","code":"proper_noun_protection_failed"}` |
+| OpenAI の支出上限、クレジットの枯渇 | 503 | `{"error":"service unavailable","code":"service_unavailable"}` |
+| OpenAI の一時的な rate limit | 503 | `{"error":"upstream busy","code":"upstream_busy"}` |
+| 処理の deadline（25 秒）に達した | 504 | `{"error":"request timed out","code":"timeout"}` |
+| クライアントが切断した | なし | 応答を書かない |
 
 `POST` 以外の 405 は `http.Error` による応答です。それ以外の表内の JSON error は `writeError` による応答です。
 
@@ -352,14 +451,20 @@ OpenAI Audio Speech API の呼び出しに失敗した場合は HTTP 502 で `tt
 | 条件 | HTTP status | Response |
 | --- | --- | --- |
 | `POST` 以外 | 405 | `method not allowed` |
-| `OPENAI_API_KEY` 未設定 | 500 | `{"error":"service unavailable"}` |
-| request body の JSON decode 失敗 | 400 | `{"error":"invalid request body"}` |
-| `text` が空白のみ | 400 | `{"error":"text is required"}` |
-| OpenAI Audio Speech API 呼び出し失敗 | 502 | `{"error":"tts failed"}` |
+| `OPENAI_API_KEY` 未設定 | 500 | `{"error":"service unavailable","code":"internal_error"}` |
+| body が 16 KiB を超える | 413 | `{"error":"request body too large","code":"input_too_large"}` |
+| request body の JSON decode 失敗（未知のフィールド、2つ目の値を含む） | 400 | `{"error":"invalid request body","code":"invalid_request"}` |
+| `text` が空白のみ | 400 | `{"error":"text is required","code":"invalid_request"}` |
+| `text` が 500 文字を超える | 400 | `{"error":"text must be at most 500 characters","code":"input_too_large"}` |
+| OpenAI Audio Speech API 呼び出し失敗 | 502 | `{"error":"tts failed","code":"upstream_error"}` |
+| OpenAI の支出上限、クレジットの枯渇 | 503 | `{"error":"service unavailable","code":"service_unavailable"}` |
+| OpenAI の一時的な rate limit | 503 | `{"error":"upstream busy","code":"upstream_busy"}` |
+| 処理の deadline（25 秒）に達した | 504 | `{"error":"request timed out","code":"timeout"}` |
+| クライアントが切断した | なし | 応答を書かない |
 
 ### /health
 
-`/health` は実装上、HTTP method によるエラー分岐を持ちません。CORS middleware が `OPTIONS` を 204 で処理し、それ以外は `{"status":"ok"}` を返します。
+`/health` は実装上、HTTP method によるエラー分岐を持ちません。どの method でも `{"status":"ok"}` を返します。
 
 ## 9. Frontend からの利用
 
@@ -367,20 +472,33 @@ Frontend の API 呼び出しは `frontend/src/pages/InterpreterPage.tsx` に実
 
 | 利用経路 | 関数 | API | 送信内容 | タイムアウト |
 | --- | --- | --- | --- | --- |
-| 録音終了後の確定翻訳 | `callInterpretApi` | `POST /api/interpret` | `audio`、`myLanguage`、`theirLanguage`、`speaker`、認識テキストがあれば `transcript` | 60 秒 |
-| 録音中のリアルタイム翻訳 | `useEffect` 内の処理 | `POST /api/translate` | `text`、`languages` | なし |
+| 録音終了後の確定翻訳 | `callInterpretApi` | `POST /api/interpret` | `audio`、`myLanguage`、`theirLanguage`、`speaker`、認識テキストがあれば `transcript` | 65 秒 |
+| 録音中のリアルタイム翻訳 | `useEffect` 内の処理 | `POST /api/translate` | `text`、`languages` | 30 秒 |
 | 原文編集後の再翻訳 | `callTranslateApi` | `POST /api/translate` | `text`、`languages` | 30 秒 |
-| TTS 再生 | `handleSpeak` | `POST /api/tts` | `text: ttsText` | なし |
+| TTS 再生 | `handleSpeak` | `POST /api/tts` | `text: ttsText` | 30 秒 |
+
+すべての `fetch` に `AbortController` の `signal` を渡し、タイムアウトになったら実際の `fetch` を abort します。タイムアウトの値は `frontend/src/api.ts` の `API_TIMEOUT_MS` にあり、Backend の deadline と nginx の `proxy_read_timeout`（60 秒）より長くしています（`/api/interpret` は Backend 55 秒 < nginx 60 秒 < Frontend 65 秒）。
 
 確定翻訳は、録音を止めたときに `MediaRecorder` の `onstop` から `callInterpretApi(blob)` で実行されます。Frontend はタップされた国旗の言語を `myLanguage` と `speaker`、もう一方の言語を `theirLanguage` として送ります。録音中に `SpeechRecognition` の認識テキストが得られていれば `transcript` として添えます。成功レスポンスから `translatedText`、`backTranslation`、`ttsText` を state に保存します。録音中に `SpeechRecognition` の `onresult` が一度も呼ばれなかった場合（`hasLiveTranscriptRef.current` が `false`）は、`text` を原文として表示します。`onresult` は呼ばれたが認識テキストが空だった場合は、`transcript` を送らず、`text` も原文として表示しません。`ttsText` がない場合は `translatedText` を読み上げ用テキストとして使います。
 
-リアルタイム翻訳は録音中に `recognizedText` の変更に対して 800ms のデバウンスで実行されます。成功し、`translatedText` が存在し、`sourceLanguage` が `unknown` でない場合に `liveTranslatedText` を更新します。リアルタイム翻訳中の abort や network error は UI エラーとして表示しません。
+リアルタイム翻訳は録音中に `recognizedText` の変更に対して 800ms のデバウンスで実行されます。成功し、`translatedText` が存在し、`sourceLanguage` が `unknown` でない場合に `liveTranslatedText` を更新します。認識テキストが変わったときや録音を止めたときは、送信中の `fetch` を abort します。リアルタイム翻訳中の abort や network error は UI エラーとして表示しません。
 
 再翻訳は、原文を編集して確定した場合に `callTranslateApi(trimmed)` で実行されます。翻訳方向は Backend が決めます。
 
 `/api/interpret` と `/api/translate`（再翻訳）が HTTP 422 で `language_mismatch` を返した場合、Frontend は選択言語ごとの言語不明メッセージを表示し、翻訳文とバックトランスレーションを空にして `idle` に戻します。
 
+それ以外のエラーでは、エラーの応答の `code` に応じて次の表示をします（`frontend/src/api.ts` の `API_ERROR_MESSAGES`）。表にない `code` では、これまでどおり `HTTP 502` のような status を表示します。`/api/tts` のエラーは、表にある `code` の場合だけ表示します。ただし `/api/tts` の `input_too_large` では、表の文言ではなく「この翻訳は長いため、読み上げできません（500文字まで）」を表示します。
+
+| `code` | 表示 |
+| --- | --- |
+| `input_too_large` | 入力が長すぎます。短くしてもう一度お試しください |
+| `service_unavailable` | 現在サービスを利用できません |
+| `upstream_busy` | 混み合っています。しばらくしてからお試しください |
+| `timeout` | 処理に時間がかかっています。もう一度お試しください |
+
 TTS 再生は読み上げボタンから実行されます。Frontend は `/api/tts` の `audio/mpeg` response から object URL を作成し、`Audio` で再生します。
+
+`/api/tts` の 500 文字の上限は、読み上げる翻訳の結果（`ttsText`）に掛かります。500 文字を超える翻訳の結果も、画面には全文を表示しますが、読み上げはできません。Frontend は読み上げボタンが押されたときに `ttsText` の文字数を数え、500 文字を超える場合は `/api/tts` を呼ばずに「この翻訳は長いため、読み上げできません（500文字まで）」を表示します。数え方は Backend と同じく、前後の空白を除かずに Unicode のコードポイント単位です（`frontend/src/api.ts` の `isTooLongForTts`。上限の値 `TTS_MAX_CHARS` は Backend の `maxTextRunes` と同じ値にする必要があります）。Backend の上限は費用を守るためのもので、Frontend の確認があっても残します。`/api/tts` が `input_too_large` を返した場合も、同じ文言を表示します。
 
 ## 10. OpenAI API との関係
 
@@ -396,7 +514,7 @@ Backend は OpenAI API を 3 系統で使います。
 
 Audio Transcriptions API 呼び出し（`callWhisper`）では、multipart form で `file`、`model`、`response_format` を送り、指定がある場合は `language` と `prompt` も送ります。`response_format` はモデル名が `whisper-1` のときだけ `verbose_json`、それ以外は `json` です。成功時は response の `text` と `language` を使います。HTTP 200 以外、JSON decode 失敗、HTTP client の失敗は呼び出し失敗として扱います。
 
-Responses API 呼び出しでは、request body に `model` と `input` を送ります。成功時は response の `output[0].content[0].text` を使います。HTTP 200 以外、JSON decode 失敗、空 response は呼び出し失敗として扱います。
+Responses API 呼び出しでは、request body に `model`、`input`、`max_output_tokens`（1024）を送ります。成功時は response の `output[0].content[0].text` を使います。HTTP 200 以外、JSON decode 失敗、空 response、`status` が `completed` 以外（`max_output_tokens` で打ち切られた `incomplete` など）は呼び出し失敗として扱います。成功は `status` が `completed` の場合だけです。応答に `status` がない場合や、空の値や `null` の場合も、出力の文字列があっても失敗として扱います（完了したことが確かめられないため）。ログには、`status` がない場合は `status=missing` と出し、出力の文字列は出しません。
 
 Audio Speech API 呼び出しでは、request body に `model`、`input`、`voice` を送ります。成功時は response body をそのまま `audio/mpeg` として Frontend に返します。HTTP 200 以外または HTTP client の失敗は `tts failed` になります。
 
@@ -406,3 +524,4 @@ Audio Speech API 呼び出しでは、request body に `model`、`input`、`voic
 - [translation-flow.md](translation-flow.md)
 - [speech-flow.md](speech-flow.md)
 - [proper-noun-protection.md](proper-noun-protection.md)
+- [rate-limit-design.md](rate-limit-design.md)

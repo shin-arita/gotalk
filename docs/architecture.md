@@ -69,7 +69,7 @@ Vite の開発サーバーでは `frontend/vite.config.ts` の proxy により�
 
 Backend は Go の単一 HTTP サーバーとして動作し、OpenAI API キーをサーバー側だけで扱います。
 
-- CORS middleware と API routing を提供する
+- API routing を提供する（CORS のヘッダは付けない。ブラウザから見て Frontend と API は同じオリジン）
 - `/health` でヘルスチェックを返す
 - `/api/interpret` で録音音声を受け取り、確定翻訳とバックトランスレーションを実行する
 - `/api/translate` でテキスト翻訳とバックトランスレーションを実行する
@@ -78,9 +78,12 @@ Backend は Go の単一 HTTP サーバーとして動作し、OpenAI API キー
 - 必要な場合に固有名詞保護を適用し、OpenAI への入力ではプレースホルダを保持させる
 - `/api/interpret` では、`transcript` がある場合は `speaker` に一致する言語を翻訳元にする。`transcript` がない場合は `whisper-1` で判定した言語を選択言語と照合して翻訳元を決め、`WHISPER_MODEL` で文字起こしする
 - `/api/translate` では、固有名詞保護を適用する経路（保護経路）では入力文字種や名前表現と選択言語から翻訳方向を決め、固有名詞保護を使わない経路（保護なし経路）では OpenAI Responses API で 2 言語候補から翻訳元を判定する
-- `language_mismatch`、`translation failed`、`tts failed` などのエラーを JSON で返す
+- `language_mismatch`、`translation failed`、`tts failed` などのエラーを `{"error","code"}` の JSON で返す
+- 入力の大きさ、OpenAI の出力（`max_output_tokens`）、1リクエストあたりの OpenAI の呼び出しの回数を制限する（[rate-limit-design.md](rate-limit-design.md)）
 
-Backend の HTTP client timeout は `main()` で 120 秒に設定されています。
+OpenAI への HTTP リクエストは、OpenAI 用の専用の `http.Client`（`Timeout` 120 秒）で送ります。各エンドポイントは `r.Context()` に deadline（`/api/interpret` 55 秒、`/api/translate` と `/api/tts` 25 秒）を付けた context を OpenAI の呼び出しに渡し、クライアントの切断や deadline で残りの呼び出しをやめます。
+
+HTTP サーバーは `http.Server` で起動し、`ReadHeaderTimeout` 10 秒、`ReadTimeout` 30 秒、`WriteTimeout` 90 秒、`IdleTimeout` 60 秒、`MaxHeaderBytes` 16 KiB を設定しています。`SIGTERM` を受けると `Shutdown()` で処理中のリクエストを最大 25 秒待ち（graceful shutdown）、それを超えたら接続を閉じます。
 
 ## 5. OpenAI API の利用箇所
 
@@ -104,7 +107,7 @@ Backend の HTTP client timeout は `main()` で 120 秒に設定されていま
 | `backend` | `gotalk-backend` | `./backend` | `127.0.0.1:8080:8080` | Go API server |
 | `backend-dev` | なし | `./backend` + `Dockerfile.dev` | なし | backend 開発用コンテナ（`profiles: ["dev"]`） |
 
-`frontend` と `backend` の `ports` は host の `127.0.0.1` だけに公開しています。本番の VPS では、HTTPS を終端する nginx が `127.0.0.1:5173` と `127.0.0.1:8080` に転送するため、外からは nginx 経由でだけ届きます（前提は [infrastructure.md の「ポートの公開範囲の前提」](infrastructure.md#ポートの公開範囲の前提) を参照）。`frontend` は `VITE_BACKEND_URL=http://backend:8080` を持ち、Vite proxy 経由で backend service へ接続します。`backend` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます（`DEBUG_TRANSLATION` は渡さないため、翻訳の debug log は出力されません）。Backend のログには発話の内容を出力しません（[infrastructure.md](infrastructure.md) の「Backend のログに出力する情報」を参照）。`backend-dev` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます。`backend-dev` は `profiles: ["dev"]` に属しているため、サービス名を指定しない `docker compose up` では起動せず、`docker compose run --rm backend-dev ...` で使います。
+`backend` には `stop_grace_period: 30s` を設定し、graceful shutdown（最大 25 秒）が終わるまで待つようにしています。`frontend` と `backend` の `ports` は host の `127.0.0.1` だけに公開しています。本番の VPS では、HTTPS を終端する nginx が `127.0.0.1:5173` と `127.0.0.1:8080` に転送するため、外からは nginx 経由でだけ届きます（前提は [infrastructure.md の「ポートの公開範囲の前提」](infrastructure.md#ポートの公開範囲の前提) を参照）。`frontend` は `VITE_BACKEND_URL=http://backend:8080` を持ち、Vite proxy 経由で backend service へ接続します。`backend` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます（`DEBUG_TRANSLATION` は渡さないため、翻訳の debug log は出力されません）。Backend のログには発話の内容を出力しません（[infrastructure.md](infrastructure.md) の「Backend のログに出力する情報」を参照）。`backend-dev` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます。`backend-dev` は `profiles: ["dev"]` に属しているため、サービス名を指定しない `docker compose up` では起動せず、`docker compose run --rm backend-dev ...` で使います。
 
 Dockerfile の概要:
 

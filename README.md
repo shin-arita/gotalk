@@ -16,7 +16,7 @@ GoTalk は、異なる言語を話す 2 人がブラウザ上で会話するた�
 - OpenAI Responses API による翻訳とバックトランスレーション
 - 録音中のリアルタイム翻訳表示
 - 認識テキストの編集と再翻訳
-- OpenAI Audio Speech API による翻訳文の読み上げ
+- OpenAI Audio Speech API による翻訳文の読み上げ（500 文字まで。500 文字を超える翻訳の結果は、全文を表示しますが読み上げはできません）
 - 画面内の会話履歴表示
 
 ## 技術スタック
@@ -131,6 +131,7 @@ CD は、`main` への push で起動した CI が成功した場合だけ起動
 - Uptime Kuma による公開環境の監視
 - Discord Webhook による障害通知
 - 本番 VPS 設定の毎日バックアップ
+- OpenAI の利用料を守るための入力の上限、1リクエストあたりの OpenAI の呼び出しの回数の上限、処理の timeout とキャンセル
 
 インフラ構成の詳細は [docs/infrastructure.md](docs/infrastructure.md) を参照してください。
 
@@ -177,6 +178,7 @@ GoTalk では、公開環境の死活監視と障害通知のために Uptime Ku
 - [CI/CD](docs/ci-cd.md)
 - [インフラ構成](docs/infrastructure.md)
 - [バックアップ](docs/backup.md)
+- [レート制限と CORS の設計](docs/rate-limit-design.md)
 
 ## ローカル起動
 

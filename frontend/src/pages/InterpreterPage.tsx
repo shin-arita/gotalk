@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import type { Language } from '../languages'
+import { API_TIMEOUT_MS, TTS_TOO_LONG_MESSAGE, apiErrorCode, apiErrorMessage, isTooLongForTts, messageForCode } from '../api'
 import './InterpreterPage.css'
 
 type InterpreterStatus = 'idle' | 'recording' | 'processing' | 'ready' | 'speaking'
@@ -210,7 +211,7 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
     }
 
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 60_000)
+    const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS.interpret)
     try {
       const res = await fetch('/api/interpret', { method: 'POST', body: formData, signal: controller.signal })
 
@@ -218,7 +219,7 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
         const data = await res.json()
         if (data.error === 'language_mismatch') { handleLangMismatch(); return }
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) throw new Error((await apiErrorMessage(res)) ?? `HTTP ${res.status}`)
 
       const data = await res.json()
       if (!hasLiveTranscriptRef.current) { recognizedTextRef.current = data.text; setRecognizedText(data.text) }
@@ -248,7 +249,7 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
     const tgtLang = srcLang.id === selectedLanguages[0].id ? selectedLanguages[1] : selectedLanguages[0]
     setProcessingLangs([srcLang.id, tgtLang.id])
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 30_000)
+    const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS.translate)
     try {
       const res = await fetch('/api/translate', {
         method: 'POST',
@@ -260,7 +261,7 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
         const data = await res.json()
         if (data.error === 'language_mismatch') { handleLangMismatch(); return }
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) throw new Error((await apiErrorMessage(res)) ?? `HTTP ${res.status}`)
       const data = await res.json()
       setTranslatedText(data.translatedText)
       setTtsText(data.ttsText ?? data.translatedText)
@@ -278,11 +279,13 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
     }
   }
 
-  // 録音中のリアルタイム翻訳（800ms デバウンス）
+  // 録音中のリアルタイム翻訳（800ms デバウンス）。テキストや画面の状態が変わったら、送信中の fetch も abort する
   useEffect(() => {
     if (status !== 'recording' || !recognizedText) return
     const controller = new AbortController()
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined
     const timer = setTimeout(async () => {
+      timeoutTimer = setTimeout(() => controller.abort(), API_TIMEOUT_MS.translate)
       try {
         const res = await fetch('/api/translate', {
           method: 'POST',
@@ -293,9 +296,11 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
         if (!res.ok) return
         const data = await res.json()
         if (data.translatedText && data.sourceLanguage !== 'unknown') setLiveTranslatedText(data.translatedText)
-      } catch { /* AbortError やネットワークエラーは無視 */ }
+      } catch { /* AbortError やネットワークエラーは無視 */ } finally {
+        clearTimeout(timeoutTimer)
+      }
     }, 800)
-    return () => { clearTimeout(timer); controller.abort() }
+    return () => { clearTimeout(timer); clearTimeout(timeoutTimer); controller.abort() }
   }, [recognizedText, status, selectedLanguages])
 
   useEffect(() => {
@@ -448,14 +453,30 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
   }
 
   const handleSpeak = async () => {
+    setErrorMessage('')
+    // 上限を超える翻訳の結果は読み上げない（翻訳の結果の表示はそのまま）
+    if (isTooLongForTts(ttsText)) {
+      setErrorMessage(TTS_TOO_LONG_MESSAGE)
+      return
+    }
     setStatus('speaking')
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS.tts)
     try {
       const res = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: ttsText }),
+        signal: controller.signal,
       })
-      if (!res.ok) throw new Error(`TTS HTTP ${res.status}`)
+      if (!res.ok) {
+        // 利用者に知らせるべきエラー（混み合っている、など）だけを表示する。
+        // input_too_large は、Frontend と Backend の文字数の判定がずれた場合などへの備え
+        const code = await apiErrorCode(res)
+        const msg = code === 'input_too_large' ? TTS_TOO_LONG_MESSAGE : messageForCode(code)
+        if (msg) setErrorMessage(msg)
+        throw new Error(`TTS HTTP ${res.status}`)
+      }
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       const audio = new Audio(url)
@@ -470,6 +491,8 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
       await audio.play()
     } catch {
       setStatus('ready')
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -665,7 +688,7 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
           </div>
         )}
 
-        {errorMessage && status === 'idle' && (
+        {errorMessage && (status === 'idle' || status === 'ready') && (
           <p className="error-text" role="alert">{errorMessage}</p>
         )}
       </div>

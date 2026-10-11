@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strings"
@@ -101,7 +102,7 @@ func TestRunProtectedTranslation_PlaceholderTextFailsValidation(t *testing.T) {
 				return fakeHTTPResponse(http.StatusOK, openAITextResponse("unused")), nil
 			})
 			translatedRaw, backTranslationRaw, entries, err := runProtectedTranslation(
-				"test-key", "test-model", in,
+				context.Background(), "test-key", "test-model", in,
 				func(placeholderText string) string { return placeholderText },
 				func(translatedRaw string) string { return translatedRaw },
 			)
@@ -125,7 +126,7 @@ func TestRunProtectedTranslation_PlaceholderTextFailsValidation(t *testing.T) {
 			return fakeHTTPResponse(http.StatusOK, openAITextResponse("__GT_PROPN_000__駅はどこですか。")), nil
 		})
 		translatedRaw, _, entries, err := runProtectedTranslation(
-			"test-key", "test-model", "博多駅はどこですか",
+			context.Background(), "test-key", "test-model", "博多駅はどこですか",
 			func(placeholderText string) string { return placeholderText },
 			func(translatedRaw string) string { return translatedRaw },
 		)
