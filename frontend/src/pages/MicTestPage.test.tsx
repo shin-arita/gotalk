@@ -83,6 +83,25 @@ function setupMediaRecorderMock() {
   Object.defineProperty(globalThis, 'MediaRecorder', { value: Ctor, writable: true, configurable: true })
 }
 
+// MediaRecorder の作成（where = 'create'）か start()（where = 'start'）が例外になる
+function setupFailingMediaRecorderMock(where: 'create' | 'start') {
+  const Ctor = vi.fn(function () {
+    if (where === 'create') throw new DOMException('not supported', 'NotSupportedError')
+    const recorder = {
+      state: 'inactive',
+      mimeType: '',
+      ondataavailable: null,
+      onstop: null,
+      start: vi.fn(() => { throw new DOMException('bad state', 'InvalidStateError') }),
+      stop: vi.fn(),
+    }
+    recorders.push(recorder as unknown as MockRecorder)
+    return recorder
+  }) as unknown as typeof MediaRecorder & { isTypeSupported: (t: string) => boolean }
+  Ctor.isTypeSupported = vi.fn().mockReturnValue(false)
+  Object.defineProperty(globalThis, 'MediaRecorder', { value: Ctor, writable: true, configurable: true })
+}
+
 // --- SpeechRecognition mock ---
 
 interface MockRecognition {
@@ -96,14 +115,16 @@ interface MockRecognition {
 
 let recognitions: MockRecognition[] = []
 
-function setupRecognitionMock() {
+function setupRecognitionMock(startThrows = false) {
   const Ctor = vi.fn(function () {
     const recognition: MockRecognition = {
       lang: '',
       continuous: false,
       interimResults: false,
       onresult: null,
-      start: vi.fn(),
+      start: vi.fn(() => {
+        if (startThrows) throw new DOMException('not allowed', 'NotAllowedError')
+      }),
       stop: vi.fn(),
     }
     recognitions.push(recognition)
@@ -130,6 +151,23 @@ async function click(name: string) {
 
 async function renderPage() {
   await act(async () => { render(<MicTestPage />) })
+}
+
+// start の中の例外が未処理の Promise の拒否にならないことを確かめる
+// テストは Node で動くので、Node の process の unhandledRejection を見る（アプリの型には Node の型がない）
+type NodeProcess = { on(event: string, fn: (...args: unknown[]) => void): void; off(event: string, fn: (...args: unknown[]) => void): void }
+const nodeProcess = (globalThis as unknown as { process: NodeProcess }).process
+
+function watchUnhandledRejections() {
+  const handler = vi.fn()
+  nodeProcess.on('unhandledRejection', handler)
+  return {
+    handler,
+    async settle() {
+      await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+      nodeProcess.off('unhandledRejection', handler)
+    },
+  }
 }
 
 function logText() {
@@ -264,6 +302,61 @@ describe('MicTestPage', () => {
     expect(getUserMedia).toHaveBeenCalledTimes(2)
     expect(tracks[0].stop).toHaveBeenCalledTimes(1)
     expect(logText()).toContain('track[0] readyState=live enabled=true（S3 開始）')
+  })
+
+  it('GG2: S1 で MediaRecorder の作成が例外になると、ログに出し、開いた track を閉じ、未処理の拒否にしない', async () => {
+    const getUserMedia = setupGetUserMediaMock()
+    setupFailingMediaRecorderMock('create')
+    const rejections = watchUnhandledRejections()
+    await renderPage()
+
+    await click('S1 開始')
+    expect(logText()).toContain('MediaRecorder 失敗 name=NotSupportedError')
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'S1 開始' })).toBeInTheDocument()
+
+    // もう一度始めても、前の track は残らない
+    await click('S1 開始')
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(tracks[1].stop).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'S1 開始' })).toBeInTheDocument()
+
+    await rejections.settle()
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('GG2: S2 で MediaRecorder の start() が例外になると、すべて閉じて開始しない', async () => {
+    setupGetUserMediaMock()
+    setupFailingMediaRecorderMock('start')
+    const rejections = watchUnhandledRejections()
+    await renderPage()
+
+    await click('S2 開始')
+    expect(logText()).toContain('MediaRecorder 失敗 name=InvalidStateError')
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'S2 開始' })).toBeInTheDocument()
+
+    await rejections.settle()
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('GG2: S5 で音声認識の start() が例外になると、録音とマイクも閉じて開始しない', async () => {
+    setupGetUserMediaMock()
+    setupRecognitionMock(true)
+    const rejections = watchUnhandledRejections()
+    await renderPage()
+
+    await click('S5 開始')
+    expect(logText()).toContain('音声認識 start() 失敗 name=NotAllowedError')
+    expect(recorders[0].stop).toHaveBeenCalled()
+    expect(tracks[0].stop).toHaveBeenCalledTimes(1)
+    // 始められなかった音声認識の stop() は呼ばない
+    expect(recognitions[0].stop).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'S5 開始' })).toBeInTheDocument()
+
+    await rejections.settle()
+    expect(rejections.handler).not.toHaveBeenCalled()
   })
 
   it('S7: getUserMedia は最初の1回だけで、track.enabled は true のまま', async () => {

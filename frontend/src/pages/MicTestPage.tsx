@@ -154,25 +154,44 @@ export default function MicTestPage() {
     streamOwnerRef.current = null
   }
 
-  const startRecorder = (stream: MediaStream) => {
-    const mimeType = getSupportedMimeType()
-    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
-    let bytes = 0
-    recorder.ondataavailable = (e: BlobEvent) => { bytes += e.data.size }
-    recorder.onstop = () => addLog(`MediaRecorder stop bytes=${bytes}`)
-    recorder.start()
-    recorderRef.current = recorder
-    addLog(`MediaRecorder start mimeType=${recorder.mimeType || mimeType || '（既定）'}`)
+  // 作成か start() が例外になった場合は、ログに出して false を返す
+  const startRecorder = (stream: MediaStream): boolean => {
+    try {
+      const mimeType = getSupportedMimeType()
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      let bytes = 0
+      recorder.ondataavailable = (e: BlobEvent) => { bytes += e.data.size }
+      recorder.onstop = () => addLog(`MediaRecorder stop bytes=${bytes}`)
+      recorder.start()
+      recorderRef.current = recorder
+      addLog(`MediaRecorder start mimeType=${recorder.mimeType || mimeType || '（既定）'}`)
+      return true
+    } catch (e) {
+      addLog(`MediaRecorder 失敗 name=${errorName(e)}`)
+      return false
+    }
   }
 
   const stopRecorder = () => {
     const recorder = recorderRef.current
     recorderRef.current = null
-    if (recorder && recorder.state !== 'inactive') recorder.stop()
+    if (!recorder || recorder.state === 'inactive') return
+    try {
+      recorder.stop()
+    } catch (e) {
+      addLog(`MediaRecorder stop() 失敗 name=${errorName(e)}`)
+    }
   }
 
-  const startRecognition = (Ctor: RecognitionCtor) => {
-    const recognition = new Ctor()
+  // 作成か start() が例外になった場合は、ログに出して false を返す
+  const startRecognition = (Ctor: RecognitionCtor): boolean => {
+    let recognition: Recognition
+    try {
+      recognition = new Ctor()
+    } catch (e) {
+      addLog(`音声認識の作成に失敗 name=${errorName(e)}`)
+      return false
+    }
     recognition.lang = 'ja-JP'
     recognition.continuous = true
     recognition.interimResults = true
@@ -187,13 +206,16 @@ export default function MicTestPage() {
       for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript
       addLog(`音声認識 onresult 文字数=${[...text].length}`)
     }
-    recognitionRef.current = recognition
     try {
       recognition.start()
-      addLog('音声認識 start()')
     } catch (e) {
+      // 始められなかったので、stop() の対象にしない
       addLog(`音声認識 start() 失敗 name=${errorName(e)}`)
+      return false
     }
+    recognitionRef.current = recognition
+    addLog('音声認識 start()')
+    return true
   }
 
   const stopRecognition = () => {
@@ -234,49 +256,57 @@ export default function MicTestPage() {
     }
     setBusy(true)
     try {
-      switch (test) {
-        case 'S1': {
-          const stream = await openStream(test)
-          if (!stream) return
-          startRecorder(stream)
-          break
-        }
-        case 'S2': {
-          const stream = await ensureStream(test)
-          if (!stream) return
-          setTracksEnabled(true)
-          startRecorder(stream)
-          break
-        }
-        case 'S3': {
-          const stream = await ensureStream(test)
-          if (!stream) return
-          startRecognition(RecognitionCtor!)
-          break
-        }
-        case 'S4':
-          startRecognition(RecognitionCtor!)
-          break
-        case 'S5': {
-          const stream = await ensureStream(test)
-          if (!stream) return
-          setTracksEnabled(true)
-          startRecorder(stream)
-          startRecognition(RecognitionCtor!)
-          break
-        }
-        case 'S7': {
-          const stream = await ensureStream(test)
-          if (!stream) return
-          startRecorder(stream)
-          break
-        }
+      let started: boolean
+      try {
+        started = await openResources(test, RecognitionCtor)
+      } catch (e) {
+        addLog(`${test} 開始で例外 name=${errorName(e)}`)
+        started = false
+      }
+      if (!started) {
+        // 途中まで開いたマイク、録音、音声認識を残さず、running も設定しない
+        addLog(`${test} 開始に失敗したため、すべて閉じる`)
+        closeAll()
+        logTracks(`${test} 開始に失敗`)
+        return
       }
       setRunning(test)
       logTracks(`${test} 開始`)
       void logPermission(`${test} 開始`)
     } finally {
       setBusy(false)
+    }
+  }
+
+  // テストごとにマイク、録音、音声認識を開く。どれかに失敗したら false を返す
+  const openResources = async (test: TestId, RecognitionCtor: RecognitionCtor | null): Promise<boolean> => {
+    switch (test) {
+      case 'S1': {
+        const stream = await openStream(test)
+        return !!stream && startRecorder(stream)
+      }
+      case 'S2': {
+        const stream = await ensureStream(test)
+        if (!stream) return false
+        setTracksEnabled(true)
+        return startRecorder(stream)
+      }
+      case 'S3': {
+        const stream = await ensureStream(test)
+        return !!stream && startRecognition(RecognitionCtor!)
+      }
+      case 'S4':
+        return startRecognition(RecognitionCtor!)
+      case 'S5': {
+        const stream = await ensureStream(test)
+        if (!stream) return false
+        setTracksEnabled(true)
+        return startRecorder(stream) && startRecognition(RecognitionCtor!)
+      }
+      case 'S7': {
+        const stream = await ensureStream(test)
+        return !!stream && startRecorder(stream)
+      }
     }
   }
 
