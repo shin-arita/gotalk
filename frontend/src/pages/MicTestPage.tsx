@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 // 国旗を押すたびに出るブラウザのマイクのお知らせが、getUserMedia の開き直しと
 // 音声認識の始め直しのどちらで出るのかを、実機で確かめるために使います。
 // 録音した音声と音声認識の結果は、送信も保存もせず、ページの中に表示するだけです。
+// 直前の1件の録音だけは、音が取れているかを確かめるため、ページの中で再生できるようにメモリに持ちます。
 //
 // 通訳の画面との違い：音声認識の continuous と interimResults は同じですが、lang は ja-JP に
 // 固定しています（通訳の画面は押した国旗の言語）。また、通訳の画面にある、録音の間の
@@ -40,6 +41,11 @@ interface Recognition {
   onstart: (() => void) | null
   onaudiostart: (() => void) | null
   onaudioend: (() => void) | null
+  onsoundstart: (() => void) | null
+  onsoundend: (() => void) | null
+  onspeechstart: (() => void) | null
+  onspeechend: (() => void) | null
+  onnomatch: (() => void) | null
   onend: (() => void) | null
   onerror: ((event: { error?: string }) => void) | null
   onresult: ((event: RecognitionResultEvent) => void) | null
@@ -52,6 +58,33 @@ type RecognitionCtor = new () => Recognition
 function getRecognitionCtor(): RecognitionCtor | null {
   const w = window as Window & { SpeechRecognition?: RecognitionCtor; webkitSpeechRecognition?: RecognitionCtor }
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null
+}
+
+// 再生ごとの状態。「再生を止めた」を、止めたタイミングにかかわらず1回だけ出すために使う
+interface Playback {
+  label: string
+  // play() の Promise が解決または拒否された
+  settled: boolean
+  // 再生が終わったか、本当に失敗して（play() の拒否か error のイベント）、止めるものがない。
+  // 「再生の失敗」は、これを true にした側だけが出す
+  finished: boolean
+  // stopAudio で止めた理由
+  stopReason: string | null
+}
+
+// 直前の録音。Blob は object URL を通してメモリにだけ持つ
+interface LastRecording {
+  test: TestId
+  count: number
+  bytes: number
+  // 録音の開始から停止までの秒数。onstart のイベントが来なかった場合は分からない
+  seconds: number | null
+  url: string
+}
+
+function recordingLabel(r: LastRecording): string {
+  const length = r.seconds === null ? '' : `、約${r.seconds.toFixed(1)}秒`
+  return `${r.test} ${r.count}回目の録音、${r.bytes}バイト${length}`
 }
 
 function formatTime(d: Date): string {
@@ -81,7 +114,15 @@ export default function MicTestPage() {
   const streamOwnerRef = useRef<TestId | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recognitionRef = useRef<Recognition | null>(null)
-  // テストごとの開始の回数（track の ended がどの開始の後に起きたかをログに出すため）
+  const [lastRecording, setLastRecording] = useState<LastRecording | null>(null)
+  const lastRecordingRef = useRef<LastRecording | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  // Audio ごとの再生の状態
+  const playbacksRef = useRef(new WeakMap<HTMLAudioElement, Playback>())
+  // 録音を始めるときと、録音を捨てるたびに増やす。止めた後に遅れて来る onstop のうち、
+  // 古い録音のものや、捨てた後のものを持たないために使う
+  const recordingTokenRef = useRef(0)
+  // テストごとの開始の回数（track の ended、mute、unmute がどの開始の後に起きたかをログに出すため）
   const startCountsRef = useRef<Record<TestId, number>>({ S1: 0, S2: 0, S3: 0, S4: 0, S5: 0, S7: 0 })
   // すべて閉じるたびに増やし、閉じる前に始めた getUserMedia の結果を捨てるのに使う
   const generationRef = useRef(0)
@@ -105,7 +146,7 @@ export default function MicTestPage() {
       return
     }
     stream.getTracks().forEach((t, i) => {
-      addLog(`track[${i}] readyState=${t.readyState} enabled=${t.enabled}（${when}）`)
+      addLog(`track[${i}] readyState=${t.readyState} enabled=${t.enabled} muted=${t.muted}（${when}）`)
     })
   }
 
@@ -126,8 +167,11 @@ export default function MicTestPage() {
       }
       addLog(`getUserMedia 成功（${test}）`)
       stream.getTracks().forEach((t, i) => {
-        t.addEventListener('ended', () =>
-          addLog(`track[${i}] ended（${test} ${startCountsRef.current[test]}回目の開始の後）`))
+        // mute は、track が live のままでも音が届いていないときに起きる
+        for (const type of ['ended', 'mute', 'unmute']) {
+          t.addEventListener(type, () =>
+            addLog(`track[${i}] ${type}（${test} ${startCountsRef.current[test]}回目の開始の後）`))
+        }
       })
       streamRef.current = stream
       streamOwnerRef.current = test
@@ -159,14 +203,75 @@ export default function MicTestPage() {
     streamOwnerRef.current = null
   }
 
+  const logPlaybackStopped = (playback: Playback, name?: string) => {
+    addLog(`再生を止めた（${playback.stopReason}）（${playback.label}）${name ? `name=${name}` : ''}`)
+    logTracks('再生を止めた')
+  }
+
+  // 再生を止める。「再生を止めた」は、play() の Promise が決まった後ならここで出し、
+  // 決まる前なら、決まったときに handlePlay の側で出す（どちらか一方だけで1回）
+  const stopAudio = (reason: string) => {
+    const audio = audioRef.current
+    audioRef.current = null
+    if (!audio) return
+    const playback = playbacksRef.current.get(audio)
+    audio.pause()
+    // 終わった後と失敗した後は止めるものがないので、理由も付けない（後で届く拒否でも「再生を止めた」を出さない）
+    if (!playback || playback.finished || playback.stopReason !== null) return
+    playback.stopReason = reason
+    // finished は上の早い return で除いているので、ここでは play() の Promise が決まったかだけを見る
+    if (playback.settled) logPlaybackStopped(playback)
+  }
+
+  // 直前の録音を捨てる。再生中なら止め、object URL を解放する
+  const discardRecording = (reason: string) => {
+    recordingTokenRef.current++
+    stopAudio('録音を捨てたため')
+    const recording = lastRecordingRef.current
+    if (!recording) return
+    lastRecordingRef.current = null
+    URL.revokeObjectURL(recording.url)
+    setLastRecording(null)
+    addLog(`直前の録音を捨てる（${reason}）`)
+  }
+
+  const keepRecording = (recording: LastRecording) => {
+    lastRecordingRef.current = recording
+    setLastRecording(recording)
+    addLog(`直前の録音を持つ（${recordingLabel(recording)}）`)
+  }
+
   // 作成か start() が例外になった場合は、ログに出して false を返す
-  const startRecorder = (stream: MediaStream): boolean => {
+  const startRecorder = (stream: MediaStream, test: TestId): boolean => {
+    discardRecording('次の録音の開始')
+    const token = recordingTokenRef.current
+    const count = startCountsRef.current[test]
     try {
       const mimeType = getSupportedMimeType()
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
       let bytes = 0
-      recorder.ondataavailable = (e: BlobEvent) => { bytes += e.data.size }
-      recorder.onstop = () => addLog(`MediaRecorder stop bytes=${bytes}`)
+      const chunks: Blob[] = []
+      let startedAt: number | null = null
+      recorder.ondataavailable = (e: BlobEvent) => {
+        bytes += e.data.size
+        chunks.push(e.data)
+      }
+      recorder.onstart = (e: Event) => { startedAt = e.timeStamp }
+      recorder.onstop = (e: Event) => {
+        addLog(`MediaRecorder stop bytes=${bytes}`)
+        // 次の録音を始めた後や、捨てた後に届いたものは持たない
+        if (token !== recordingTokenRef.current) return
+        const seconds = startedAt === null ? null : (e.timeStamp - startedAt) / 1000
+        const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || undefined })
+        let url: string
+        try {
+          url = URL.createObjectURL(blob)
+        } catch (e) {
+          addLog(`録音を持てませんでした name=${errorName(e)}`)
+          return
+        }
+        keepRecording({ test, count, bytes, seconds, url })
+      }
       recorder.start()
       recorderRef.current = recorder
       addLog(`MediaRecorder start mimeType=${recorder.mimeType || mimeType || '（既定）'}`)
@@ -205,6 +310,12 @@ export default function MicTestPage() {
     recognition.onstart = () => addLog('音声認識 onstart')
     recognition.onaudiostart = () => addLog('音声認識 onaudiostart')
     recognition.onaudioend = () => addLog('音声認識 onaudioend')
+    // 音声認識が音や声を受け取ったかを確かめるため
+    recognition.onsoundstart = () => addLog('音声認識 onsoundstart')
+    recognition.onsoundend = () => addLog('音声認識 onsoundend')
+    recognition.onspeechstart = () => addLog('音声認識 onspeechstart')
+    recognition.onspeechend = () => addLog('音声認識 onspeechend')
+    recognition.onnomatch = () => addLog('音声認識 onnomatch')
     recognition.onend = () => addLog('音声認識 onend')
     recognition.onerror = e => addLog(`音声認識 onerror error=${e.error ?? 'unknown'}`)
     recognition.onresult = e => {
@@ -264,6 +375,8 @@ export default function MicTestPage() {
     // 切り替えのための closeAll の後の世代の番号。開くのを待っている間に pagehide などで
     // closeAll が呼ばれると変わる
     const generation = generationRef.current
+    // この開始で録音を始めると変わる（startRecorder の最初の discardRecording で増えるため）
+    const recordingToken = recordingTokenRef.current
     setBusy(true)
     try {
       let started: boolean
@@ -281,6 +394,9 @@ export default function MicTestPage() {
       if (!started) {
         // 途中まで開いたマイク、録音、音声認識を残さず、running も設定しない
         addLog(`${test} 開始に失敗したため、すべて閉じる`)
+        // 失敗した開始で始めた録音は、closeAll で止めた後に届く onstop で持たないよう、先に無効にする。
+        // この開始で録音を始めていなければ、ほかの録音の onstop を無効にしないよう、何もしない
+        if (recordingTokenRef.current !== recordingToken) recordingTokenRef.current++
         closeAll()
         logTracks(`${test} 開始に失敗`)
         return
@@ -298,13 +414,13 @@ export default function MicTestPage() {
     switch (test) {
       case 'S1': {
         const stream = await openStream(test)
-        return !!stream && startRecorder(stream)
+        return !!stream && startRecorder(stream, test)
       }
       case 'S2': {
         const stream = await ensureStream(test)
         if (!stream) return false
         setTracksEnabled(true)
-        return startRecorder(stream)
+        return startRecorder(stream, test)
       }
       case 'S3': {
         const stream = await ensureStream(test)
@@ -316,11 +432,11 @@ export default function MicTestPage() {
         const stream = await ensureStream(test)
         if (!stream) return false
         setTracksEnabled(true)
-        return startRecorder(stream) && startRecognition(RecognitionCtor!)
+        return startRecorder(stream, test) && startRecognition(RecognitionCtor!)
       }
       case 'S7': {
         const stream = await ensureStream(test)
-        return !!stream && startRecorder(stream)
+        return !!stream && startRecorder(stream, test)
       }
     }
   }
@@ -359,8 +475,63 @@ export default function MicTestPage() {
   const handleCloseAll = () => {
     addLog('S6 すべて閉じる')
     closeAll()
+    discardRecording('S6')
     logTracks('S6 すべて閉じる')
     void logPermission('S6 すべて閉じる')
+  }
+
+  // 音声認識がスピーカーの音を拾うことや、iPhone で音声のセッションが切り替わることで、
+  // テストの結果に影響しないよう、テストが動いている間と開始を待っている間は再生しない
+  const playBlocked = running !== null || busy
+
+  const handlePlay = () => {
+    const recording = lastRecordingRef.current
+    if (!recording) return
+    stopAudio('もう一度再生したため')
+    const label = recordingLabel(recording)
+    logTracks('再生の前')
+    const audio = new Audio(recording.url)
+    audioRef.current = audio
+    const playback: Playback = { label, settled: false, finished: false, stopReason: null }
+    playbacksRef.current.set(audio, playback)
+    audio.onplaying = () => addLog(`再生の開始（${label}）`)
+    audio.onended = () => {
+      playback.finished = true
+      addLog(`再生の終わり（${label}）`)
+      logTracks('再生の終わり')
+    }
+    // 再生の途中のデコードなどのエラー。止めた後に届いたものは、「再生を止めた」で出しているので出さない
+    audio.onerror = () => {
+      if (playback.finished || playback.stopReason !== null) return
+      playback.finished = true
+      addLog(`再生の失敗 code=${audio.error?.code ?? '不明'}（${label}）`)
+      logTracks('再生の失敗')
+    }
+    const succeed = () => {
+      if (playback.settled) return
+      playback.settled = true
+      // 開始を待っている間に止めたが、拒否されずに解決した場合
+      if (playback.stopReason !== null) logPlaybackStopped(playback)
+    }
+    const fail = (e: unknown) => {
+      if (playback.settled) return
+      playback.settled = true
+      // 開始を待っている間に止めた場合は、ブラウザによっては AbortError で拒否される。本当の失敗と出し分ける
+      if (playback.stopReason !== null) {
+        logPlaybackStopped(playback, errorName(e))
+        return
+      }
+      // error のイベントで、もう「再生の失敗」を出している
+      if (playback.finished) return
+      playback.finished = true
+      addLog(`再生の失敗 name=${errorName(e)}（${label}）`)
+      logTracks('再生の失敗')
+    }
+    try {
+      void Promise.resolve(audio.play()).then(succeed, fail)
+    } catch (e) {
+      fail(e)
+    }
   }
 
   const handleCopy = async () => {
@@ -381,6 +552,7 @@ export default function MicTestPage() {
 
   // 後片付けと、ページの状態の変化のログ。closeAll などは ref だけを触るので、最初の描画のものを使う
   const closeAllRef = useRef(closeAll)
+  const discardRecordingRef = useRef(discardRecording)
   const addLogRef = useRef(addLog)
   useEffect(() => {
     const log = (msg: string) => addLogRef.current(msg)
@@ -388,6 +560,7 @@ export default function MicTestPage() {
     const handlePageHide = () => {
       log('pagehide すべて閉じる')
       closeAllRef.current()
+      discardRecordingRef.current('pagehide')
     }
     document.addEventListener('visibilitychange', handleVisibility)
     window.addEventListener('pagehide', handlePageHide)
@@ -411,12 +584,14 @@ export default function MicTestPage() {
     void watchPermission()
 
     const closeAllOnUnmount = closeAllRef.current
+    const discardRecordingOnUnmount = discardRecordingRef.current
     return () => {
       cancelled = true
       document.removeEventListener('visibilitychange', handleVisibility)
       window.removeEventListener('pagehide', handlePageHide)
       permissionStatus?.removeEventListener('change', handlePermissionChange)
       closeAllOnUnmount()
+      discardRecordingOnUnmount('コンポーネントが外れた')
     }
   }, [])
 
@@ -425,7 +600,7 @@ export default function MicTestPage() {
       <h1 style={{ fontSize: '20px', marginBottom: '12px' }}>Mic Test</h1>
 
       <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '24px' }}>
-        マイク動作確認用の開発ページです。録音した音声と音声認識の結果は、GoTalk の Backend や OpenAI API には送信・保存しません。音声認識を使うテスト（S3、S4、S5）では、ブラウザまたは OS の音声認識サービスへ音声が送信される場合があります。
+        マイク動作確認用の開発ページです。録音した音声と音声認識の結果は、GoTalk の Backend や OpenAI API には送信・保存しません。音声認識を使うテスト（S3、S4、S5）では、ブラウザまたは OS の音声認識サービスへ音声が送信される場合があります。録音した音声は、このページの中で再生するためだけにメモリに持ちます。送信も保存もしません。次の録音を始めたとき、S6 を押したとき、ページを閉じたときに捨てます。
       </p>
 
       <section style={sectionStyle}>
@@ -454,6 +629,24 @@ export default function MicTestPage() {
           </button>
           <span style={{ fontSize: '13px', lineHeight: 1.5 }}>
             マイク（すべての track を stop()）、録音、音声認識を閉じる。閉じた後に S2 をもう一度始めて、閉じてから開き直したときの動きを確かめる
+          </span>
+        </div>
+      </section>
+
+      <section style={sectionStyle}>
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          <button
+            onClick={handlePlay}
+            disabled={!lastRecording || playBlocked}
+            style={{ padding: '10px 14px', fontSize: '15px', flexShrink: 0 }}
+          >
+            直前の録音を再生
+          </button>
+          <span data-testid="mic-test-recording" style={{ fontSize: '13px', lineHeight: 1.5 }}>
+            {lastRecording ? recordingLabel(lastRecording) : '録音なし（S1、S2、S5、S7 で録音して停止すると再生できます）'}
+            {lastRecording && playBlocked && (
+              <span data-testid="mic-test-play-blocked">（テストを止めてから再生できます）</span>
+            )}
           </span>
         </div>
       </section>

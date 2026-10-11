@@ -4,13 +4,14 @@ import App from '../App'
 import MicTestPage from './MicTestPage'
 
 const DESCRIPTION =
-  'マイク動作確認用の開発ページです。録音した音声と音声認識の結果は、GoTalk の Backend や OpenAI API には送信・保存しません。音声認識を使うテスト（S3、S4、S5）では、ブラウザまたは OS の音声認識サービスへ音声が送信される場合があります。'
+  'マイク動作確認用の開発ページです。録音した音声と音声認識の結果は、GoTalk の Backend や OpenAI API には送信・保存しません。音声認識を使うテスト（S3、S4、S5）では、ブラウザまたは OS の音声認識サービスへ音声が送信される場合があります。録音した音声は、このページの中で再生するためだけにメモリに持ちます。送信も保存もしません。次の録音を始めたとき、S6 を押したとき、ページを閉じたときに捨てます。'
 
 // --- getUserMedia mock ---
 
 interface MockTrack {
   enabled: boolean
   readyState: string
+  muted: boolean
   stop: ReturnType<typeof vi.fn>
   addEventListener: ReturnType<typeof vi.fn>
   listeners: Record<string, (() => void)[]>
@@ -22,6 +23,7 @@ function makeTrack(): MockTrack {
   const track: MockTrack = {
     enabled: true,
     readyState: 'live',
+    muted: false,
     // 実際のブラウザと同じく、stop() では ended のイベントを出さない
     stop: vi.fn(() => { track.readyState = 'ended' }),
     addEventListener: vi.fn((type: string, fn: () => void) => {
@@ -31,6 +33,12 @@ function makeTrack(): MockTrack {
   }
   tracks.push(track)
   return track
+}
+
+// track に音が届かなくなったとき（mute）と、届くようになったとき（unmute）の動き
+function setTrackMuted(track: MockTrack, muted: boolean) {
+  track.muted = muted
+  track.listeners[muted ? 'mute' : 'unmute']?.forEach(fn => fn())
 }
 
 // ブラウザや OS が track を終わらせたときの動き
@@ -68,25 +76,31 @@ interface MockRecorder {
   state: string
   mimeType: string
   ondataavailable: ((e: { data: Blob }) => void) | null
-  onstop: (() => void) | null
+  onstart: ((e: Event) => void) | null
+  onstop: ((e: Event) => void) | null
   start: ReturnType<typeof vi.fn>
   stop: ReturnType<typeof vi.fn>
 }
 
 let recorders: MockRecorder[] = []
 
-function setupMediaRecorderMock() {
+// deferOnstop が true のときは、実際のブラウザと同じく stop() の後に onstop を出さず、
+// テストの中で finishRecorder() を呼んで遅れて届かせる
+function setupMediaRecorderMock(deferOnstop = false) {
   const Ctor = vi.fn(function () {
     const recorder: MockRecorder = {
       state: 'inactive',
       mimeType: '',
       ondataavailable: null,
+      onstart: null,
       onstop: null,
-      start: vi.fn(() => { recorder.state = 'recording' }),
+      start: vi.fn(() => {
+        recorder.state = 'recording'
+        recorder.onstart?.(new Event('start'))
+      }),
       stop: vi.fn(() => {
         recorder.state = 'inactive'
-        recorder.ondataavailable?.({ data: new Blob([new Uint8Array(5)]) })
-        recorder.onstop?.()
+        if (!deferOnstop) finishRecorder(recorder)
       }),
     }
     recorders.push(recorder)
@@ -94,6 +108,11 @@ function setupMediaRecorderMock() {
   }) as unknown as typeof MediaRecorder & { isTypeSupported: (t: string) => boolean }
   Ctor.isTypeSupported = vi.fn().mockReturnValue(false)
   Object.defineProperty(globalThis, 'MediaRecorder', { value: Ctor, writable: true, configurable: true })
+}
+
+function finishRecorder(recorder: MockRecorder) {
+  recorder.ondataavailable?.({ data: new Blob([new Uint8Array(5)]) })
+  recorder.onstop?.(new Event('stop'))
 }
 
 // MediaRecorder の作成（where = 'create'）か start()（where = 'start'）が例外になる
@@ -122,6 +141,11 @@ interface MockRecognition {
   continuous: boolean
   interimResults: boolean
   onresult: ((e: unknown) => void) | null
+  onsoundstart: (() => void) | null
+  onsoundend: (() => void) | null
+  onspeechstart: (() => void) | null
+  onspeechend: (() => void) | null
+  onnomatch: (() => void) | null
   start: ReturnType<typeof vi.fn>
   stop: ReturnType<typeof vi.fn>
 }
@@ -135,6 +159,11 @@ function setupRecognitionMock(startThrows = false) {
       continuous: false,
       interimResults: false,
       onresult: null,
+      onsoundstart: null,
+      onsoundend: null,
+      onspeechstart: null,
+      onspeechend: null,
+      onnomatch: null,
       start: vi.fn(() => {
         if (startThrows) throw new DOMException('not allowed', 'NotAllowedError')
       }),
@@ -143,6 +172,12 @@ function setupRecognitionMock(startThrows = false) {
     recognitions.push(recognition)
     return recognition
   })
+  Object.defineProperty(window, 'SpeechRecognition', { value: Ctor, writable: true, configurable: true })
+}
+
+// 音声認識の作成が例外になる
+function setupFailingRecognitionCtorMock() {
+  const Ctor = vi.fn(function () { throw new DOMException('not allowed', 'NotAllowedError') })
   Object.defineProperty(window, 'SpeechRecognition', { value: Ctor, writable: true, configurable: true })
 }
 
@@ -197,11 +232,87 @@ function saveProperty(target: object, key: string) {
 }
 
 let fetchMock: ReturnType<typeof vi.fn>
+let createObjectURL: ReturnType<typeof vi.fn>
+let revokeObjectURL: ReturnType<typeof vi.fn>
+
+// 再生の mock。play() を呼ぶと playing のイベントを出す
+function setupPlayMock(rejects = false) {
+  const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(function (this: HTMLMediaElement) {
+    if (rejects) return Promise.reject(new DOMException('not allowed', 'NotAllowedError'))
+    this.dispatchEvent(new Event('playing'))
+    return Promise.resolve()
+  })
+  const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+  return { play, pause }
+}
+
+// play() の Promise を解決せずに待たせ、pause() で AbortError にして拒否する（Chrome などの動き）
+function setupAbortOnPausePlayMock() {
+  const rejects = new Map<HTMLMediaElement, (e: unknown) => void>()
+  const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(function (this: HTMLMediaElement) {
+    return new Promise<void>((_, reject) => { rejects.set(this, reject) })
+  })
+  const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(function (this: HTMLMediaElement) {
+    rejects.get(this)?.(new DOMException('interrupted by pause', 'AbortError'))
+  })
+  return { play, pause }
+}
+
+// play() の Promise を待たせ、pause() の後に拒否せずに解決する（拒否しないブラウザの動き）
+function setupResolveAfterPausePlayMock() {
+  const resolves = new Map<HTMLMediaElement, () => void>()
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(function (this: HTMLMediaElement) {
+    return new Promise<void>(resolve => { resolves.set(this, resolve) })
+  })
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(function (this: HTMLMediaElement) {
+    resolves.get(this)?.()
+  })
+}
+
+// play() の Promise を待たせ、テストの中で拒否する。pause() では何もしない
+function setupControlledPlayMock() {
+  const rejects = new Map<HTMLMediaElement, (e: unknown) => void>()
+  const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(function (this: HTMLMediaElement) {
+    return new Promise<void>((_, reject) => { rejects.set(this, reject) })
+  })
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+  return {
+    play,
+    reject: async (audio: HTMLMediaElement, name: string) => {
+      await act(async () => { rejects.get(audio)?.(new DOMException('play failed', name)) })
+    },
+  }
+}
+
+// 再生の途中のメディアのエラー（code は MediaError の code）
+function fireMediaError(audio: HTMLMediaElement, code?: number) {
+  if (code !== undefined) Object.defineProperty(audio, 'error', { value: { code }, configurable: true })
+  act(() => { audio.dispatchEvent(new Event('error')) })
+}
+
+function countMatches(text: string, re: RegExp) {
+  return text.match(new RegExp(re.source, 'g'))?.length ?? 0
+}
+
+function playButton() {
+  return screen.getByRole('button', { name: '直前の録音を再生' })
+}
+
+function recordingText() {
+  return screen.getByTestId('mic-test-recording').textContent ?? ''
+}
 
 beforeEach(() => {
   savedProperties = []
   saveProperty(globalThis.navigator, 'mediaDevices')
   saveProperty(globalThis.navigator, 'permissions')
+  saveProperty(URL, 'createObjectURL')
+  saveProperty(URL, 'revokeObjectURL')
+  let urlCount = 0
+  createObjectURL = vi.fn(() => `blob:mock-${++urlCount}`)
+  revokeObjectURL = vi.fn()
+  Object.defineProperty(URL, 'createObjectURL', { value: createObjectURL, writable: true, configurable: true })
+  Object.defineProperty(URL, 'revokeObjectURL', { value: revokeObjectURL, writable: true, configurable: true })
   tracks = []
   recorders = []
   recognitions = []
@@ -259,7 +370,7 @@ describe('MicTestPage', () => {
     expect(tracks[1].stop).toHaveBeenCalledTimes(1)
     expect(logText()).toContain('MediaRecorder stop bytes=5')
     // GG5: S6 と同じように、track を閉じたことと、閉じる前の状態がログで分かる
-    expect(logText()).toContain('track[0] readyState=live enabled=true（S1 停止、stop() の前）')
+    expect(logText()).toContain('track[0] readyState=live enabled=true muted=false（S1 停止、stop() の前）')
     expect(logText()).toContain('track を stop()（S1）')
     expect(logText()).toContain('track なし（S1 停止）')
   })
@@ -280,7 +391,7 @@ describe('MicTestPage', () => {
     expect(getUserMedia).toHaveBeenCalledTimes(1)
     expect(recorders).toHaveLength(2)
     expect(tracks[0].stop).not.toHaveBeenCalled()
-    expect(logText()).toContain('track[0] readyState=live enabled=false（S2 停止）')
+    expect(logText()).toContain('track[0] readyState=live enabled=false muted=false（S2 停止）')
   })
 
   it('GG1: track が ended になった後に S2 を始めると、古い track を stop() してマイクを開き直す', async () => {
@@ -318,7 +429,7 @@ describe('MicTestPage', () => {
     await click('S3 開始')
     expect(getUserMedia).toHaveBeenCalledTimes(2)
     expect(tracks[0].stop).toHaveBeenCalledTimes(1)
-    expect(logText()).toContain('track[0] readyState=live enabled=true（S3 開始）')
+    expect(logText()).toContain('track[0] readyState=live enabled=true muted=false（S3 開始）')
   })
 
   it('GG2: S1 で MediaRecorder の作成が例外になると、ログに出し、開いた track を閉じ、未処理の拒否にしない', async () => {
@@ -377,6 +488,39 @@ describe('MicTestPage', () => {
 
     await rejections.settle()
     expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('track の mute と unmute を、テストの番号と開始の回数を入れてログに出す', async () => {
+    setupRecognitionMock()
+    await renderPage()
+
+    await click('S3 開始')
+    await click('S3 停止')
+    await click('S3 開始')
+    act(() => { setTrackMuted(tracks[0], true) })
+    expect(logText()).toContain('track[0] mute（S3 2回目の開始の後）')
+    await click('S3 停止')
+    expect(logText()).toContain('track[0] readyState=live enabled=true muted=true（S3 停止）')
+    act(() => { setTrackMuted(tracks[0], false) })
+    expect(logText()).toContain('track[0] unmute（S3 2回目の開始の後）')
+  })
+
+  it('track の状態のログに muted を出す', async () => {
+    await renderPage()
+    await click('S2 開始')
+    expect(logText()).toContain('track[0] readyState=live enabled=true muted=false（S2 開始）')
+  })
+
+  it('音声認識の onsoundstart、onsoundend、onspeechstart、onspeechend、onnomatch をログに出す', async () => {
+    setupRecognitionMock()
+    await renderPage()
+    await click('S4 開始')
+
+    const events = ['onsoundstart', 'onspeechstart', 'onspeechend', 'onsoundend', 'onnomatch'] as const
+    act(() => { events.forEach(name => recognitions[0][name]?.()) })
+    for (const name of events) {
+      expect(logText()).toContain(`音声認識 ${name}`)
+    }
   })
 
   it('GG3: S3: getUserMedia は最初の1回だけで、enabled は true のまま、録音せず、停止で track を閉じない', async () => {
@@ -655,5 +799,553 @@ describe('MicTestPage', () => {
     unmount()
     expect(tracks[1].stop).toHaveBeenCalledTimes(1)
     expect(recognitions[1].stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('録音していないときは、直前の録音を再生のボタンを押せない', async () => {
+    setupRecognitionMock()
+    await renderPage()
+    expect(playButton()).toBeDisabled()
+
+    // 録音しないテスト（S3、S4）だけを試した後も押せない
+    for (const id of ['S3', 'S4']) {
+      await click(`${id} 開始`)
+      await click(`${id} 停止`)
+    }
+    expect(playButton()).toBeDisabled()
+    expect(createObjectURL).not.toHaveBeenCalled()
+  })
+
+  it('S2 で録音して停止すると再生のボタンを押せるようになり、テストの番号、回数、バイト数を表示する', async () => {
+    await renderPage()
+    await click('S2 開始')
+    // 録音している間は、まだ押せない
+    expect(playButton()).toBeDisabled()
+    await click('S2 停止')
+
+    expect(playButton()).toBeEnabled()
+    expect(recordingText()).toMatch(/^S2 1回目の録音、5バイト、約\d+\.\d秒$/)
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    const blob = createObjectURL.mock.calls[0][0] as Blob
+    expect(blob.size).toBe(5)
+    expect(logText()).toContain('直前の録音を持つ（S2 1回目の録音、5バイト、')
+  })
+
+  for (const id of ['S1', 'S5', 'S7'] as const) {
+    it(`${id} で録音して停止しても、再生のボタンを押せるようになる`, async () => {
+      setupRecognitionMock()
+      await renderPage()
+      await click(`${id} 開始`)
+      await click(`${id} 停止`)
+      expect(playButton()).toBeEnabled()
+      expect(recordingText()).toContain(`${id} 1回目の録音、5バイト`)
+    })
+  }
+
+  it('次の録音を始めると、直前の録音を捨てて URL.revokeObjectURL を呼ぶ', async () => {
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    expect(revokeObjectURL).not.toHaveBeenCalled()
+
+    await click('S2 開始')
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+    expect(playButton()).toBeDisabled()
+    expect(logText()).toContain('直前の録音を捨てる（次の録音の開始）')
+
+    await click('S2 停止')
+    expect(recordingText()).toContain('S2 2回目の録音')
+  })
+
+  it('録音しないテストに切り替えても、直前の録音は捨てない', async () => {
+    setupRecognitionMock()
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('S3 開始')
+    await click('S3 停止')
+    expect(revokeObjectURL).not.toHaveBeenCalled()
+    expect(playButton()).toBeEnabled()
+  })
+
+  it('S6 で直前の録音を捨てて URL.revokeObjectURL を呼ぶ', async () => {
+    await renderPage()
+    await click('S7 開始')
+    await click('S7 停止')
+    await click('S6 すべて閉じる')
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+    expect(playButton()).toBeDisabled()
+    expect(logText()).toContain('直前の録音を捨てる（S6）')
+  })
+
+  it('録音している間に S6 を押すと、止めた録音を持たない', async () => {
+    await renderPage()
+    setupMediaRecorderMock(true)
+    await click('S2 開始')
+    await click('S6 すべて閉じる')
+    act(() => { finishRecorder(recorders[0]) })
+    expect(logText()).toContain('MediaRecorder stop bytes=5')
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(playButton()).toBeDisabled()
+  })
+
+  it('pagehide で直前の録音を捨てて URL.revokeObjectURL を呼ぶ', async () => {
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+    expect(playButton()).toBeDisabled()
+    expect(logText()).toContain('直前の録音を捨てる（pagehide）')
+  })
+
+  it('コンポーネントが外れたときに直前の録音を捨てて URL.revokeObjectURL を呼ぶ', async () => {
+    const consoleError = vi.spyOn(console, 'error')
+    const { unmount } = render(<MicTestPage />)
+    await click('S2 開始')
+    await click('S2 停止')
+    unmount()
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+    expect(consoleError).not.toHaveBeenCalled()
+  })
+
+  it('再生の開始と終わり、その前後の track の状態をログに出し、fetch も localStorage も使わない', async () => {
+    const { play } = setupPlayMock()
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+
+    expect(play).toHaveBeenCalledTimes(1)
+    const audio = play.mock.contexts[0] as HTMLAudioElement
+    expect(audio.src).toBe('blob:mock-1')
+    act(() => { audio.dispatchEvent(new Event('ended')) })
+
+    const text = logText()
+    expect(text).toContain('track[0] readyState=live enabled=false muted=false（再生の前）')
+    expect(text).toMatch(/再生の開始（S2 1回目の録音、5バイト、/)
+    expect(text).toMatch(/再生の終わり（S2 1回目の録音、5バイト、/)
+    expect(text).toContain('track[0] readyState=live enabled=false muted=false（再生の終わり）')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(setItem).not.toHaveBeenCalled()
+  })
+
+  it('再生に失敗したら、name と track の状態をログに出す', async () => {
+    setupPlayMock(true)
+    const rejections = watchUnhandledRejections()
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+
+    expect(logText()).toMatch(/再生の失敗 name=NotAllowedError（S2 1回目の録音/)
+    expect(logText()).toContain('track[0] readyState=live enabled=false muted=false（再生の失敗）')
+    await rejections.settle()
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('再生している間に次の録音を始めると、再生を止める', async () => {
+    const { pause } = setupPlayMock()
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+    await click('S2 開始')
+    expect(pause).toHaveBeenCalledTimes(1)
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+  })
+
+  // HH1: 開始に失敗した S5 の録音は、直前の録音として持たない
+  for (const failure of ['start', 'create'] as const) {
+    for (const defer of [false, true]) {
+      it(`HH1: S5 で音声認識の${failure === 'start' ? 'start()' : '作成'}が失敗したら、その録音を持たない（onstop が${defer ? '遅れて' : 'すぐに'}届く場合）`, async () => {
+        setupMediaRecorderMock(defer)
+        if (failure === 'start') setupRecognitionMock(true)
+        else setupFailingRecognitionCtorMock()
+        await renderPage()
+
+        await click('S5 開始')
+        expect(logText()).toContain('S5 開始に失敗したため、すべて閉じる')
+        expect(recorders[0].stop).toHaveBeenCalled()
+        if (defer) act(() => { finishRecorder(recorders[0]) })
+
+        expect(logText()).toContain('MediaRecorder stop bytes=5')
+        expect(createObjectURL).not.toHaveBeenCalled()
+        expect(logText()).not.toContain('直前の録音を持つ')
+        expect(playButton()).toBeDisabled()
+      })
+    }
+  }
+
+  it('HH1: 開始に失敗した S5 の前に持っていた直前の録音は、次の録音の開始として捨てる', async () => {
+    setupRecognitionMock(true)
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    expect(playButton()).toBeEnabled()
+
+    await click('S5 開始')
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+    expect(logText()).toContain('直前の録音を捨てる（次の録音の開始）')
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    expect(playButton()).toBeDisabled()
+  })
+
+  it('HH1: 録音を始める前に失敗した開始では、切り替えで止めた前のテストの録音を無効にしない', async () => {
+    setupMediaRecorderMock(true)
+    await renderPage()
+    await click('S2 開始')
+    // 次の getUserMedia は失敗する
+    const getUserMedia = vi.fn().mockRejectedValue(new DOMException('denied', 'NotAllowedError'))
+    Object.defineProperty(globalThis.navigator, 'mediaDevices', { value: { getUserMedia }, writable: true, configurable: true })
+    await click('S7 開始')
+    expect(logText()).toContain('S7 開始に失敗したため、すべて閉じる')
+
+    act(() => { finishRecorder(recorders[0]) })
+    expect(recordingText()).toContain('S2 1回目の録音、5バイト')
+    expect(playButton()).toBeEnabled()
+  })
+
+  it('HH1: S5 の getUserMedia を待っている間に pagehide で閉じた場合も、録音を持たない', async () => {
+    const gum = setupDeferredGetUserMediaMock()
+    setupRecognitionMock()
+    await renderPage()
+
+    await click('S5 開始')
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    await act(async () => { gum.resolve() })
+
+    expect(logText()).toContain('S5 の開始をやめる（開始を待っている間に閉じられたため）')
+    expect(MediaRecorder).not.toHaveBeenCalled()
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(playButton()).toBeDisabled()
+  })
+
+  it('HH2: テストが動いている間は再生のボタンを押せず、止めると押せるようになる', async () => {
+    setupRecognitionMock()
+    await renderPage()
+    await click('S5 開始')
+    await click('S5 停止')
+    expect(playButton()).toBeEnabled()
+    expect(screen.queryByTestId('mic-test-play-blocked')).not.toBeInTheDocument()
+
+    await click('S3 開始')
+    expect(playButton()).toBeDisabled()
+    expect(screen.getByTestId('mic-test-play-blocked')).toHaveTextContent('（テストを止めてから再生できます）')
+    // 録音は捨てていない
+    expect(recordingText()).toContain('S5 1回目の録音')
+
+    await click('S3 停止')
+    expect(playButton()).toBeEnabled()
+    expect(screen.queryByTestId('mic-test-play-blocked')).not.toBeInTheDocument()
+  })
+
+  it('HH2: getUserMedia を待っている間は再生のボタンを押せない', async () => {
+    setupRecognitionMock()
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    expect(playButton()).toBeEnabled()
+
+    // S3 に切り替えると S2 のマイクを閉じて開き直すので、その getUserMedia を待たせる
+    const gum = setupDeferredGetUserMediaMock()
+    await click('S3 開始')
+    expect(gum.getUserMedia).toHaveBeenCalledTimes(1)
+    expect(playButton()).toBeDisabled()
+    expect(screen.getByTestId('mic-test-play-blocked')).toBeInTheDocument()
+
+    await act(async () => { gum.resolve() })
+    await click('S3 停止')
+    expect(playButton()).toBeEnabled()
+  })
+
+  it('HH3: GG1 で開き直した track の mute を、テストの番号と正しい開始の回数でログに出す', async () => {
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    act(() => { endTrack(tracks[0]) })
+    await click('S2 開始')
+    expect(tracks).toHaveLength(2)
+
+    act(() => { setTrackMuted(tracks[1], true) })
+    expect(logText()).toContain('track[0] mute（S2 2回目の開始の後）')
+    await click('S2 停止')
+    await click('S2 開始')
+    act(() => { setTrackMuted(tracks[1], false) })
+    expect(logText()).toContain('track[0] unmute（S2 3回目の開始の後）')
+  })
+
+  it('HH3: S6 の後に開き直した track でも、mute と unmute をログに出す', async () => {
+    await renderPage()
+    await click('S7 開始')
+    await click('S6 すべて閉じる')
+    await click('S7 開始')
+    expect(tracks).toHaveLength(2)
+
+    act(() => { setTrackMuted(tracks[1], true) })
+    expect(logText()).toContain('track[0] mute（S7 2回目の開始の後）')
+    act(() => { setTrackMuted(tracks[1], false) })
+    expect(logText()).toContain('track[0] unmute（S7 2回目の開始の後）')
+  })
+
+  it('HH3: 2回目の開始で作った音声認識の onsoundstart と onspeechstart をログに出す', async () => {
+    setupRecognitionMock()
+    await renderPage()
+    await click('S3 開始')
+    await click('S3 停止')
+    await click('S3 開始')
+    expect(recognitions).toHaveLength(2)
+    expect(logText()).not.toContain('onsoundstart')
+
+    act(() => {
+      recognitions[1].onsoundstart?.()
+      recognitions[1].onspeechstart?.()
+    })
+    expect(logText()).toContain('音声認識 onsoundstart')
+    expect(logText()).toContain('音声認識 onspeechstart')
+  })
+
+  for (const how of ['next', 'S6'] as const) {
+    it(`HH5: 再生の開始を待っている間に${how === 'next' ? '次の録音を始める' : 'S6 を押す'}と、再生の失敗ではなく再生を止めたとログに出す`, async () => {
+      const rejections = watchUnhandledRejections()
+      setupAbortOnPausePlayMock()
+      await renderPage()
+      await click('S2 開始')
+      await click('S2 停止')
+      await click('直前の録音を再生')
+
+      await click(how === 'next' ? 'S2 開始' : 'S6 すべて閉じる')
+      await rejections.settle()
+
+      const text = logText()
+      expect(text).toMatch(/再生を止めた（録音を捨てたため）（S2 1回目の録音、5バイト.*）name=AbortError/)
+      // HH6: 止めたタイミングにかかわらず1回だけ
+      expect(countMatches(text, /再生を止めた（/)).toBe(1)
+      expect(countMatches(text, /（再生を止めた）/)).toBe(1)
+      expect(text).not.toContain('再生の失敗')
+      expect(rejections.handler).not.toHaveBeenCalled()
+    })
+  }
+
+  it('HH5: 再生の開始を待っている間にもう一度再生すると、前の再生を止めたとログに出す', async () => {
+    setupAbortOnPausePlayMock()
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+    await click('直前の録音を再生')
+
+    expect(logText()).toMatch(/再生を止めた（もう一度再生したため）（S2 1回目の録音/)
+    expect(countMatches(logText(), /再生を止めた（/)).toBe(1)
+    expect(logText()).not.toContain('再生の失敗')
+  })
+
+  it('HH5: 捨てていない Audio の本当の失敗は、これまでどおり再生の失敗と出す', async () => {
+    setupPlayMock(true)
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+
+    expect(logText()).toMatch(/再生の失敗 name=NotAllowedError（S2 1回目の録音/)
+    expect(logText()).not.toContain('再生を止めた')
+  })
+
+  // HH6: 再生が始まった後に止めた場合も、「再生を止めた」と track の状態を1回だけ出す
+  const stopWays = [
+    { name: '次の録音の開始', reason: '録音を捨てたため', act: () => click('S2 開始') },
+    { name: 'S6', reason: '録音を捨てたため', act: () => click('S6 すべて閉じる') },
+    { name: 'pagehide', reason: '録音を捨てたため', act: async () => { act(() => { window.dispatchEvent(new Event('pagehide')) }) } },
+    { name: 'もう一度再生', reason: 'もう一度再生したため', act: () => click('直前の録音を再生') },
+  ]
+  for (const way of stopWays) {
+    it(`HH6: 再生が始まった後に${way.name}で止めると、「再生を止めた（${way.reason}）」と track の状態を1回だけ出す`, async () => {
+      const rejections = watchUnhandledRejections()
+      const { pause } = setupPlayMock()
+      await renderPage()
+      await click('S2 開始')
+      await click('S2 停止')
+      await click('直前の録音を再生')
+      expect(logText()).toContain('再生の開始（S2 1回目の録音')
+
+      await way.act()
+      await rejections.settle()
+
+      const text = logText()
+      expect(pause).toHaveBeenCalledTimes(1)
+      expect(countMatches(text, /再生を止めた（/)).toBe(1)
+      expect(text).toMatch(new RegExp(`再生を止めた（${way.reason}）（S2 1回目の録音、5バイト[^）]*）`))
+      expect(text).not.toMatch(/再生を止めた（[^）]*）（[^）]*）name=/)
+      // 止めた後の track の状態（S6 と pagehide では track を閉じた後なので「track なし」）
+      expect(countMatches(text, /（再生を止めた）/)).toBe(1)
+      expect(text).not.toContain('再生の失敗')
+      expect(rejections.handler).not.toHaveBeenCalled()
+    })
+  }
+
+  it('HH6: 再生の開始を待っている間に止め、play() が拒否されずに解決した場合も、「再生を止めた」を1回だけ出す', async () => {
+    const rejections = watchUnhandledRejections()
+    setupResolveAfterPausePlayMock()
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+    await click('S6 すべて閉じる')
+    await rejections.settle()
+
+    const text = logText()
+    expect(countMatches(text, /再生を止めた（/)).toBe(1)
+    expect(text).toMatch(/再生を止めた（録音を捨てたため）（S2 1回目の録音/)
+    expect(text).toContain('track なし（再生を止めた）')
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('HH6: 再生が終わった後に録音を捨てても、「再生を止めた」を出さない', async () => {
+    const rejections = watchUnhandledRejections()
+    const { play } = setupPlayMock()
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+    const audio = play.mock.contexts[0] as HTMLAudioElement
+    act(() => { audio.dispatchEvent(new Event('ended')) })
+
+    await click('S6 すべて閉じる')
+    await rejections.settle()
+    expect(logText()).toContain('直前の録音を捨てる（S6）')
+    expect(logText()).not.toContain('再生を止めた')
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('HH6: 再生に失敗した後に録音を捨てても、「再生を止めた」を出さない', async () => {
+    setupPlayMock(true)
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+    await click('S6 すべて閉じる')
+    expect(logText()).toContain('再生の失敗 name=NotAllowedError')
+    expect(logText()).not.toContain('再生を止めた')
+  })
+
+  // HH9: 再生の途中のメディアのエラー
+  async function recordAndPlay() {
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    await click('直前の録音を再生')
+  }
+
+  it('HH9: play() が解決した後に error が起きると、「再生の失敗 code=…」と track の状態を1回だけ出し、その後に捨てても「再生を止めた」を出さない', async () => {
+    const rejections = watchUnhandledRejections()
+    const { play } = setupPlayMock()
+    await recordAndPlay()
+    const audio = play.mock.contexts[0] as HTMLAudioElement
+
+    fireMediaError(audio, 3)
+    let text = logText()
+    expect(countMatches(text, /再生の失敗/)).toBe(2) // 失敗の行と、track の状態の「（再生の失敗）」
+    expect(text).toMatch(/再生の失敗 code=3（S2 1回目の録音、5バイト/)
+    expect(countMatches(text, /（再生の失敗）/)).toBe(1)
+
+    await click('S6 すべて閉じる')
+    await rejections.settle()
+    text = logText()
+    expect(text).toContain('直前の録音を捨てる（S6）')
+    expect(text).not.toContain('再生を止めた')
+    expect(countMatches(text, /再生の失敗 /)).toBe(1)
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('HH9: error の code が分からないときは、その旨を出す', async () => {
+    const { play } = setupPlayMock()
+    await recordAndPlay()
+    fireMediaError(play.mock.contexts[0] as HTMLAudioElement)
+    expect(logText()).toMatch(/再生の失敗 code=不明（S2 1回目の録音/)
+  })
+
+  it('HH9: play() の拒否の後に error が起きても、「再生の失敗」を1回だけ出す', async () => {
+    const rejections = watchUnhandledRejections()
+    const ctl = setupControlledPlayMock()
+    await recordAndPlay()
+    const audio = ctl.play.mock.contexts[0] as HTMLAudioElement
+
+    await ctl.reject(audio, 'NotSupportedError')
+    fireMediaError(audio, 4)
+    await rejections.settle()
+
+    const text = logText()
+    expect(countMatches(text, /再生の失敗 /)).toBe(1)
+    expect(text).toMatch(/再生の失敗 name=NotSupportedError（S2 1回目の録音/)
+    expect(countMatches(text, /（再生の失敗）/)).toBe(1)
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('HH9: error の後に play() が拒否されても、「再生の失敗」を1回だけ出す', async () => {
+    const rejections = watchUnhandledRejections()
+    const ctl = setupControlledPlayMock()
+    await recordAndPlay()
+    const audio = ctl.play.mock.contexts[0] as HTMLAudioElement
+
+    fireMediaError(audio, 4)
+    await ctl.reject(audio, 'NotSupportedError')
+    await rejections.settle()
+
+    const text = logText()
+    expect(countMatches(text, /再生の失敗 /)).toBe(1)
+    expect(text).toMatch(/再生の失敗 code=4（S2 1回目の録音/)
+    expect(countMatches(text, /（再生の失敗）/)).toBe(1)
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('HH9: 再生が始まった後に録音を捨てて止めた後に error が届いても、「再生の失敗」を出さない', async () => {
+    const rejections = watchUnhandledRejections()
+    const { play } = setupPlayMock()
+    await recordAndPlay()
+    const audio = play.mock.contexts[0] as HTMLAudioElement
+
+    await click('S6 すべて閉じる')
+    fireMediaError(audio, 1)
+    await rejections.settle()
+
+    const text = logText()
+    expect(countMatches(text, /再生を止めた（/)).toBe(1)
+    expect(text).not.toContain('再生の失敗')
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('HH9: 開始を待っている間に止め、error の後に AbortError で拒否されても、「再生を止めた」を1回だけ出し、「再生の失敗」を出さない', async () => {
+    const rejections = watchUnhandledRejections()
+    const ctl = setupControlledPlayMock()
+    await recordAndPlay()
+    const audio = ctl.play.mock.contexts[0] as HTMLAudioElement
+
+    await click('S2 開始')
+    fireMediaError(audio, 1)
+    await ctl.reject(audio, 'AbortError')
+    await rejections.settle()
+
+    const text = logText()
+    expect(countMatches(text, /再生を止めた（/)).toBe(1)
+    expect(text).toMatch(/再生を止めた（録音を捨てたため）（S2 1回目の録音[^）]*）name=AbortError/)
+    expect(text).not.toContain('再生の失敗')
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('HH9: 開始を待っている間の error の後に録音を捨てても、「再生を止めた」を出さない', async () => {
+    const rejections = watchUnhandledRejections()
+    const ctl = setupControlledPlayMock()
+    await recordAndPlay()
+    const audio = ctl.play.mock.contexts[0] as HTMLAudioElement
+
+    fireMediaError(audio, 4)
+    await click('S6 すべて閉じる')
+    await ctl.reject(audio, 'AbortError')
+    await rejections.settle()
+
+    const text = logText()
+    expect(countMatches(text, /再生の失敗 /)).toBe(1)
+    expect(text).not.toContain('再生を止めた')
+    expect(rejections.handler).not.toHaveBeenCalled()
   })
 })
