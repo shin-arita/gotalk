@@ -343,6 +343,8 @@ export default function MicTestPage() {
     // 切り替えのための closeAll の後の世代の番号。開くのを待っている間に pagehide などで
     // closeAll が呼ばれると変わる
     const generation = generationRef.current
+    // この開始で録音を始めると変わる（startRecorder の最初の discardRecording で増えるため）
+    const recordingToken = recordingTokenRef.current
     setBusy(true)
     try {
       let started: boolean
@@ -360,6 +362,9 @@ export default function MicTestPage() {
       if (!started) {
         // 途中まで開いたマイク、録音、音声認識を残さず、running も設定しない
         addLog(`${test} 開始に失敗したため、すべて閉じる`)
+        // 失敗した開始で始めた録音は、closeAll で止めた後に届く onstop で持たないよう、先に無効にする。
+        // この開始で録音を始めていなければ、ほかの録音の onstop を無効にしないよう、何もしない
+        if (recordingTokenRef.current !== recordingToken) recordingTokenRef.current++
         closeAll()
         logTracks(`${test} 開始に失敗`)
         return

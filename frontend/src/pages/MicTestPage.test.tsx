@@ -84,7 +84,9 @@ interface MockRecorder {
 
 let recorders: MockRecorder[] = []
 
-function setupMediaRecorderMock() {
+// deferOnstop が true のときは、実際のブラウザと同じく stop() の後に onstop を出さず、
+// テストの中で finishRecorder() を呼んで遅れて届かせる
+function setupMediaRecorderMock(deferOnstop = false) {
   const Ctor = vi.fn(function () {
     const recorder: MockRecorder = {
       state: 'inactive',
@@ -98,8 +100,7 @@ function setupMediaRecorderMock() {
       }),
       stop: vi.fn(() => {
         recorder.state = 'inactive'
-        recorder.ondataavailable?.({ data: new Blob([new Uint8Array(5)]) })
-        recorder.onstop?.(new Event('stop'))
+        if (!deferOnstop) finishRecorder(recorder)
       }),
     }
     recorders.push(recorder)
@@ -107,6 +108,11 @@ function setupMediaRecorderMock() {
   }) as unknown as typeof MediaRecorder & { isTypeSupported: (t: string) => boolean }
   Ctor.isTypeSupported = vi.fn().mockReturnValue(false)
   Object.defineProperty(globalThis, 'MediaRecorder', { value: Ctor, writable: true, configurable: true })
+}
+
+function finishRecorder(recorder: MockRecorder) {
+  recorder.ondataavailable?.({ data: new Blob([new Uint8Array(5)]) })
+  recorder.onstop?.(new Event('stop'))
 }
 
 // MediaRecorder の作成（where = 'create'）か start()（where = 'start'）が例外になる
@@ -166,6 +172,12 @@ function setupRecognitionMock(startThrows = false) {
     recognitions.push(recognition)
     return recognition
   })
+  Object.defineProperty(window, 'SpeechRecognition', { value: Ctor, writable: true, configurable: true })
+}
+
+// 音声認識の作成が例外になる
+function setupFailingRecognitionCtorMock() {
+  const Ctor = vi.fn(function () { throw new DOMException('not allowed', 'NotAllowedError') })
   Object.defineProperty(window, 'SpeechRecognition', { value: Ctor, writable: true, configurable: true })
 }
 
@@ -819,15 +831,10 @@ describe('MicTestPage', () => {
 
   it('録音している間に S6 を押すと、止めた録音を持たない', async () => {
     await renderPage()
+    setupMediaRecorderMock(true)
     await click('S2 開始')
-    // 実際のブラウザと同じく、onstop は stop() の後に遅れて届く
-    const recorder = recorders[0]
-    recorder.stop.mockImplementation(() => { recorder.state = 'inactive' })
     await click('S6 すべて閉じる')
-    act(() => {
-      recorder.ondataavailable?.({ data: new Blob([new Uint8Array(5)]) })
-      recorder.onstop?.(new Event('stop'))
-    })
+    act(() => { finishRecorder(recorders[0]) })
     expect(logText()).toContain('MediaRecorder stop bytes=5')
     expect(createObjectURL).not.toHaveBeenCalled()
     expect(playButton()).toBeDisabled()
@@ -898,5 +905,71 @@ describe('MicTestPage', () => {
     await click('S2 開始')
     expect(pause).toHaveBeenCalledTimes(1)
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+  })
+
+  // HH1: 開始に失敗した S5 の録音は、直前の録音として持たない
+  for (const failure of ['start', 'create'] as const) {
+    for (const defer of [false, true]) {
+      it(`HH1: S5 で音声認識の${failure === 'start' ? 'start()' : '作成'}が失敗したら、その録音を持たない（onstop が${defer ? '遅れて' : 'すぐに'}届く場合）`, async () => {
+        setupMediaRecorderMock(defer)
+        if (failure === 'start') setupRecognitionMock(true)
+        else setupFailingRecognitionCtorMock()
+        await renderPage()
+
+        await click('S5 開始')
+        expect(logText()).toContain('S5 開始に失敗したため、すべて閉じる')
+        expect(recorders[0].stop).toHaveBeenCalled()
+        if (defer) act(() => { finishRecorder(recorders[0]) })
+
+        expect(logText()).toContain('MediaRecorder stop bytes=5')
+        expect(createObjectURL).not.toHaveBeenCalled()
+        expect(logText()).not.toContain('直前の録音を持つ')
+        expect(playButton()).toBeDisabled()
+      })
+    }
+  }
+
+  it('HH1: 開始に失敗した S5 の前に持っていた直前の録音は、次の録音の開始として捨てる', async () => {
+    setupRecognitionMock(true)
+    await renderPage()
+    await click('S2 開始')
+    await click('S2 停止')
+    expect(playButton()).toBeEnabled()
+
+    await click('S5 開始')
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+    expect(logText()).toContain('直前の録音を捨てる（次の録音の開始）')
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    expect(playButton()).toBeDisabled()
+  })
+
+  it('HH1: 録音を始める前に失敗した開始では、切り替えで止めた前のテストの録音を無効にしない', async () => {
+    setupMediaRecorderMock(true)
+    await renderPage()
+    await click('S2 開始')
+    // 次の getUserMedia は失敗する
+    const getUserMedia = vi.fn().mockRejectedValue(new DOMException('denied', 'NotAllowedError'))
+    Object.defineProperty(globalThis.navigator, 'mediaDevices', { value: { getUserMedia }, writable: true, configurable: true })
+    await click('S7 開始')
+    expect(logText()).toContain('S7 開始に失敗したため、すべて閉じる')
+
+    act(() => { finishRecorder(recorders[0]) })
+    expect(recordingText()).toContain('S2 1回目の録音、5バイト')
+    expect(playButton()).toBeEnabled()
+  })
+
+  it('HH1: S5 の getUserMedia を待っている間に pagehide で閉じた場合も、録音を持たない', async () => {
+    const gum = setupDeferredGetUserMediaMock()
+    setupRecognitionMock()
+    await renderPage()
+
+    await click('S5 開始')
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    await act(async () => { gum.resolve() })
+
+    expect(logText()).toContain('S5 の開始をやめる（開始を待っている間に閉じられたため）')
+    expect(MediaRecorder).not.toHaveBeenCalled()
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(playButton()).toBeDisabled()
   })
 })
