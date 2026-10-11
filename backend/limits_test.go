@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -370,9 +371,50 @@ func TestCallOpenAI_IncompleteIsFailure(t *testing.T) {
 	})
 }
 
+// placeNames are place names that kagome (IPA dictionary) extracts as proper nouns on their own.
+var placeNames = strings.Fields("北海道 青森 岩手 宮城 秋田 山形 福島 茨城 栃木 群馬 埼玉 千葉 東京 神奈川 新潟 富山 石川 福井 山梨 長野 岐阜 静岡 愛知 三重 滋賀 京都 大阪 兵庫 奈良 和歌山 鳥取 島根 岡山 広島 山口 徳島 香川 愛媛 高知 福岡 佐賀 長崎 熊本 大分 宮崎 鹿児島 沖縄 札幌 函館 旭川 釧路 帯広 小樽 室蘭 苫小牧 八戸 弘前 盛岡 仙台 石巻 郡山 会津 水戸 日立 宇都宮 前橋 高崎 川越 所沢 松戸 横浜 川崎 横須賀 鎌倉 小田原 相模原 長岡 上越 高岡 金沢 小松 敦賀 甲府 松本 上田 飯田 諏訪 大垣 高山 浜松 沼津 富士 豊橋 豊田 岡崎 一宮 名古屋 四日市 伊勢 大津 彦根 舞鶴 宇治 堺 豊中 吹田 高槻 枚方 東大阪 神戸 姫路 尼崎 西宮 明石 加古川 米子 松江 出雲 倉敷 津山 福山 呉 尾道 下関 宇部 高松 丸亀 松山 今治 宇和島 北九州 博多 大牟田 佐世保 別府 中津 延岡 都城 霧島 那覇 名護 宮古 箱根 日光 軽井沢 白川 熱海 草津 有馬 道後 由布院 指宿 足利 桐生 秩父 成田 木更津 館山 熊谷 越谷 春日部 草加 八王子 立川 町田 府中 調布 三鷹 吉祥寺 新宿 渋谷 池袋 品川 上野 浅草 秋葉原 銀座 原宿")
+
+// manyProperNounsText joins the shortest placeNames with "と" into at most maxTextRunes characters,
+// so that it holds as many different proper nouns as possible; manyProperNounsCount is how many.
+var manyProperNounsText, manyProperNounsCount = func() (string, int) {
+	names := append([]string(nil), placeNames...)
+	sort.SliceStable(names, func(i, j int) bool {
+		return utf8.RuneCountInString(names[i]) < utf8.RuneCountInString(names[j])
+	})
+	var b strings.Builder
+	n := 0
+	for _, name := range names {
+		next := name
+		if n > 0 {
+			next = "と" + name
+		}
+		if utf8.RuneCountInString(b.String())+utf8.RuneCountInString(next) > maxTextRunes {
+			break
+		}
+		b.WriteString(next)
+		n++
+	}
+	return b.String(), n
+}()
+
+// Every name in manyProperNounsText is extracted as its own proper noun (and so gets its own
+// placeholder), which makes it the worst case for the retry prompt.
+func TestManyProperNounsText(t *testing.T) {
+	entries, err := extractAllProperNouns(manyProperNounsText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != manyProperNounsCount || manyProperNounsCount < 150 {
+		t.Fatalf("extracted %d proper nouns, want %d (>= 150) from %d runes", len(entries), manyProperNounsCount, utf8.RuneCountInString(manyProperNounsText))
+	}
+	t.Logf("%d different proper nouns in %d runes", len(entries), utf8.RuneCountInString(manyProperNounsText))
+}
+
 // The whole Responses input for a 500-character text is measured here (docs/rate-limit-design.md 5.3).
 // Token counts are bounded by UTF-8 bytes: the GPT-4o tokenizer (o200k_base) is a byte-level BPE,
 // so a text never takes more tokens than bytes. The test fails if a prompt grows past the bound.
+// The byte bound is the guarantee; the token counts measured for these examples (the largest was
+// 2,870 tokens / 7,404 bytes, for the retry of "many different proper nouns") are only examples.
 func TestResponsesAPI_InputSizeFor500Characters(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	const maxInputBytes = 9000
@@ -384,6 +426,9 @@ func TestResponsesAPI_InputSizeFor500Characters(t *testing.T) {
 		"non-printable (escaped)":     strings.Repeat("\U0010FFFF", maxTextRunes),
 		"quotes (escaped)":            strings.Repeat(`"`, maxTextRunes),
 		"proper nouns (placeholders)": strings.Repeat("博多と", maxTextRunes/3) + "博多",
+		// Many different proper nouns: the retry prompt lists every missing placeholder, so it is
+		// the longest input of the protected path.
+		"many different proper nouns": manyProperNounsText,
 	}
 	for name, text := range texts {
 		t.Run(name, func(t *testing.T) {
