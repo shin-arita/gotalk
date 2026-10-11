@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -237,6 +238,64 @@ func TestInterpret_FieldLimits(t *testing.T) {
 		}))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
+	// Values in the URL query are never used: only the multipart body is checked against the
+	// field limits, so the handler reads only the body (r.PostFormValue).
+	withQuery := func(req *http.Request, q url.Values) *http.Request {
+		req.URL.RawQuery = q.Encode()
+		return req
+	}
+	queryText := "QUERYTEXT " + strings.Repeat("q", maxInterpretTranscriptBytes)
+
+	t.Run("an oversized query transcript is ignored and the body transcript is used", func(t *testing.T) {
+		m := newRecordingMock(t, openAITextResponse("こんにちは"), openAITextResponse("hello"))
+		req := withQuery(buildInterpretRaw(t, [][2]string{
+			{"myLanguage", enLang}, {"theirLanguage", jaLang}, {"speaker", "en"}, {"transcript", "BODYTEXT hello"},
+		}), url.Values{"transcript": {queryText}, "speaker": {"ja"}})
+		rec := httptest.NewRecorder()
+		interpretHandler(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if len(m.inputs) == 0 || !strings.Contains(m.inputs[0].Input, "BODYTEXT hello") || strings.Contains(m.inputs[0].Input, "QUERYTEXT") {
+			t.Fatalf("the body transcript must be translated, not the query one: %+v", m.inputs)
+		}
+		if !strings.Contains(m.inputs[0].Input, "English text into Japanese") {
+			t.Errorf("the body speaker (en) must be used: %q", m.inputs[0].Input)
+		}
+	})
+
+	t.Run("a transcript only in the query is ignored (same as no transcript)", func(t *testing.T) {
+		m := newRecordingMock(t, `{"language":"english","text":"x"}`, `{"text":"WHISPERTEXT"}`, openAITextResponse("こんにちは"), openAITextResponse("hello"))
+		req := withQuery(buildInterpretRaw(t, [][2]string{
+			{"myLanguage", enLang}, {"theirLanguage", jaLang}, {"speaker", "en"},
+		}), url.Values{"transcript": {"QUERYTEXT hello"}})
+		rec := httptest.NewRecorder()
+		interpretHandler(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if len(m.urls) != 4 || m.urls[0] != whisperURL {
+			t.Fatalf("the transcription path must be used: %v", m.urls)
+		}
+		for _, in := range m.inputs {
+			if strings.Contains(in.Input, "QUERYTEXT") {
+				t.Fatalf("the query transcript reached OpenAI: %q", in.Input)
+			}
+		}
+	})
+
+	t.Run("languages only in the query are ignored", func(t *testing.T) {
+		failOnOpenAICall(t)
+		req := withQuery(buildInterpretRaw(t, [][2]string{{"speaker", "en"}}),
+			url.Values{"myLanguage": {enLang}, "theirLanguage": {jaLang}})
+		rec := httptest.NewRecorder()
+		interpretHandler(rec, req)
+		assertErrorCode(t, rec, http.StatusBadRequest, codeInvalidRequest)
+		if got := errorBody(t, rec).Error; got != "invalid myLanguage" {
+			t.Fatalf("error=%q want invalid myLanguage (same as no myLanguage)", got)
 		}
 	})
 }

@@ -456,12 +456,12 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Only supported language IDs are accepted, and the labels come from supportedLanguages.
-	myLang, err := decodeLangField(r.FormValue("myLanguage"))
+	myLang, err := decodeLangField(r.PostFormValue("myLanguage"))
 	if err != nil || myLang.ID == "" {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid myLanguage")
 		return
 	}
-	theirLang, err := decodeLangField(r.FormValue("theirLanguage"))
+	theirLang, err := decodeLangField(r.PostFormValue("theirLanguage"))
 	if err != nil || theirLang.ID == "" {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid theirLanguage")
 		return
@@ -473,8 +473,8 @@ func interpretHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid languages")
 		return
 	}
-	speaker := r.FormValue("speaker")
-	clientTranscript := strings.TrimSpace(r.FormValue("transcript"))
+	speaker := r.PostFormValue("speaker")
+	clientTranscript := strings.TrimSpace(r.PostFormValue("transcript"))
 	if textTooLong(clientTranscript) {
 		writeTextTooLong(w, endpoint)
 		return

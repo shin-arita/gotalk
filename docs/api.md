@@ -52,6 +52,8 @@ Backend は CORS のヘッダ（`Access-Control-Allow-*`）を付けません。
 | `/api/interpret` の `transcript` 以外の音声でないフィールド（`myLanguage`、`theirLanguage`、`speaker` など） | それぞれ 1 KiB | 413 `input_too_large` |
 | `/api/interpret` の `transcript`（前後の空白を除く前） | 4 KiB | 413 `input_too_large` |
 
+`/api/interpret` は、フィールドの値を multipart の body からだけ読みます（`r.PostFormValue`）。URL の query の値（例：`/api/interpret?transcript=...`）は使いません。そのため、上限を確かめた値だけが使われます。
+
 JSON の request body は、表にないフィールド（例：`/api/tts` の `speed` や `instructions`）があるとき、または 1つ目の JSON の値の後ろに別の値があるときに、400 `invalid_request` になります。`/api/interpret` の `myLanguage` と `theirLanguage` の JSON も同じです。
 
 ### 言語の指定
