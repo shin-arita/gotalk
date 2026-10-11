@@ -45,14 +45,18 @@ func TestSupportedLanguagesMatchFrontend(t *testing.T) {
 	//      shorthand such as "{ id, ... }", bare identifiers) and ignores brackets and commas inside
 	//      strings and comments. The count must equal the number of pattern matches.
 	//   2. Every line of the array (with its comments removed) that has an "id" key, bare or quoted
-	//      with ", ' or ` ("id":, 'id':, `id`:), whatever its value, must match the pattern by itself,
-	//      so the failure message names the line (its line number in languages.ts). Code outside the
-	//      array, such as the interface's "id: string" or another object with an id, is not checked.
+	//      with ", ' or ` ("id":, 'id':, `id`:), whatever its value, must match the pattern by itself.
+	//      The check uses the line with its comments removed, but the failure message shows the line
+	//      as it is in languages.ts (its line number and its original text, comments included; for the
+	//      line that opens the array, the whole line). Code outside the array, such as the
+	//      interface's "id: string" or another object with an id, is not checked.
 	idRe := regexp.MustCompile("\\bid['\"`]?\\s*:")
+	srcLines := strings.Split(string(src), "\n")
 	var unmatched []string
 	for i, line := range strings.Split(body, "\n") {
 		if idRe.MatchString(line) && !re.MatchString(line) {
-			unmatched = append(unmatched, fmt.Sprintf("line %d: %s", bodyLine+i, strings.TrimSpace(line)))
+			// TrimSpace also drops the "\r" of a CRLF line ending.
+			unmatched = append(unmatched, fmt.Sprintf("line %d: %s", bodyLine+i, strings.TrimSpace(srcLines[bodyLine+i-1])))
 		}
 	}
 	if elements != len(frontend) || len(unmatched) > 0 {
