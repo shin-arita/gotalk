@@ -4,6 +4,11 @@ import { useState, useEffect, useRef } from 'react'
 // 国旗を押すたびに出るブラウザのマイクのお知らせが、getUserMedia の開き直しと
 // 音声認識の始め直しのどちらで出るのかを、実機で確かめるために使います。
 // 録音した音声と音声認識の結果は、送信も保存もせず、ページの中に表示するだけです。
+//
+// 通訳の画面との違い：音声認識の continuous と interimResults は同じですが、lang は ja-JP に
+// 固定しています（通訳の画面は押した国旗の言語）。また、通訳の画面にある、録音の間の
+// 音声認識の自動の始め直し（onend での start()）と、AudioContext（音量の取得）はありません。
+// 実機の結果を読むときは、これらの違いに気を付けてください。
 
 type TestId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S7'
 
@@ -192,6 +197,8 @@ export default function MicTestPage() {
       addLog(`音声認識の作成に失敗 name=${errorName(e)}`)
       return false
     }
+    // continuous と interimResults は通訳の画面と同じ。lang は ja-JP に固定（通訳の画面は押した国旗の言語）。
+    // 通訳の画面と違い、onend で自動で始め直さない
     recognition.lang = 'ja-JP'
     recognition.continuous = true
     recognition.interimResults = true
