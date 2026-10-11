@@ -317,6 +317,26 @@ npm run build
 - Backend API は `/health`、`/api/tts`、`/api/interpret`、`/api/translate` の 4 本です。
 - TTS は Backend の `/api/tts` から OpenAI Audio Speech API を呼び出し、`audio/mpeg` を返します。
 - `http://localhost:5173/#tts-test` を開くと `TtsTestPage` が表示されます。ブラウザの `speechSynthesis`（Web Speech API の音声合成）で日本語とタイ語の発声、`getVoices()` の一覧、発声イベントのログを確認するための開発確認用ページです。Backend の `/api/tts` は使いません。通常の利用画面とは独立しています。
+- `http://localhost:5173/#mic-test` を開くと `MicTestPage` が表示されます。通訳の画面で国旗を押すたびにブラウザのマイクのお知らせ（iPhone の Chrome の「マイクへのアクセスが許可されています」など）や許可の画面が出る原因が、`getUserMedia` でマイクを開き直すことか、音声認識（`SpeechRecognition` / `webkitSpeechRecognition`）を始め直すことかを、実機で確かめるための開発確認用ページです。通常の利用画面からはリンクしておらず、通訳の画面の動作は変えません。
+  - 使い方：テストのボタンで開始と停止を何回でも繰り返し、ブラウザのお知らせ、許可の画面、マイクの使用中の表示（オレンジの点など）を目で見て記録します。テストを切り替えるときは、前のテストのマイクと音声認識をすべて閉じてから始めます。画面のログ（時刻はミリ秒まで）は「ログをコピー」でクリップボードにコピーでき、コピーできない場合はログの欄を全選択して写せます。
+  - テストの内容は次のとおりです。`MediaRecorder` の mimeType は、通訳の画面と同じ選び方です。音声認識の `continuous = true` と `interimResults = true` は通訳の画面と同じですが、`lang` は `ja-JP` に固定しています（通訳の画面は押した国旗の言語）。また、通訳の画面にある、録音の間の音声認識の自動の始め直し（`onend` で `start()` を呼ぶこと）と、`AudioContext`（音量の取得）は、このページのテストにはありません。実機の結果を読むときは、これらの違いに気を付けてください。
+
+    | # | 内容 |
+    | --- | --- |
+    | S1 | 開始のたびに `getUserMedia({ audio: true })` でマイクを開いて `MediaRecorder` で録音し、停止で録音を止めて track を `stop()` で閉じます（今の通訳の画面のマイクの部分） |
+    | S2 | 最初の開始で1回だけマイクを開き、以後は閉じません。開始で `track.enabled = true` にして録音を始め、停止で録音を止めて `track.enabled = false` にします。音声認識は使いません |
+    | S3 | 最初の開始で1回だけマイクを開き、以後は閉じません（`track.enabled` は true のまま）。開始のたびに音声認識を新しく作って `start()` し、停止で `stop()` します。録音はしません |
+    | S4 | マイク（`getUserMedia`）は開きません。開始のたびに音声認識を新しく作って `start()` し、停止で `stop()` します |
+    | S5 | 最初の開始で1回だけマイクを開き、以後は閉じません。開始で `track.enabled = true` にして録音と音声認識を始め、停止で両方を止めて `track.enabled = false` にします |
+    | S6 | 「すべて閉じる」で、マイク（すべての track を `stop()`）、録音、音声認識を閉じます。閉じた後に S2 をもう一度始めて、閉じてから開き直したときの動きを確かめます |
+    | S7 | 最初の開始で1回だけマイクを開き、以後は閉じません。track は常に `enabled = true` のままで、開始のたびに録音を始め、停止で止めます。音声認識は使いません（S2 と比べて、`enabled` の切り替えの影響を確かめます） |
+
+  - S2、S3、S5、S7 で持っているマイクの track を、ブラウザや OS が終わらせていた（`readyState` が `live` でない）場合は、次の開始で「track が終わっているため開き直す」とログに出し、閉じてから `getUserMedia` で開き直します（ログの `getUserMedia` の開始の行に「開き直し」と付きます）。開き直しでブラウザのお知らせや許可の画面が出る場合があるため、実機の記録と対応を取ってください。
+  - 開始の途中で `getUserMedia`、`MediaRecorder`（作成と `start()`）、音声認識（作成と `start()`）のどれかに失敗した場合は、失敗をログに出し、途中まで開いたマイク、録音、音声認識をすべて閉じて、そのテストは始まっていない状態に戻します。
+  - `getUserMedia` を待っている間に `pagehide` などで閉じられた場合は、開始の失敗とは区別して「S2 の開始をやめる（開始を待っている間に閉じられたため）」の形でログに出します。このときは「開始に失敗したため、すべて閉じる」は出しません。
+  - ログには、テストの操作（開始は何回目か）、`getUserMedia` の開始・成功・失敗（エラーの `name`）、track の `readyState` と `enabled`、track の `ended`（どのテストの何回目の開始の後か）、S1 の停止と S6 で track を `stop()` したこと、`MediaRecorder` の `start`・`stop`・mimeType・録音したデータのバイト数・失敗、音声認識の `onstart`・`onaudiostart`・`onaudioend`・`onend`・`onerror`・`onresult`（結果の文字数だけ）、`navigator.permissions.query({ name: 'microphone' })` の状態（対応していないブラウザでは `unsupported`）、`document.visibilityState` の変化を出します。
+  - 録音した音声と音声認識の結果は、GoTalk の Backend や OpenAI API には送信も保存もせず、ページの中に表示するだけです（音声認識の結果は文字数だけを表示し、文字列そのものは表示しません）。ただし、音声認識を使うテスト（S3、S4、S5）では、ブラウザまたは OS の音声認識サービスへ音声が送信される場合があります。
+  - ページを離れたとき（`pagehide`）と、ページのコンポーネントが外れたときは、マイク、録音、音声認識をすべて閉じます。
 
 ## 関連ドキュメント
 

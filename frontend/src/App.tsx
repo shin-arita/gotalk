@@ -3,6 +3,7 @@ import type { Language } from './languages'
 import LanguageSelectPage from './pages/LanguageSelectPage'
 import InterpreterPage from './pages/InterpreterPage'
 import TtsTestPage from './pages/TtsTestPage'
+import MicTestPage from './pages/MicTestPage'
 
 type Page = 'language-select' | 'interpreter'
 
@@ -11,6 +12,7 @@ export default function App() {
   const [selectedLanguages, setSelectedLanguages] = useState<Language[]>([])
 
   if (window.location.hash === '#tts-test') return <TtsTestPage />
+  if (window.location.hash === '#mic-test') return <MicTestPage />
 
   const handleNavigate = () => {
     setPage('interpreter')
