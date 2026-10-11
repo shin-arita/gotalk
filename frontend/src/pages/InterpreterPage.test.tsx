@@ -1199,6 +1199,18 @@ describe('InterpreterPage /api/interpret 413 (recording too long)', () => {
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(TOO_LONG))
   })
 
+  it('shows the recording message when a 413 has an empty body', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false,
+      status: 413,
+      headers: new Headers(),
+      json: () => Promise.reject(new SyntaxError('Unexpected end of JSON input')),
+      text: () => Promise.resolve(''),
+    } as unknown as Response)
+    await renderAndInterpret()
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(TOO_LONG))
+  })
+
   it('keeps the existing message for other errors (502 upstream_error)', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       makeErrorResponse(502, { error: 'translation failed', code: 'upstream_error' }),
