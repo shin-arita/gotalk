@@ -345,7 +345,7 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
 
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
       // 実験の記録
-      const rec: LegacyRecording | null = experiment.enabled ? { mimeType: null, startCalledAt: null, stopCalledAt: null, dataSizes: [], blobSize: null } : null
+      const rec: LegacyRecording | null = experiment.enabled ? { startCalledAt: null, stopCalledAt: null, dataSizes: [], blobSize: null, blobType: null } : null
       if (rec) { legacyRecordingsRef.current.push(rec); if (legacyRecordingsRef.current.length > MAX_LEGACY_RECORDINGS) legacyRecordingsRef.current.shift() }
       legacyRecordingRef.current = rec
       recorder.ondataavailable = (e) => {
@@ -357,14 +357,13 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
         streamRef.current = null
         if (!userStoppedRef.current) return
         const blob = new Blob(audioChunksRef.current, { type: mimeType || 'audio/webm' })
-        if (rec) rec.blobSize = blob.size // 実験の記録
+        if (rec) { rec.blobSize = blob.size; rec.blobType = blob.type } // 実験の記録
         callInterpretApi(blob)
       }
 
       mediaRecorderRef.current = recorder
       if (rec) rec.startCalledAt = perfNow() // 実験の記録
       recorder.start()
-      if (rec) rec.mimeType = recorder.mimeType // 実験の記録
       setRecordingFlagIndex(flagIndex)
       setStatus('recording')
 

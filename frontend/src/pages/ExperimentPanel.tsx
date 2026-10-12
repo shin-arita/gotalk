@@ -9,16 +9,18 @@ import type { AudioDiagnostics } from '../hooks/useAudioSession'
 
 const SHOWN_SESSIONS = 5
 
-// legacy（PR #26 の前の通訳の画面）の最小限の記録。録音ごとに1つ
+// legacy（PR #26 の前の通訳の画面）の最小限の記録。録音ごとに1つ。
+// 07f06f0 にもともとある ondataavailable と onstop の中の値と、start() と stop() を呼んだ時刻だけ
+// （MediaRecorder の property は読まない）
 export interface LegacyRecording {
-  mimeType: string | null
   // performance.now()
   startCalledAt: number | null
   stopCalledAt: number | null
   // ondataavailable の回ごとの大きさ
   dataSizes: number[]
-  // onstop で作った Blob の大きさ（利用者の停止のときだけ）
+  // onstop で作った Blob の大きさと type（利用者の停止のときだけ）
   blobSize: number | null
+  blobType: string | null
 }
 
 export type ExperimentSnapshot =
@@ -89,8 +91,8 @@ function SnapshotView({ snapshot }: { snapshot: ExperimentSnapshot }) {
         <ol style={{ margin: 0, paddingLeft: '20px' }}>
           {recordings.map((r, i) => (
             <li key={i}>
-              {`mimeType=${r.mimeType || '-'}、start→stop=${r.startCalledAt !== null && r.stopCalledAt !== null ? `${Math.round(r.stopCalledAt - r.startCalledAt)}ms` : '-'}、`
-                + `ondataavailable=${r.dataSizes.length}回 [${r.dataSizes.join(', ')}]、Blob=${r.blobSize ?? '-'}`}
+              {`start→stop=${r.startCalledAt !== null && r.stopCalledAt !== null ? `${Math.round(r.stopCalledAt - r.startCalledAt)}ms` : '-'}、`
+                + `ondataavailable=${r.dataSizes.length}回 [${r.dataSizes.join(', ')}]、Blob=${r.blobSize ?? '-'}（type=${r.blobType || '-'}）`}
             </li>
           ))}
         </ol>

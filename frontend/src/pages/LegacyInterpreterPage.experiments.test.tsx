@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type { Mock } from 'vitest'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import LegacyInterpreterPage from './LegacyInterpreterPage'
 import { readExperimentConfig } from '../experiments'
@@ -8,7 +9,7 @@ import {
   AUDIO_GLOBALS, makeFakeStream, saveGlobals, setupAnimationFrame, setupAudioContext, setupDeferredGetUserMedia, setupMediaRecorder,
   setupSpeechRecognition,
 } from '../test/audioMocks'
-import type { FakeStream } from '../test/audioMocks'
+import type { FakeRecorder, FakeStream } from '../test/audioMocks'
 
 // legacy（PR #26 の前の通訳の画面）の実験の記録と、足していないもの（docs/testing.md の「実験のスイッチ」）
 
@@ -87,7 +88,7 @@ async function recordOnce(index: number, chunks: string[], stream = makeFakeStre
 }
 
 describe('LegacyInterpreterPage with exp=legacy', () => {
-  it('records the ondataavailable sizes, the final Blob size, the mimeType and the start and stop times', async () => {
+  it('records the ondataavailable sizes, the final Blob size and type, and the start and stop times', async () => {
     renderLegacy(readExperimentConfig('?exp=legacy'))
     await recordOnce(0, ['ab', '', 'cde'])
     let copied = ''
@@ -100,7 +101,7 @@ describe('LegacyInterpreterPage with exp=legacy', () => {
     const [rec] = json.recordings
     expect(rec.dataSizes).toEqual([2, 0, 3])
     expect(rec.blobSize).toBe(5)
-    expect(rec.mimeType).toBe('')
+    expect(rec.blobType).toBe('audio/webm')
     expect(rec.startCalledAt).toEqual(expect.any(Number))
     expect(rec.stopCalledAt).toBeGreaterThanOrEqual(rec.startCalledAt)
     // 認識した本文や翻訳の結果は入らない
@@ -148,6 +149,28 @@ describe('LegacyInterpreterPage with exp=legacy', () => {
     expect(document.querySelector('.translation-card__text')).toHaveTextContent('こんにちは')
     expect(refresh()).toBeEnabled()
     expect(copy()).toBeEnabled()
+  })
+
+  it('does not read the MediaRecorder mimeType and records the Blob type instead (LL3)', async () => {
+    // 作った MediaRecorder の mimeType を getter にして、読まれたかを数える
+    const mimeTypeGetter = vi.fn(() => '')
+    const Ctor = recorders.Ctor as unknown as Mock<() => FakeRecorder>
+    const original = Ctor.getMockImplementation()!
+    Ctor.mockImplementation(function () {
+      const recorder = original()
+      Object.defineProperty(recorder, 'mimeType', { get: mimeTypeGetter, set: () => {}, configurable: true })
+      return recorder
+    })
+    renderLegacy(readExperimentConfig('?exp=legacy'))
+    await recordOnce(0, ['ab'])
+    expect(mimeTypeGetter).not.toHaveBeenCalled()
+    let copied = ''
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn(async (text: string) => { copied = text }) }, configurable: true })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'コピー' })) })
+    const [rec] = JSON.parse(copied).recordings
+    // 07f06f0 の onstop で作る Blob の type（対応する mimeType がないときは audio/webm）
+    expect(rec.blobType).toBe('audio/webm')
+    expect(rec).not.toHaveProperty('mimeType')
   })
 
   it('does not use useAudioSession', async () => {

@@ -99,12 +99,12 @@ describe('ExperimentPanel', () => {
     render(<ExperimentPanel config={config} busy={false} read={read} />)
     expect(await refresh()).toHaveTextContent('録音の記録はありません')
     recordings = [
-      { mimeType: 'audio/mp4', startCalledAt: 10, stopCalledAt: 1010, dataSizes: [5], blobSize: 5 },
-      { mimeType: null, startCalledAt: 10, stopCalledAt: null, dataSizes: [], blobSize: null },
+      { startCalledAt: 10, stopCalledAt: 1010, dataSizes: [5], blobSize: 5, blobType: 'audio/mp4' },
+      { startCalledAt: 10, stopCalledAt: null, dataSizes: [], blobSize: null, blobType: null },
     ]
     const view = await refresh()
-    expect(view).toHaveTextContent('mimeType=audio/mp4、start→stop=1000ms、ondataavailable=1回 [5]、Blob=5')
-    expect(view).toHaveTextContent('mimeType=-、start→stop=-、ondataavailable=0回 []、Blob=-')
+    expect(view).toHaveTextContent('start→stop=1000ms、ondataavailable=1回 [5]、Blob=5（type=audio/mp4）')
+    expect(view).toHaveTextContent('start→stop=-、ondataavailable=0回 []、Blob=-（type=-）')
   })
 
   it('shows only the latest five sessions', async () => {
