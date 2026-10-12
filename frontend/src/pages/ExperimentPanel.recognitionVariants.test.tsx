@@ -106,7 +106,7 @@ describe('ExperimentPanel: the second experiment', () => {
       experiment.recognitionOnce!.skippedPendingEnd.push({ sessionId: 2, at: 1234.4 }, { sessionId: 3, at: 5678.6 })
       return []
     })
-    expect(view).toHaveTextContent('前の実行の end を待たずに飛ばした録音=2件（セッション 2@1234ms、セッション 3@5679ms。recogonce の判定に使わない）')
+    expect(view).toHaveTextContent('前の実行の end を待たずに飛ばした録音=2件（セッション 2@1234ms、セッション 3@5679ms。時刻は、ほかの行と違い、ページを開いてからの時間。recogonce の判定に使わない）')
   })
 
   it('shows the recogonce record without events after the release', async () => {
