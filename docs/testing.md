@@ -237,7 +237,33 @@ Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeOb
 
 ### 切り分けの実験のスイッチ（原因の特定の後に外す）
 
-iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のログで `size=5`）になる不具合の原因を切り分けるため、スイッチを1つの PR で入れ、デプロイは1回にして、iPhone でスイッチを切り替えながら試します。原因が分かったら、本番の修正を別の PR で入れ、このスイッチ、診断の表示、`legacy` の部品（`frontend/src/experiments.ts`、`frontend/src/hooks/experimentTrace.ts`、`frontend/src/pages/ExperimentPanel.tsx`、`frontend/src/pages/LegacyInterpreterPage.tsx` と、それぞれのテスト）を外します。
+iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のログで `size=5`）になる不具合の原因を切り分けるため、スイッチを1つの PR で入れ、デプロイは1回にして、iPhone でスイッチを切り替えながら試します。原因が分かったら、本番の修正を別の PR で入れ、このスイッチ、診断の表示、`legacy` の部品を外します。外す PR では、次の「外すもの」の一覧を漏れなく扱います。
+
+#### 外すもの（原因が分かった後に、外す PR で扱う）
+
+- 消すファイル
+  - `frontend/src/experiments.ts`
+  - `frontend/src/hooks/experimentTrace.ts`
+  - `frontend/src/pages/ExperimentPanel.tsx`
+  - `frontend/src/pages/LegacyInterpreterPage.tsx`
+- 消すテストのファイル
+  - `frontend/src/experiments.test.ts`
+  - `frontend/src/hooks/useAudioSession.callLog.test.ts`（ただし、外した後も「本番の呼び出しの順番」の守りとして残す価値があるかを、外す PR で判断します。残す場合は、`readExperimentConfig` を使う2つ目のテスト（`?exp=` のとき）を外します）
+  - `frontend/src/hooks/useAudioSession.experiments.test.ts`
+  - `frontend/src/pages/ExperimentPanel.test.tsx`
+  - `frontend/src/pages/InterpreterPage.experiments.test.tsx`
+  - `frontend/src/pages/LegacyInterpreterPage.test.tsx`
+  - `frontend/src/pages/LegacyInterpreterPage.experiments.test.tsx`
+  - `frontend/src/App.test.tsx`（`exp` に関わるテストを消した後に残すものがあるかを、外す PR で判断します）
+- 戻すもの
+  - `frontend/src/hooks/useAudioSession.ts`：`createAudioSession` と `useAudioSession` の `config` の引数、スイッチの分岐（`norecog`、`legacyrecog`、`nometer`、`nodisconnect`、`awaitclose`、`notrackread`、`noendedlistener`、`trace`）、`exp` の記録（`Session.exp`、`expDiag`、`perfNow` と、`if (s.exp)` の行のすべて）、`recordPageEvent`、`markTraceListenerOnly`、`AudioDiagnostics.experiment`、`trace` のための型（`SpeechRecognition` の `onstart`、`onaudiostart`、`onaudioend`）、`experiments` と `experimentTrace` の import。`stop` の後半を分けた `stopRecorder` と `startStopWatchdog` を残すか戻すかは、外す PR で判断します
+  - `frontend/src/pages/InterpreterPage.tsx`：`experiment` の props、`experimentRef`、`useAudioSession` に渡す `experiment`、ページの listener の分岐（`trace` の記録、`nolifecycle`、記録だけの listener）と `audioSessionRef`、`ExperimentPanel` とその import
+  - `frontend/src/App.tsx`：`readExperimentConfig` で読む `experiment`、`LegacyInterpreterPage` への切り替えとその import、`InterpreterPage` に渡す `experiment`
+- ドキュメント
+  - `docs/testing.md`：「3. Frontend テスト」のテストファイルの表の、この PR で加えた行（上の「消すテストのファイル」の8つ）と、この節（「切り分けの実験のスイッチ」）そのもの
+  - `docs/speech-flow.md`：6.9（診断の情報）の終わりの、実験のスイッチの段落
+
+#### スイッチと診断
 
 - 指定：URL の query の `exp` で指定します（例：`?exp=norecog`、`?exp=nometer,norecog`）。hash は使いません（`#mic-test` などと衝突させないため）。画面を読み込んだときに一度だけ読み取り、途中で URL を変えても反映しません。`?exp=` の空の指定でも、実験のモードになります。名前は小文字で書きます（知らない名前は無視し、診断の表示に出します）
 - **スイッチがないとき（URL に `exp` がないとき）の動きは、今の本番と同じです。** ブラウザの API の呼び出しの順番と回数を変えず、診断の表示を描画せず、`performance.now()` を使った実験の記録もしません（`useAudioSession.callLog.test.ts` で確かめています）。各スイッチの分岐は、今のコードをそのまま条件の中に置く形にしています
@@ -247,7 +273,7 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
 | （空。`?exp=`） | 今の本番と同じ動き。passive の診断を出す |
 | `legacy` | PR #26 の前（`07f06f0`）の通訳の画面を、別の部品（`LegacyInterpreterPage`）としてそのまま使う。`useAudioSession` は使わない |
 | `norecog` | 音声認識を一切作らない（constructor も呼ばない） |
-| `legacyrecog` | 音声認識の部分だけ、PR #26 の前の方式にする：`start()` が成功した後に ref に入れ、`onend` では `MediaRecorder` が `recording` なら始め直す |
+| `legacyrecog` | 音声認識の部分だけ、PR #26 の前の方式にする：`start()` が成功した後に ref に入れ、`onend` では `MediaRecorder` が `recording` なら始め直す（画面の状態は見ない）。`07f06f0` との違いは次のとおりです：`onend` の始め直しは止める指示の前だけ、見る `MediaRecorder` はそのセッションのもの（片付けの後は空）、`start()` の例外は今の版と同じく `recognition_failed` として記録する、`onresult` は今の版のまま。理由は、止めた後に音声認識が残ると実験の結果を汚すため（`awaitclose` と組み合わせると、`close()` を待つ間も `recording` のままになる）で、`07f06f0` では止める指示と `MediaRecorder.stop()` が同じ同期の処理の中にあったので、意味は同じです |
 | `nometer` | 音量の取得（`AudioContext`、`createMediaStreamSource`、analyser、`requestAnimationFrame`）を一切使わない。波紋は動かない |
 | `nodisconnect` | `sourceNode.disconnect()` を呼ばず、`AudioContext.close()` だけにする（利用者の停止と中断の片付けの両方） |
 | `awaitclose` | 利用者の停止で、`AudioContext.close()` の完了を待ってから `MediaRecorder.stop()` を呼ぶ。待っている間に中断されたときは、`stop()` を呼ばずに中断の片付けに任せる。見張りのタイマーは、待つ前に始める |
@@ -268,8 +294,9 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
 - passive（`exp` があるとき）：新しい listener を足さず、自分のコードの中の時刻と、もともとある出来事の handler の中の値だけを記録します。`getDiagnostics()` の値（`notrackread` のときは track の状態を含めない）、スイッチの指定（`raw`、`requested`、`ignored`、`inactive`、`effective`）、`AudioContext` の作成、`createMediaStreamSource` と `connect`、`disconnect`、`close()` を呼んだ時刻と完了の時刻、`getUserMedia` を呼んだ時刻、`MediaRecorder` の `start()` と `stop()` を呼んだ時刻、`ondataavailable` の時刻と大きさ（回ごと）、`onstop` の時刻、最終の `Blob` の大きさ、音量の最初の値と最初の 0 でない値の時刻、音声認識の `start()` と `stop()` を呼んだ時刻と `onresult`（文字数だけ）、`onerror`（エラーの文字列）、`onend` の時刻です。認識した本文は記録しません
 - 時刻は、新しく足すものはすべて `performance.now()` です（`requestAnimationFrame` の timestamp と同じ基準）。既存の診断の時刻（`Date.now()`）は変えず、セッションの開始のときに `Date.now()` と `performance.now()` の組を1つだけ残します
 - extended（`trace` のとき）：もともと handler があるもの（track の `ended`、`visibilitychange`、`pagehide`、`pageshow`）は、既存の handler の中で記録します。新しい listener を付けるのは、今の版にない出来事（track の `mute` と `unmute`、`MediaRecorder` の `onstart`、音声認識の `onstart`、`onaudiostart`、`onaudioend`）だけです。`nolifecycle` と一緒のときは、記録のためだけの listener を付け（中断の片付けなどはしない）、`traceListenerOnly: true` を残します。`noendedlistener` と一緒のときは、`ended` を記録せず、`endedNotRecorded` にその旨を残します
-- `legacy` のとき：PR #26 の前のコードにもともとある `ondataavailable` と `onstop` の中での値と、`start()` と `stop()` を呼んだ箇所の時刻だけを記録します（`ondataavailable` の回数と大きさ、最終の `Blob` の大きさ、`mimeType`、`start()` と `stop()` の時刻）。track の読み取り、track の listener、`AudioContext` の診断、ページの出来事の listener は足していません
-- 表示：`exp` があるときだけ、通訳の画面の下に、診断の表示と「更新」「コピー」のボタンを出します。表示は「更新」を押したときだけ変わります（直近の5回分）。「コピー」は、押したときに最新の診断の情報を JSON でクリップボードに写します（写せないときは、選んで写せる欄に出します）。録音中（`starting`、`recording`、`stopping`）は押せません。定期的な読み取り、新しい timer、出来事ごとの再描画はしません
+- `trace` のときは、ページの出来事（`visibilitychange`、`pagehide`、`pageshow`）の handler の中で `document.visibilityState` を読みます（`trace` を付けないときは、`pagehide` と `pageshow` の handler では読みません。`visibilitychange` の handler は、もともと読んでいます）
+- `legacy` のとき：PR #26 の前のコードにもともとある `ondataavailable` と `onstop` の中での値と、`start()` と `stop()` を呼んだ箇所の時刻だけを記録します（`ondataavailable` の回数と大きさ、`onstop` で作る最終の `Blob` の大きさと `type`（`blobType`）、`start()` と `stop()` の時刻）。`MediaRecorder` の property（`mimeType` など）、track の読み取り、track の listener、`AudioContext` の診断、ページの出来事の listener は足していません
+- 表示：`exp` があるときだけ、通訳の画面の下に、診断の表示と「更新」「コピー」のボタンを出します。表示は「更新」を押したときだけ変わります（直近の5回分）。「コピー」は、押したときに最新の診断の情報を JSON でクリップボードに写します（写せないときは、選んで写せる欄に出します）。録音中（今の通訳の画面は `starting`、`recording`、`stopping`。`legacy` は `recording` と、録音の確定（`onstop` と翻訳の結果）を待つ `processing`）は押せません。`legacy` は `getUserMedia` を待つ間も `idle` のままなので、その間は押せてしまいます（新しい state を足さないため）。定期的な読み取り、新しい timer、出来事ごとの再描画はしません
 
 #### 実機で試す手順
 
@@ -285,7 +312,7 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
    5. `?exp=nometer,norecog`
    6. 枝分かれ：音声認識で直ったときは `legacyrecog`。音量の取得で直ったときは `nodisconnect`、`awaitclose`。どちらでも直らないときは `notrackread`、`noendedlistener`、`nolifecycle`
    7. 詳しく見る必要があるときだけ、当たったスイッチに `trace` を足します
-6. 試した後、録音していないときに「コピー」を押し、JSON を Claude.ai に渡します。Backend のログ（`size=`）もあわせて見ます
+6. 試した後、録音していないとき（翻訳の結果が出た後）に「コピー」を押し、JSON を Claude.ai に渡します。「更新」と「コピー」は、録音していないとき（翻訳の結果が出た後）に押します（`legacy` では、国旗を押してからマイクが開くまでの間も押せてしまうので、その間は押しません）。Backend のログ（`size=`）もあわせて見ます
 
 ## 4. テスト対象
 
