@@ -96,6 +96,8 @@ Frontend のテストファイルは次のとおりです。
 | `frontend/src/hooks/useAudioSession.experiments.test.ts` | `useAudioSession` のスイッチごとの動きと、実験の診断の記録 |
 | `frontend/src/pages/InterpreterPage.experiments.test.tsx` | 通訳の画面のスイッチ（`norecog`、`nolifecycle`、`trace`）と、診断の表示（「更新」「コピー」） |
 | `frontend/src/pages/ExperimentPanel.test.tsx` | 診断の表示の部品（スナップショットの表示、直近の5回分、クリップボードがないときの表示） |
+| `frontend/src/hooks/useAudioSession.recognitionVariants.test.ts` | 2回目の実験のスイッチ（`recogfirst`、`recogabort`、`recogdelay`、`recogearly`、`recogonce`）ごとの動きと診断の記録、スイッチがないときに待ちやタイマーを作らないこと |
+| `frontend/src/pages/ExperimentPanel.recognitionVariants.test.tsx` | 2回目の実験の診断（`recogfirst` の待ち、`recogearly`、`recogonce`）の表示 |
 | `frontend/src/pages/LegacyInterpreterPage.test.tsx` | `legacy` の部品。`07f06f0` の `InterpreterPage.test.tsx` を、import だけを変えて残したもの |
 | `frontend/src/pages/LegacyInterpreterPage.experiments.test.tsx` | `legacy` の部品の実験の記録と、足していないもの（`useAudioSession`、track の読み取り、listener） |
 | `frontend/src/App.test.tsx` | `exp` に `legacy` があるときだけ `LegacyInterpreterPage` を使うこと |
@@ -239,6 +241,15 @@ Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeOb
 
 iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のログで `size=5`）になる不具合の原因を切り分けるため、スイッチを1つの PR で入れ、デプロイは1回にして、iPhone でスイッチを切り替えながら試します。原因が分かったら、本番の修正を別の PR で入れ、このスイッチ、診断の表示、`legacy` の部品を外します。外す PR では、次の「外すもの」の一覧を漏れなく扱います。
 
+1回目の実験（PR #28 のスイッチ。iPhone の Safari で、スイッチごとに Safari を終了して開き直し、3回ずつ話した）の結果：
+
+- 基準、`legacy`、`nometer`：1回目は成功、2回目と3回目は 5 バイト
+- `norecog`、`nometer,norecog`：3回とも成功
+- 失敗した録音では、`ondataavailable` が1回で 5 バイト、音量の RMS も最初から 0。track は `live`、`muted=false`。音声認識の `end` は、`MediaRecorder.stop()` と track の `stop()` の後に届いている
+- 分かったこと：PR #26 の変更は原因ではない（`legacy` でも起きる）。音声認識（`webkitSpeechRecognition`）を使うと、2回目から `getUserMedia` で開いたマイクに音が来なくなる。ただし `norecog` は製品の解決策にならない（話した内容が翻訳より前に出ず、録音中の文字とライブ翻訳がなくなり、固有名詞の質が落ちる）
+
+2回目の実験（PR #28 の後に足したスイッチ `recogfirst`、`recogabort`、`recogdelay`、`recogearly`、`recogonce`）では、**音声認識を使ったまま、2回目からも録音できる止め方や始め方があるか**を確かめます。
+
 #### 外すもの（原因が分かった後に、外す PR で扱う）
 
 - 消すファイル
@@ -251,16 +262,19 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
   - `frontend/src/hooks/useAudioSession.callLog.test.ts`（ただし、外した後も「本番の呼び出しの順番」の守りとして残す価値があるかを、外す PR で判断します。残す場合は、`readExperimentConfig` を使う2つ目のテスト（`?exp=` のとき）を外します）
   - `frontend/src/hooks/useAudioSession.experiments.test.ts`
   - `frontend/src/pages/ExperimentPanel.test.tsx`
+  - `frontend/src/hooks/useAudioSession.recognitionVariants.test.ts`（2回目の実験）
+  - `frontend/src/pages/ExperimentPanel.recognitionVariants.test.tsx`（2回目の実験）
   - `frontend/src/pages/InterpreterPage.experiments.test.tsx`
   - `frontend/src/pages/LegacyInterpreterPage.test.tsx`
   - `frontend/src/pages/LegacyInterpreterPage.experiments.test.tsx`
   - `frontend/src/App.test.tsx`（`exp` に関わるテストを消した後に残すものがあるかを、外す PR で判断します）
 - 戻すもの
-  - `frontend/src/hooks/useAudioSession.ts`：`createAudioSession` と `useAudioSession` の `config` の引数、スイッチの分岐（`norecog`、`legacyrecog`、`nometer`、`nodisconnect`、`awaitclose`、`notrackread`、`noendedlistener`、`trace`）、`exp` の記録（`Session.exp`、`expDiag`、`perfNow` と、`if (s.exp)` の行のすべて）、`recordPageEvent`、`markTraceListenerOnly`、`AudioDiagnostics.experiment`、`trace` のための型（`SpeechRecognition` の `onstart`、`onaudiostart`、`onaudioend`）、`experiments` と `experimentTrace` の import。`stop` の後半を分けた `stopRecorder` と `startStopWatchdog` を残すか戻すかは、外す PR で判断します
+  - `frontend/src/hooks/useAudioSession.ts`：`createAudioSession` と `useAudioSession` の `config` の引数、スイッチの分岐（`norecog`、`legacyrecog`、`nometer`、`nodisconnect`、`awaitclose`、`notrackread`、`noendedlistener`、`trace`、2回目の実験の `recogfirst`、`recogabort`、`recogdelay`、`recogearly`、`recogonce`）、2回目の実験のために足したもの（`RECOGNITION_END_TIMEOUT_MS`、`RECOGNITION_END_DELAY_MS`、`RecognitionEndWait`、`Session.recognitionEndWait`、`stopRecognitionFirst`、`waitRecognitionEnd`、`timeOutRecognitionEndWait`、`settleRecognitionEndWait`、`cancelRecognitionEndWait`、`onceRecognition`、`recordOnce`、`disposeOnceRecognition`、`abort` を分けた `abortSession`、`SpeechRecognition` の型の `abort()`）、`exp` の記録（`Session.exp`、`expDiag`、`perfNow` と、`if (s.exp)` の行のすべて）、`recordPageEvent`、`markTraceListenerOnly`、`AudioDiagnostics.experiment`、`trace` のための型（`SpeechRecognition` の `onstart`、`onaudiostart`、`onaudioend`）、`experiments` と `experimentTrace` の import。`stop` の後半を分けた `stopRecorder` と `startStopWatchdog` を残すか戻すかは、外す PR で判断します
   - `frontend/src/pages/InterpreterPage.tsx`：`experiment` の props、`experimentRef`、`useAudioSession` に渡す `experiment`、ページの listener の分岐（`trace` の記録、`nolifecycle`、記録だけの listener）と `audioSessionRef`、`ExperimentPanel` とその import
   - `frontend/src/App.tsx`：`readExperimentConfig` で読む `experiment`、`LegacyInterpreterPage` への切り替えとその import、`InterpreterPage` に渡す `experiment`
+  - `frontend/src/test/audioMocks.ts`：2回目の実験で足した、音声認識の代わりの `abort`（`FakeRecognition.abort`）
 - ドキュメント
-  - `docs/testing.md`：「3. Frontend テスト」のテストファイルの表の、この PR で加えた行（上の「消すテストのファイル」の8つ）と、この節（「切り分けの実験のスイッチ」）そのもの
+  - `docs/testing.md`：「3. Frontend テスト」のテストファイルの表の、実験の PR で加えた行（上の「消すテストのファイル」の10）と、この節（「切り分けの実験のスイッチ」）そのもの
   - `docs/speech-flow.md`：6.9（診断の情報）の終わりの、実験のスイッチの段落
 
 #### スイッチと診断
@@ -281,39 +295,64 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
 | `noendedlistener` | track に `ended` の listener を付けない |
 | `nolifecycle` | 通訳の画面で、`visibilitychange`、`pagehide`、`pageshow` の listener を付けない |
 | `trace` | extended の記録を有効にする |
+| `recogfirst` | （2回目の実験）利用者の停止で、音声認識の `stop()` を呼んだ後、音声認識の `end` が届くのを待ってから `MediaRecorder.stop()` を呼ぶ。`error`（`aborted` など）は記録するだけで、完了とはしない。`end` が 1.5 秒以内に届かないときは見切って `MediaRecorder.stop()` を呼び、診断に `recognitionEndTimedOut` を残す（見切った後に届いた `end` は記録だけ）。音量の取得の片付け（`disconnect` と `close()` の開始）は、今と同じく `MediaRecorder.stop()` の前（`end` を待つ前）。待っている間に中断したときは、待ちを無効にし、タイマーを取り消し、`MediaRecorder.stop()` を呼ばずに中断の片付けに任せる。見張りのタイマー（10 秒）は待つ前に始める（1.5 秒の見切りとは別）。音声認識がない（作れなかった、`start()` が失敗した）ときは待たない |
+| `recogabort` | （2回目の実験）音声認識の `stop()` の代わりに `abort()` を呼ぶ（利用者の停止と、中断の片付けの両方） |
+| `recogdelay` | （2回目の実験）`recogfirst` と一緒のときだけ効く。`end` が届いた後、さらに 500 ミリ秒待ってから `MediaRecorder.stop()` を呼ぶ |
+| `recogearly` | （2回目の実験）録音の開始で、音声認識を `getUserMedia` の前に始める（音声認識の `start()` → `getUserMedia` → `MediaRecorder.start()`）。録音の成立の後には始めない。録音の成立までの失敗や中断（`getUserMedia` の失敗、待つ間の中断、track がない、`live` でない、`MediaRecorder` の作成や `start()` の失敗）では、片付けで音声認識を止める（`recogabort` があれば `abort()`） |
+| `recogonce` | （2回目の実験）音声認識の部品を、画面（`createAudioSession`）で1つだけ作り（最初の録音のときに作る）、録音ごとに `start()` と `stop()` を繰り返す。`onresult`、`onerror`、`onend` は `start()` のたびに、そのときのセッションに結び付けたものに付け替え、結び付けたセッションが今のセッションでないときは記録だけにする。画面が外れるとき（`unmount`）は、セッションの片付けで部品を止めた後に、部品を手放す |
 
 組み合わせ：
 
 - `legacy` は単独です。ほかの名前（`trace` も）と一緒に指定したときは `legacy` だけを使い、ほかは効きません
-- `norecog` は `legacyrecog` より優先します
+- `norecog` は、音声認識を使うスイッチ（`legacyrecog`、`recogfirst`、`recogabort`、`recogdelay`、`recogearly`、`recogonce`）より優先します
 - `nometer` は `nodisconnect` と `awaitclose` より優先します
 - `nodisconnect` と `awaitclose` は組み合わせて使えます
+- `recogdelay` は、`recogfirst` がないときは効きません
+- `recogfirst` と `recogabort` は組み合わせて使えます（`abort()` → `end` を待つ → `MediaRecorder.stop()`）
+- `recogfirst` と `awaitclose` を一緒に指定したときは、両方を待ちます（`end` を待つ → `close()` の完了を待つ → `MediaRecorder.stop()`）
+- `recogfirst`、`recogabort`、`recogearly`、`recogonce` は、`legacyrecog` より優先します（`legacyrecog` は効きません）。2回目の実験は、今の版の音声認識の扱いを変えて調べるもので、PR #26 の前の方式（`legacyrecog`）と混ぜると、どちらの変更で結果が変わったかが分からなくなるためです。`recogdelay` だけを `legacyrecog` と一緒に指定したときは、`recogdelay` が効かず、`legacyrecog` が効きます
+- 2回目の実験のスイッチどうし（`recogfirst`、`recogabort`、`recogdelay`、`recogearly`、`recogonce`）は、上の `recogdelay` の条件のほかは、組み合わせて使えます
 
 診断：
 
 - passive（`exp` があるとき）：新しい listener を足さず、自分のコードの中の時刻と、もともとある出来事の handler の中の値だけを記録します。`getDiagnostics()` の値（`notrackread` のときは track の状態を含めない）、スイッチの指定（`raw`、`requested`、`ignored`、`inactive`、`effective`）、`AudioContext` の作成、`createMediaStreamSource` と `connect`、`disconnect`、`close()` を呼んだ時刻と完了の時刻、`getUserMedia` を呼んだ時刻、`MediaRecorder` の `start()` と `stop()` を呼んだ時刻、`ondataavailable` の時刻と大きさ（回ごと）、`onstop` の時刻、最終の `Blob` の大きさ、音量の最初の値と最初の 0 でない値の時刻、音声認識の `start()` と `stop()` を呼んだ時刻と `onresult`（文字数だけ）、`onerror`（エラーの文字列）、`onend` の時刻です。認識した本文は記録しません
 - 時刻は、新しく足すものはすべて `performance.now()` です（`requestAnimationFrame` の timestamp と同じ基準）。既存の診断の時刻（`Date.now()`）は変えず、セッションの開始のときに `Date.now()` と `performance.now()` の組を1つだけ残します
 - extended（`trace` のとき）：もともと handler があるもの（track の `ended`、`visibilitychange`、`pagehide`、`pageshow`）は、既存の handler の中で記録します。新しい listener を付けるのは、今の版にない出来事（track の `mute` と `unmute`、`MediaRecorder` の `onstart`、音声認識の `onstart`、`onaudiostart`、`onaudioend`）だけです。`nolifecycle` と一緒のときは、記録のためだけの listener を付け（中断の片付けなどはしない）、`traceListenerOnly: true` を残します。`noendedlistener` と一緒のときは、`ended` を記録せず、`endedNotRecorded` にその旨を残します
+- 2回目の実験の passive の診断（新しい listener は足さない）：
+  - `recogfirst`：セッションごとの `recognitionEndWait` に、待ち始めた時刻（`waitStartedAt`）、`end` が届いた時刻（`endAt`）、1.5 秒で見切ったか（`recognitionEndTimedOut`）と見切った時刻（`timedOutAt`）、見切った後に届いた `end` の時刻（`lateEndAt`）、待っている間の中断の時刻（`cancelledAt`）、音声認識がなくて待たなかったか（`noRecognition`）。見張りのタイマーの見切りは、今までどおり `recorder.stopTimedOut` で、別の項目です
+  - `recogdelay`：`recognitionEndWait.delayEndedAt`（500 ミリ秒の待ちの終わり）
+  - `recogabort`：音声認識の出来事に `abort_call`（`stop_call` と区別する）
+  - `recogearly`：音声認識の `start_call` の時刻と `getUserMediaCalledAt` の並び、セッションごとの `recogEarly.stoppedBeforeRecordingAt`（録音の成立の前に音声認識を止めた時刻）
+  - `recogonce`：画面の単位の `recognitionOnce` に、部品を作った回数（`createdCount`。1 のはず）、手放した時刻（`disposedAt`）、出来事（`start_call`、`result`、`error`、`end`）ごとの、結び付けたセッションの番号（`boundSessionId`）とそのときの有効なセッションの番号（`activeSessionId`）。2つが一致しない出来事は、表示で「不一致」と出します
+  - 音声認識の `audioend` などは、今までどおり `trace` のときだけ記録します。`recogfirst` の待ちには `audioend` を使わず、`end` だけで待ちます
 - `trace` のときは、ページの出来事（`visibilitychange`、`pagehide`、`pageshow`）の handler の中で `document.visibilityState` を読みます（`trace` を付けないときは、`pagehide` と `pageshow` の handler では読みません。`visibilitychange` の handler は、もともと読んでいます）
 - `legacy` のとき：PR #26 の前のコードにもともとある `ondataavailable` と `onstop` の中での値と、`start()` と `stop()` を呼んだ箇所の時刻だけを記録します（`ondataavailable` の回数と大きさ、`onstop` で作る最終の `Blob` の大きさと `type`（`blobType`）、`start()` と `stop()` の時刻）。`MediaRecorder` の property（`mimeType` など）、track の読み取り、track の listener、`AudioContext` の診断、ページの出来事の listener は足していません
 - 表示：`exp` があるときだけ、通訳の画面の下に、診断の表示と「更新」「コピー」のボタンを出します。表示は「更新」を押したときだけ変わります（直近の5回分）。「コピー」は、押したときに最新の診断の情報を JSON でクリップボードに写します（写せないときは、選んで写せる欄に出します）。録音中（今の通訳の画面は `starting`、`recording`、`stopping`。`legacy` は `recording` と、録音の確定（`onstop` と翻訳の結果）を待つ `processing`）は押せません。`legacy` は `getUserMedia` を待つ間も `idle` のままなので、その間は押せてしまいます（新しい state を足さないため）。定期的な読み取り、新しい timer、出来事ごとの再描画はしません
 
 #### 実機で試す手順
 
-1. 端末は iPhone の Safari です
-2. スイッチを変えるたびに、Safari のアプリを終了して（アプリの切り替え画面で上にスワイプして）開き直します。タブを閉じるだけでは足りないものとします
-3. 1つのスイッチで3回話します（1回目は成功、2回目と3回目が空になるかを見ます）。原因に当たったスイッチだけ、5回から10回に増やします
-4. 失敗したスイッチの後には、`legacy` をもう一度試します。`legacy` まで失敗し始めたら、Safari のプロセスが汚れたと見て、その後の結果は捨てます
-5. 順番
+（1回目の実験の手順は PR #28 を見てください。ここには2回目の実験の手順を書きます）
+
+1. 端末は iPhone の Safari です。スイッチを変えるたびに、Safari のアプリを終了して（アプリの切り替え画面で上にスワイプして）開き直します。タブを閉じるだけでは足りないものとします
+2. 1つのスイッチで3回、毎回同じ文（「わたしのなまえはありたしんです」）を話します。毎回、次を書き留めます
+   - 録音できたか（翻訳の結果が出たか）
+   - 話した内容が、翻訳の結果より前に画面に出たか
+   - 画面に最後に出た原文そのもの（途中で切れていないか）
+   - 翻訳の結果（「Shin」が別の名前になっていないか）
+3. 汚れの確かめの対照は `norecog` です。失敗したスイッチの後には `norecog` を試し、`norecog` まで失敗し始めたら、Safari のプロセスが汚れたと見て、その後の結果は捨てます
+4. 順番
    1. `?exp=`（基準）
-   2. `?exp=legacy`
-   3. `?exp=norecog`
-   4. `?exp=nometer`
-   5. `?exp=nometer,norecog`
-   6. 枝分かれ：音声認識で直ったときは `legacyrecog`。音量の取得で直ったときは `nodisconnect`、`awaitclose`。どちらでも直らないときは `notrackread`、`noendedlistener`、`nolifecycle`
-   7. 詳しく見る必要があるときだけ、当たったスイッチに `trace` を足します
-6. 「更新」と「コピー」は、録音していないとき（翻訳の結果が出た後）に押します（`legacy` では、国旗を押してからマイクが開くまでの間も押せてしまうので、その間は押しません）。試した後に「コピー」を押し、JSON を Claude.ai に渡します。Backend のログ（`size=`）もあわせて見ます
-7. `legacy` で、停止の後に処理中のまま止まったときは、それ自体を結果として書き留め（何回目の録音か）、Safari のアプリを終了して開き直してから続けます（`legacy` は `07f06f0` のままで、`onstop` を待つ見張りのタイマーがないため、`onstop` が届かないと処理中のままになり、「更新」と「コピー」も押せません）
+   2. `?exp=norecog`（対照）
+   3. `?exp=recogfirst`
+   4. `?exp=recogabort`
+   5. `?exp=recogfirst,recogabort`
+   6. 全部失敗したとき：`?exp=recogfirst,recogdelay`、`?exp=recogearly`、`?exp=recogonce`
+   7. 成功したスイッチ：5回から10回に増やし、`trace` を足して `audioend` の時刻を見ます（`trace` を足しても成功が変わらないことも確かめます）
+5. 成功の条件は次の3つで、すべてを実際に確かめて初めて成功とします
+   1. 2回目からも録音できる：`ondataavailable` が通常の大きさ（数万バイト）、音量の RMS が動く（`firstNonZeroAt` が null でない）、Backend で翻訳の結果が出る
+   2. 話した内容が、翻訳の結果より前に画面に出て、最後まで取れている（`hasTranscript=true`、`recognition.chars` が 0 より大きい）
+   3. 固有名詞を別の名前に変えない（「Shin」が「Makoto」などにならない）
+6. 「更新」と「コピー」は、録音していないとき（翻訳の結果が出た後）に押します。試した後に「コピー」を押し、JSON を Claude.ai に渡します。Backend のログ（`size=`）もあわせて見ます
 
 ## 4. テスト対象
 
