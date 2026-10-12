@@ -459,12 +459,9 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
   // 録音のデータは、最後の ondataavailable の後の onstop でまとめる（timeslice なしの録音では、最後のデータが録音の全体）
   const stop = () => {
     const s = current
+    // onstop が利用者の停止の前に届いていた場合（録音が先に止まっていた場合）は、onstop の時点で録音の失敗として
+    // 片付けて、セッションが無効になっているので、ここには来ない（JJ5）
     if (!s || s.stopRequested || !s.recorder) return
-    if (s.recorderStopped) {
-      // onstop が利用者の停止の前に届いていた（録音が先に止まっていた）。最後のデータがそろったかが分からないので送らない
-      failRecording(s, 'recorder_stopped_unexpectedly')
-      return
-    }
     s.stopRequested = true
     s.stopReason = 'user'
     s.diag.stopReason = 'user'

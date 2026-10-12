@@ -439,6 +439,18 @@ describe('useAudioSession: abort', () => {
     await expect(session.abort('error')).resolves.toBeUndefined()
   })
 
+  it('swallows a synchronous exception of AudioContext close()', async () => {
+    const { session, contexts } = await startRecording()
+    contexts.instances[0].close.mockImplementation(() => { throw new Error('x') })
+    await expect(session.abort('error')).resolves.toBeUndefined()
+  })
+
+  it('records a recognition error without an event as unknown', async () => {
+    const { session, recognitions } = await startRecording()
+    recognitions.instances[0].onerror?.()
+    expect(session.getDiagnostics().events.map(e => e.type)).toContain('recognition_error:unknown')
+  })
+
   it('does not close an AudioContext that is already closed', async () => {
     const { session, contexts } = await startRecording()
     contexts.instances[0].state = 'closed'

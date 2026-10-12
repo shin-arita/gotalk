@@ -11,7 +11,6 @@ export interface FakeTrack {
   muted: boolean
   stop: ReturnType<typeof vi.fn>
   addEventListener: (type: string, listener: () => void) => void
-  removeEventListener: (type: string, listener: () => void) => void
 }
 
 // track が終わったこと（ほかのアプリがマイクを使った、OS が止めたなど）を起こす。readyState を ended にして、
@@ -41,7 +40,6 @@ export function makeFakeStream(tracks: Partial<FakeTrack>[] = [{}]): FakeStream 
         if (!listeners.has(type)) listeners.set(type, new Set())
         listeners.get(type)!.add(listener)
       },
-      removeEventListener: (type: string, listener: () => void) => { listeners.get(type)?.delete(listener) },
       ...t,
     }
   })
