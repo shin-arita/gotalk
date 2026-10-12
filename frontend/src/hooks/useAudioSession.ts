@@ -108,6 +108,11 @@ function errorName(e: unknown): string {
   return e instanceof Error || e instanceof DOMException ? e.name : typeof e
 }
 
+// 利用者の停止で、MediaRecorder の onstop を待つ最長の時間（ミリ秒）。onstop は、ふつうは stop() の直後
+// （最後の dataavailable の後）に届く。届かないままだと stopping のままマイクが開き続けるので、3 秒で見切りを付けて
+// 録音の失敗として片付ける。長い録音の最後のデータをまとめる時間を見込んでも、3 秒あれば足りる
+export const RECORDER_STOP_TIMEOUT_MS = 3_000
+
 // 診断の情報をメモリの上に残す数
 const MAX_DIAGNOSTIC_SESSIONS = 10
 const MAX_DIAGNOSTIC_EVENTS = 200
@@ -126,6 +131,8 @@ interface Session {
   stopRequested: boolean
   // MediaRecorder の onstop が届いたか（止める理由によらず記録する）
   recorderStopped: boolean
+  // 利用者の停止で onstop を待つ見張りのタイマー
+  stopTimer: ReturnType<typeof setTimeout> | null
   chunks: Blob[]
   mimeType: string
   diag: AudioSessionDiagnostics
@@ -177,9 +184,17 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     }
   }
 
+  const clearStopTimer = (s: Session) => {
+    if (s.stopTimer !== null) {
+      clearTimeout(s.stopTimer)
+      s.stopTimer = null
+    }
+  }
+
   // 資源を止めて参照を捨てる（冪等）。AudioContext の close() が終わるまでの Promise を返す
   const release = (s: Session): Promise<void> => {
     s.stopRequested = true
+    clearStopTimer(s)
     stopRecognition(s)
     stopLevelMeter(s)
     const recorder = s.recorder
@@ -340,6 +355,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
       stopReason: null,
       stopRequested: false,
       recorderStopped: false,
+      stopTimer: null,
       chunks: [],
       mimeType: '',
       diag: newDiagnostics(id),
@@ -444,15 +460,24 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     if (recorder.state === 'inactive') {
       // MediaRecorder が自分で inactive になり、dataavailable と stop のイベントがまだ届いていない。onstop を待つ
       logEvent('recorder_already_inactive', s.id)
-      return
+    } else {
+      try {
+        recorder.stop()
+      } catch (e) {
+        const name = errorName(e)
+        s.diag.recorder.errorName = name
+        failRecording(s, `recorder_stop_failed:${name}`)
+        return
+      }
     }
-    try {
-      recorder.stop()
-    } catch (e) {
-      const name = errorName(e)
-      s.diag.recorder.errorName = name
-      failRecording(s, `recorder_stop_failed:${name}`)
-    }
+    // onstop が同期で届いて終わっていれば、見張りは要らない
+    if (!isActive(s.id)) return
+    s.stopTimer = setTimeout(() => {
+      s.stopTimer = null
+      // 古いセッションのタイマーは何もしない（片付けで止めているが、念のため確かめる）
+      if (!isActive(s.id)) return
+      failRecording(s, 'recorder_stop_timeout')
+    }, RECORDER_STOP_TIMEOUT_MS)
   }
 
   // 中断の片付け。今有効なセッションを先に無効にしてから、資源を片付ける。録音のデータは送らない

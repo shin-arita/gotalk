@@ -269,6 +269,76 @@ describe('useAudioSession: user stop', () => {
   })
 })
 
+describe('useAudioSession: onstop watchdog (JJ2)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('fails the recording when onstop does not arrive within 3 seconds', async () => {
+    vi.useFakeTimers()
+    const { session, callbacks, recorders, stream } = await startRecording()
+    recorders.instances[0].ondataavailable?.({ data: new Blob(['part']) })
+    session.stop()
+    vi.advanceTimersByTime(2999)
+    expect(callbacks.onRecorderError).not.toHaveBeenCalled()
+    expect(stream.tracks[0].stop).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(callbacks.onRecorderError).toHaveBeenCalledTimes(1)
+    expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(session.hasActiveSession()).toBe(false)
+    expect(session.getDiagnostics().events.map(e => e.type)).toContain('recorder_stop_timeout')
+    // 後から onstop が届いても送らない
+    recorders.instances[0].onstop?.()
+    expect(callbacks.onRecordingStopped).not.toHaveBeenCalled()
+  })
+
+  it('also watches when the recorder had become inactive by itself', async () => {
+    vi.useFakeTimers()
+    const { session, callbacks, recorders } = await startRecording()
+    recorders.instances[0].state = 'inactive'
+    session.stop()
+    vi.advanceTimersByTime(3000)
+    expect(callbacks.onRecorderError).toHaveBeenCalledTimes(1)
+  })
+
+  it('does nothing when onstop arrives within 3 seconds', async () => {
+    vi.useFakeTimers()
+    const { session, callbacks, recorders } = await startRecording()
+    session.stop()
+    vi.advanceTimersByTime(2000)
+    recorders.instances[0].onstop?.()
+    vi.advanceTimersByTime(5000)
+    expect(callbacks.onRecordingStopped).toHaveBeenCalledTimes(1)
+    expect(callbacks.onRecorderError).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does nothing when the session is aborted while waiting', async () => {
+    vi.useFakeTimers()
+    const { session, callbacks } = await startRecording()
+    session.stop()
+    await session.abort('hidden')
+    expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(5000)
+    expect(callbacks.onRecorderError).not.toHaveBeenCalled()
+  })
+
+  it('does not let the timer of session 1 act on session 2', async () => {
+    vi.useFakeTimers()
+    const { session, callbacks, gum, recorders } = await startRecording()
+    session.stop()
+    await session.abort('hidden')
+    const second = session.start('ja-JP')
+    const stream2 = await gum.calls[1].resolve()
+    await second
+    vi.advanceTimersByTime(5000)
+    expect(callbacks.onRecorderError).not.toHaveBeenCalled()
+    expect(session.hasActiveSession()).toBe(true)
+    expect(stream2.tracks[0].stop).not.toHaveBeenCalled()
+    expect(recorders.instances[1].stop).not.toHaveBeenCalled()
+  })
+})
+
 describe('useAudioSession: abort', () => {
   it('invalidates the session first, so the later onstop and data do nothing (3.11-6)', async () => {
     const { session, callbacks, recorders, recognitions, stream } = await startRecording()

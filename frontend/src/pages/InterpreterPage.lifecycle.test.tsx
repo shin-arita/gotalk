@@ -287,6 +287,26 @@ describe('InterpreterPage audio lifecycle: user stop edge cases (JJ1)', () => {
   })
 })
 
+describe('InterpreterPage audio lifecycle: onstop watchdog (JJ2)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('stops the tracks, shows recording_failed, and returns to idle when onstop does not arrive within 3 seconds', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    renderPage()
+    const stream = await startJaRecording(0)
+    await tapStop()
+    expect(jaTalk()).toBeDisabled()
+    await act(async () => { vi.advanceTimersByTime(3000) })
+    expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(alertText()).toBe(jaEn('recording_failed'))
+    expect(jaTalk()).not.toBeDisabled()
+    await finishRecorder(0)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
 describe('InterpreterPage audio lifecycle: interruption', () => {
   it('does not send, stops the tracks, and returns to idle when hidden while recording (3.11-6)', async () => {
     renderPage()
