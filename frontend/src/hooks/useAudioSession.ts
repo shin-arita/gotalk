@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useLayoutEffect, useState } from 'react'
 
 // 通訳の画面の録音のセッション（docs/speech-flow.md）。getUserMedia、track の stop()、MediaRecorder、音声認識、
 // 音量の取得（AudioContext と analyser、requestAnimationFrame）を、ここにまとめる。
@@ -458,10 +458,13 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
   }
 }
 
-// 画面から使う hook。返す AudioSession は、画面が外れるまで同じもの
+// 画面から使う hook。返す AudioSession は、画面が外れるまで同じもの。
+// callback は、描画のたびに useLayoutEffect で最新のものに入れ替える（描画の直後、ブラウザのイベントより前に入れ替わる）。
+// hook に渡す callback の中では、React の状態（useState の値）を読まず、ref（statusRef など）を読むこと。
+// 非同期の callback が呼ばれる時点では、closure の中の状態は古いことがあるため
 export function useAudioSession(callbacks: AudioSessionCallbacks): AudioSession {
   const [session] = useState(() => createAudioSession(callbacks))
-  useEffect(() => {
+  useLayoutEffect(() => {
     session.setCallbacks(callbacks)
   })
   return session
