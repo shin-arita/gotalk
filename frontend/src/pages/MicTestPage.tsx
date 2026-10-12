@@ -632,14 +632,21 @@ export default function MicTestPage() {
 
   // ボタンから呼ぶ。中のどの例外も、未処理の Promise の拒否にしない
   const handleContextPlay = async () => {
+    let started: ContextPlayback | null = null
     try {
-      await playWithContext()
+      await playWithContext(playback => { started = playback })
     } catch (e) {
       addLog(`AudioContext 再生の処理で例外 name=${errorName(e)}`)
+      // 例外の後は止めるものがないので、終わったことにする（後で録音を捨てても「再生を止めた」を出さない）
+      const playback = started as ContextPlayback | null
+      if (playback) {
+        playback.finished = true
+        if (contextPlaybackRef.current === playback) contextPlaybackRef.current = null
+      }
     }
   }
 
-  const playWithContext = async () => {
+  const playWithContext = async (onCreated: (playback: ContextPlayback) => void) => {
     const recording = lastRecordingRef.current
     if (!recording) return
     stopContextPlayback('もう一度再生したため')
@@ -649,6 +656,7 @@ export default function MicTestPage() {
     const label = recordingLabel(recording)
     const playback: ContextPlayback = { label, source: null, finished: false, stopReason: null }
     contextPlaybackRef.current = playback
+    onCreated(playback)
     const fail = (msg: string) => {
       // 待っている間に止めた後の失敗は、「再生を止めた」で出しているので出さない
       if (playback.stopReason !== null || playback.finished) return

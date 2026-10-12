@@ -1652,6 +1652,31 @@ describe('MicTestPage: AudioContext で再生', () => {
     expect(rejections.handler).not.toHaveBeenCalled()
   })
 
+  const afterExceptionWays = [
+    { name: 'S6', act: () => click('S6 すべて閉じる'), exceptions: 1 },
+    { name: 'pagehide', act: async () => { act(() => { window.dispatchEvent(new Event('pagehide')) }) }, exceptions: 1 },
+    { name: '次の録音の開始', act: () => click('S2 開始'), exceptions: 1 },
+    // もう一度押すと、同じ結果でもう一度例外になる
+    { name: 'もう一度押したとき', act: () => clickContextPlay(), exceptions: 2 },
+  ]
+  for (const way of afterExceptionWays) {
+    it(`II9: try の外の例外の後に「${way.name}」でも、「再生を止めた」を出さない`, async () => {
+      const rejections = watchUnhandledRejections()
+      const broken = Object.defineProperty({}, 'duration', { get: () => { throw new TypeError('broken') } })
+      setupAudioContextMock({ decodeResult: broken })
+      await record()
+      await clickContextPlay()
+      expect(countMatches(logText(), /AudioContext 再生の処理で例外 name=TypeError/)).toBe(1)
+
+      await way.act()
+      await rejections.settle()
+      const text = logText()
+      expect(text).not.toContain('再生を止めた')
+      expect(countMatches(text, /AudioContext 再生の処理で例外 name=TypeError/)).toBe(way.exceptions)
+      expect(rejections.handler).not.toHaveBeenCalled()
+    })
+  }
+
   it('resume() の失敗を name を付けてログに出し、再生せず、未処理の拒否にしない', async () => {
     const rejections = watchUnhandledRejections()
     setupAudioContextMock({ initialState: 'suspended', resumeFails: true })
