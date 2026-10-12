@@ -45,16 +45,32 @@ describe('getLocalizedMessage', () => {
     expect(MESSAGES.request_timeout.en).toBe('The translation didn’t work. Please try again.')
   })
 
+  it('has the recording start failure messages (ja without a period, the others with one)', () => {
+    expect(getLocalizedMessage('recording_start_failed', 'ja', 'en')).toBe(
+      'うまく録音を始められませんでした。もう一度お願いします\n\nRecording could not be started. Please try again.',
+    )
+    expect(MESSAGES.recording_start_failed).toEqual({
+      'ja':    'うまく録音を始められませんでした。もう一度お願いします',
+      'en':    'Recording could not be started. Please try again.',
+      'zh-CN': '未能开始录音，请再试一次。',
+      'zh-TW': '無法開始錄音，請再試一次。',
+      'ko':    '녹음을 시작하지 못했습니다. 다시 시도해 주세요.',
+      'th':    'ไม่สามารถเริ่มบันทึกเสียงได้ กรุณาลองอีกครั้ง',
+      'vi':    'Không thể bắt đầu ghi âm. Vui lòng thử lại.',
+    })
+  })
+
   it('keeps the existing language unclear messages', () => {
     expect(getLocalizedMessage('language_unclear', 'ja', 'en')).toBe(
       '言語不明、もう一度お話ください\n\nLanguage unclear. Please speak again.',
     )
   })
 
-  it('has messages in all 7 languages for all 10 keys', () => {
+  it('has messages in all 7 languages for all 11 keys', () => {
     const keys: MessageKey[] = [
       'input_too_large', 'service_unavailable', 'upstream_busy', 'timeout', 'tts_too_long',
       'recording_too_long', 'microphone_denied', 'generic_error', 'language_unclear', 'request_timeout',
+      'recording_start_failed',
     ]
     expect(Object.keys(MESSAGES).sort()).toEqual([...keys].sort())
     const languageIds = LANGUAGES.map(l => l.id)
