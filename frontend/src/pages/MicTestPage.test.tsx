@@ -220,10 +220,13 @@ interface AudioContextMockOptions {
   deferDecode?: boolean
   // baseLatency がないブラウザ
   noBaseLatency?: boolean
+  // resume() を待たせ、テストの中で resolveResume() か rejectResume() を呼んで決める
+  deferResume?: boolean
 }
 
 function setupAudioContextMock(options: AudioContextMockOptions = {}) {
   const pendingDecodes: (() => void)[] = []
+  const pendingResumes: { resolve: () => void; reject: (e: unknown) => void }[] = []
   const Ctor = vi.fn(function () {
     const context: MockAudioContext = {
       state: options.initialState ?? 'running',
@@ -231,9 +234,22 @@ function setupAudioContextMock(options: AudioContextMockOptions = {}) {
       ...(options.noBaseLatency ? {} : { baseLatency: 0.005 }),
       onstatechange: null,
       destination: {},
-      resume: vi.fn(async () => {
-        if (options.resumeFails) throw new DOMException('not allowed', 'NotAllowedError')
-        setContextState(context, 'running')
+      resume: vi.fn(() => {
+        if (options.resumeFails) return Promise.reject(new DOMException('not allowed', 'NotAllowedError'))
+        if (!options.deferResume) {
+          setContextState(context, 'running')
+          return Promise.resolve()
+        }
+        return new Promise<void>((resolve, reject) => {
+          pendingResumes.push({
+            // 閉じた後に解決した場合は、state を変えない
+            resolve: () => {
+              if (context.state !== 'closed') setContextState(context, 'running')
+              resolve()
+            },
+            reject,
+          })
+        })
       }),
       close: vi.fn(async () => { setContextState(context, 'closed') }),
       decodeAudioData: vi.fn(() => {
@@ -262,6 +278,10 @@ function setupAudioContextMock(options: AudioContextMockOptions = {}) {
   return {
     Ctor,
     resolveDecode: async () => { await act(async () => { pendingDecodes.shift()?.() }) },
+    resolveResume: async () => { await act(async () => { pendingResumes.shift()?.resolve() }) },
+    rejectResume: async (name: string) => {
+      await act(async () => { pendingResumes.shift()?.reject(new DOMException('resume failed', name)) })
+    },
   }
 }
 
@@ -1720,6 +1740,103 @@ describe('MicTestPage: AudioContext で再生', () => {
     expect(countMatches(text, /AudioContext 再生を止めた（/)).toBe(1)
     expect(text).toMatch(/AudioContext 再生を止めた（録音を捨てたため、開始の前）（S2 1回目の録音/)
     expect(text).not.toContain('AudioContext 再生の開始')
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('II4: 押した操作の中で（await の前に）AudioContext を作って resume() を呼び、decodeAudioData はまだ呼ばない', async () => {
+    const { Ctor } = setupAudioContextMock({ initialState: 'suspended', deferResume: true })
+    await record()
+    act(() => { fireEvent.click(contextPlayButton()) })
+    expect(Ctor).toHaveBeenCalledTimes(1)
+    expect(audioContexts[0].resume).toHaveBeenCalledTimes(1)
+    expect(audioContexts[0].decodeAudioData).not.toHaveBeenCalled()
+  })
+
+  const pendingStopWays = [
+    { name: 'S6', act: () => click('S6 すべて閉じる') },
+    { name: 'pagehide', act: async () => { act(() => { window.dispatchEvent(new Event('pagehide')) }) } },
+  ]
+  for (const way of pendingStopWays) {
+    it(`II5: resume() を待っている間に${way.name}で止めると、待った後に decodeAudioData と start() を呼ばず、止めたことを1回だけ出す`, async () => {
+      const rejections = watchUnhandledRejections()
+      const { resolveResume } = setupAudioContextMock({ initialState: 'suspended', deferResume: true })
+      await record()
+      await clickContextPlay()
+      await way.act()
+      await resolveResume()
+      await flush()
+      await rejections.settle()
+
+      expect(audioContexts[0].decodeAudioData).not.toHaveBeenCalled()
+      expect(sources).toHaveLength(0)
+      const text = logText()
+      expect(countMatches(text, /AudioContext 再生を止めた（/)).toBe(1)
+      expect(text).toMatch(/AudioContext 再生を止めた（録音を捨てたため、開始の前）（S2 1回目の録音/)
+      expect(text).not.toContain('AudioContext 再生の開始')
+      expect(rejections.handler).not.toHaveBeenCalled()
+    })
+  }
+
+  it('II5: arrayBuffer() を待っている間に S6 で止めると、待った後に decodeAudioData と start() を呼ばず、止めたことを1回だけ出す', async () => {
+    const rejections = watchUnhandledRejections()
+    setupAudioContextMock()
+    let resolveRead: (b: ArrayBuffer) => void = () => {}
+    const arrayBuffer = vi.spyOn(Blob.prototype, 'arrayBuffer').mockImplementation(
+      () => new Promise<ArrayBuffer>(r => { resolveRead = r }))
+    await record()
+    await clickContextPlay()
+    expect(arrayBuffer).toHaveBeenCalledTimes(1)
+    await click('S6 すべて閉じる')
+    await act(async () => { resolveRead(new ArrayBuffer(5)) })
+    await flush()
+    await rejections.settle()
+
+    expect(audioContexts[0].decodeAudioData).not.toHaveBeenCalled()
+    expect(sources).toHaveLength(0)
+    const text = logText()
+    expect(countMatches(text, /AudioContext 再生を止めた（/)).toBe(1)
+    expect(text).toMatch(/AudioContext 再生を止めた（録音を捨てたため、開始の前）/)
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('II5: 待っている間にもう一度押すと、前の再生を「もう一度再生したため、開始の前」として止め、新しい再生だけを鳴らす', async () => {
+    const rejections = watchUnhandledRejections()
+    const { resolveDecode } = setupAudioContextMock({ deferDecode: true })
+    await record()
+    await clickContextPlay()
+    await clickContextPlay()
+    expect(audioContexts[0].decodeAudioData).toHaveBeenCalledTimes(2)
+    // 前の再生の decodeAudioData が先に解決しても鳴らさない
+    await resolveDecode()
+    expect(sources).toHaveLength(0)
+    await resolveDecode()
+    await rejections.settle()
+
+    expect(sources).toHaveLength(1)
+    expect(sources[0].start).toHaveBeenCalledTimes(1)
+    const text = logText()
+    expect(countMatches(text, /AudioContext 再生を止めた（/)).toBe(1)
+    expect(text).toMatch(/AudioContext 再生を止めた（もう一度再生したため、開始の前）（S2 1回目の録音/)
+    expect(countMatches(text, /AudioContext 再生の開始/)).toBe(1)
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('II5: 待っている間にコンポーネントが外れると、待った後に start() を呼ばず、React の警告と未処理の拒否が出ない', async () => {
+    const rejections = watchUnhandledRejections()
+    const consoleError = vi.spyOn(console, 'error')
+    const { resolveDecode } = setupAudioContextMock({ deferDecode: true })
+    const { unmount } = render(<MicTestPage />)
+    await click('S2 開始')
+    await click('S2 停止')
+    await clickContextPlay()
+    expect(audioContexts[0].decodeAudioData).toHaveBeenCalledTimes(1)
+    unmount()
+    await resolveDecode()
+    await rejections.settle()
+
+    expect(sources).toHaveLength(0)
+    expect(audioContexts[0].close).toHaveBeenCalledTimes(1)
+    expect(consoleError).not.toHaveBeenCalled()
     expect(rejections.handler).not.toHaveBeenCalled()
   })
 
