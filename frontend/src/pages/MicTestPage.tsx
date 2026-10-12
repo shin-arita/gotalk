@@ -767,7 +767,7 @@ export default function MicTestPage() {
       <h1 style={{ fontSize: '20px', marginBottom: '12px' }}>Mic Test</h1>
 
       <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '24px' }}>
-        マイク動作確認用の開発ページです。録音した音声と音声認識の結果は、GoTalk の Backend や OpenAI API には送信・保存しません。音声認識を使うテスト（S3、S4、S5）では、ブラウザまたは OS の音声認識サービスへ音声が送信される場合があります。録音した音声は、このページの中で再生するためだけにメモリに持ちます。送信も保存もしません。次の録音を始めたとき、S6 を押したとき、ページを閉じたときに捨てます。「AudioContext で再生」は、&lt;audio&gt; とは別の方法（Web Audio API）で鳴らし、再生の後もマイクから音が取れるかを確かめるためのものです。
+        マイク動作確認用の開発ページです。録音した音声と音声認識の結果は、GoTalk の Backend や OpenAI API には送信・保存しません。音声認識を使うテスト（S3、S4、S5）では、ブラウザまたは OS の音声認識サービスへ音声が送信される場合があります。録音した音声は、このページの中で再生するためだけにメモリに持ちます。送信も保存もしません。次の録音を始めたとき、S6 を押したとき、ページを閉じたときに捨てます。「AudioContext で再生」は、&lt;audio&gt; とは別の方法（Web Audio API）で鳴らし、再生の後もマイクから音が取れるかを確かめるためのものです。試すときは、ページを読み込み直してから、「直前の録音を再生」を押さずに試してください。
       </p>
 
       <section style={sectionStyle}>

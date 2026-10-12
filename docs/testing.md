@@ -152,7 +152,7 @@ Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeOb
 
 開発用のマイクの確認のページ（`#mic-test`、`MicTestPage.test.tsx`）のテストでは、`getUserMedia`、`MediaRecorder`、`SpeechRecognition`、`navigator.permissions`、`URL.createObjectURL`、`URL.revokeObjectURL`、`HTMLMediaElement` の `play()` と `pause()`、`window.AudioContext`（`decodeAudioData`、`createBufferSource`、`resume`、`close`、`state`、`onstatechange`）を mock し（`URL` の2つは `beforeEach` で保存し、`afterEach` で元に戻します。`window.AudioContext` は `afterEach` で削除します）、次を確かめます。ページの使い方は [development.md](development.md) の「8. 注意点」に書いています。
 
-- `#mic-test` のときだけページを表示し、通常の URL では表示しないこと。上部の説明の文（録音をメモリにだけ持ち、捨てるときの説明と、「AudioContext で再生」の目的の説明を含む）を表示すること
+- `#mic-test` のときだけページを表示し、通常の URL では表示しないこと。上部の説明の文（録音をメモリにだけ持ち、捨てるときの説明と、「AudioContext で再生」の目的と試し方の説明を含む）を表示すること
 - S1 では開始のたびに `getUserMedia` を呼び、停止で track の `stop()` を呼び、閉じる前の track の状態と閉じたことをログに出すこと
 - S2 では `getUserMedia` を最初の1回だけ呼び、開始と停止で `track.enabled` を true と false に切り替え、track の `stop()` を呼ばないこと
 - S7 では `getUserMedia` を最初の1回だけ呼び、`track.enabled` が true のままであること
@@ -185,7 +185,7 @@ Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeOb
 - `AudioContext` は2回押しても1つだけ作ること。`suspended` のときは `resume()` を呼び、`interrupted` になった後に押したときも `resume()` を呼ぶこと。`running` のときは `resume()` を呼ばないこと。`state` の変化（`running`、`interrupted`、`closed`）をログに出すこと
 - `decodeAudioData` の失敗（`EncodingError`）と `resume()` の失敗（`NotAllowedError`）を、`name` を付けてログに出し、`resume()` に失敗したときは `decodeAudioData` を呼ばず、未処理の Promise の拒否が出ないこと。`decodeAudioData` に失敗した後に録音を捨てても、「再生を止めた」を出さないこと。`AudioContext` がないブラウザでは、対応していないとログに出すこと
 - 再生している間に、次の録音の開始、S6、`pagehide`、もう一度押したとき、コンポーネントが外れたときに、`AudioBufferSourceNode` の `stop()` を呼び、「AudioContext 再生を止めた（理由）」と止めた後の track の状態を1回だけ出すこと（コンポーネントが外れたときは、`stop()` と `close()` を呼ぶことと、React の警告が出ないことを確かめます）。`stop()` の後に届く `onended` で「再生の終わり」を出さないこと。`decodeAudioData` を待っている間に S6 を押すと、「開始の前」と付けて止めたことを出し、待った後に再生しないこと
-- S6、`pagehide`、コンポーネントが外れたときに `AudioContext` の `close()` を呼び、`close()` したことと `closed` への変化をログに出すこと。次の録音の開始では `close()` を呼ばずに使い回し、S6 の後に押すと新しく作ること。`AudioContext` を作っていなければ、S6 で `AudioContext` のログを出さないこと
+- S6、`pagehide`、コンポーネントが外れたときに `AudioContext` の `close()` を呼び、`close()` したことと `closed` への変化をログに出すこと（コンポーネントが外れたときは、画面のログを読めないため、`close()` を呼ぶことだけを確かめます）。次の録音の開始では `close()` を呼ばずに使い回し、S6 の後に押すと新しく作ること。`AudioContext` を作っていなければ、S6 で `AudioContext` のログを出さないこと
 - `<audio>` の再生と `AudioContext` の再生が、互いに止めないこと
 - 「AudioContext で再生」でも、Backend への `fetch` を呼ばず、`localStorage` に書かないこと
 
