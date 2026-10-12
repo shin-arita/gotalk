@@ -271,6 +271,7 @@ stateDiagram-v2
 - `MediaRecorder` が `inactive` なら `stop()` しません
 - track は、`ended` でも `stop()` を呼んでかまいません（害がありません）
 - `AudioContext` が `closed` なら `close()` しません。`close()` の拒否は捨てます
+- 音量の取得の資源の片付け（`disconnect()` と `close()`）は1回だけ行い、始めた `close()` の完了の Promise をセッションの資源のまとまりに持ちます。2回目以降の片付けは、その Promise を返します。そのため、`abort(理由)` の Promise は、どの経路でも（利用者の停止で先に `close()` を始めた後の `stopping` の間の中断でも）`AudioContext` の `close()` の完了まで待ちます
 - `requestAnimationFrame` の番号が空なら取り消しません
 - 音声認識が空なら何もしません。`stop()` の例外は捨てます
 

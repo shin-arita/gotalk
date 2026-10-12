@@ -495,6 +495,52 @@ describe('useAudioSession: abort', () => {
     expect(session.getDiagnostics().sessions[0].stopReason).toBe('pagehide')
   })
 
+  it('waits for the close() started by the user stop when aborted while stopping (KK1)', async () => {
+    const { session, contexts } = await startRecording()
+    const ctx = contexts.instances[0]
+    let finishClose!: () => void
+    ctx.close.mockImplementation(() => new Promise<void>(resolve => { finishClose = () => { ctx.state = 'closed'; resolve() } }))
+    session.stop()
+    expect(ctx.close).toHaveBeenCalledTimes(1)
+    let settled = false
+    const aborted = session.abort('pagehide').then(() => { settled = true })
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(settled).toBe(false)
+    finishClose()
+    await aborted
+    expect(settled).toBe(true)
+    // close() と disconnect() は、利用者の停止で1回だけ
+    expect(ctx.close).toHaveBeenCalledTimes(1)
+    expect(ctx.source.disconnect).toHaveBeenCalledTimes(1)
+    expect(session.getDiagnostics().sessions[0].audioContext.state).toBe('closed')
+  })
+
+  it('resolves the abort while stopping without an unhandled rejection when close() rejects (KK1)', async () => {
+    // 未処理の拒否は Node の process に届く（frontend の型には Node がないので、必要なところだけ型を書く）
+    type UnhandledListener = (reason: unknown) => void
+    const proc = (globalThis as unknown as {
+      process: { on: (e: string, l: UnhandledListener) => void; off: (e: string, l: UnhandledListener) => void }
+    }).process
+    const unhandled = vi.fn()
+    proc.on('unhandledRejection', unhandled)
+    try {
+      const { session, contexts } = await startRecording()
+      const ctx = contexts.instances[0]
+      let failClose!: () => void
+      ctx.close.mockImplementation(() => new Promise<void>((_, reject) => { failClose = () => reject(new Error('close failed')) }))
+      session.stop()
+      const aborted = session.abort('hidden')
+      failClose()
+      await expect(aborted).resolves.toBeUndefined()
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(unhandled).not.toHaveBeenCalled()
+      expect(ctx.close).toHaveBeenCalledTimes(1)
+      expect(ctx.source.disconnect).toHaveBeenCalledTimes(1)
+    } finally {
+      proc.off('unhandledRejection', unhandled)
+    }
+  })
+
   it('can be called again and again without double stops or exceptions (3.11-8)', async () => {
     const { session, recorders, recognitions, contexts, frames, stream } = await startRecording()
     await session.abort('hidden')

@@ -137,6 +137,8 @@ interface Session {
   sourceNode: MediaStreamAudioSourceNode | null
   analyser: AnalyserNode | null
   rafId: number | null
+  // 音量の取得の資源の片付け（releaseLevelMeter）で始めた AudioContext の close() の完了。片付けの前は null
+  levelMeterClosed: Promise<void> | null
   stopReason: AudioSessionStopReason | null
   stopRequested: boolean
   // MediaRecorder の onstop が届いたか（止める理由によらず記録する）
@@ -213,14 +215,8 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     }
   }
 
-  // 音量の取得の資源（MediaStreamAudioSourceNode と AudioContext）を片付ける（冪等）。
-  // close() が終わるまでの Promise を返す。
-  // MediaRecorder の stop() と track の stop() より前に呼ぶこと。iPhone の Chrome（WebKit）では、AudioContext に
-  // MediaStreamAudioSourceNode でつながったままの track を stop() すると、次の getUserMedia で開いたマイクから
-  // 音が来なくなる（2回目からの録音が空になる）という仮説による（実機で確かめていない）。
-  // PR #26 の前（07f06f0）は、AudioContext を先に close() してから MediaRecorder と track を止めており、
-  // 2回目からも録音できていたので、その順番に戻している
-  const releaseLevelMeter = (s: Session): Promise<void> => {
+  // releaseLevelMeter の1回目の中身。source node を disconnect() し、AudioContext の close() を始める
+  const closeLevelMeter = (s: Session): Promise<void> => {
     if (s.sourceNode) {
       try { s.sourceNode.disconnect() } catch { /* 捨てる */ }
     }
@@ -236,6 +232,20 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     } catch {
       return Promise.resolve()
     }
+  }
+
+  // 音量の取得の資源（MediaStreamAudioSourceNode と AudioContext）を片付ける（冪等）。
+  // close() が終わるまでの Promise を返す。2回目以降は、1回目に始めた close() の完了の Promise を返す
+  // （利用者の停止で先に close() を始めた後の abort でも、close() の完了まで待つため）。
+  // MediaRecorder の stop() と track の stop() より前に呼ぶこと。iPhone の Chrome（WebKit）では、AudioContext に
+  // MediaStreamAudioSourceNode でつながったままの track を stop() すると、次の getUserMedia で開いたマイクから
+  // 音が来なくなる（2回目からの録音が空になる）という仮説による（実機で確かめていない）。
+  // PR #26 の前（07f06f0）は、AudioContext を先に close() してから MediaRecorder と track を止めており、
+  // 2回目からも録音できていたので、その順番に戻している
+  const releaseLevelMeter = (s: Session): Promise<void> => {
+    if (s.levelMeterClosed) return s.levelMeterClosed
+    s.levelMeterClosed = closeLevelMeter(s)
+    return s.levelMeterClosed
   }
 
   // 資源を止めて参照を捨てる（冪等）。AudioContext の close() が終わるまでの Promise を返す。
@@ -387,6 +397,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
       sourceNode: null,
       analyser: null,
       rafId: null,
+      levelMeterClosed: null,
       stopReason: null,
       stopRequested: false,
       recorderStopped: false,
