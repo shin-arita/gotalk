@@ -5,6 +5,9 @@ import { getLocalizedMessage } from '../messages'
 import type { MessageKey } from '../messages'
 import { useAudioSession } from '../hooks/useAudioSession'
 import type { AudioSessionAbortReason, AudioSessionStartFailure } from '../hooks/useAudioSession'
+import { DEFAULT_EXPERIMENT_CONFIG } from '../experiments'
+import type { ExperimentConfig } from '../experiments'
+import ExperimentPanel from './ExperimentPanel'
 import './InterpreterPage.css'
 
 // 画面全体の状態（docs/speech-flow.md）。状態は画面だけが持つ
@@ -16,6 +19,9 @@ type InterpreterStatus = 'idle' | 'starting' | 'recording' | 'stopping' | 'proce
 interface InterpreterPageProps {
   selectedLanguages: Language[]
   onBack: () => void
+  // 切り分けの実験のスイッチ（docs/testing.md）。省略したときは、すべてのスイッチが false で、今の本番と同じ動き。
+  // 最初の描画のときの値だけを使う
+  experiment?: ExperimentConfig
 }
 
 interface HistoryEntry {
@@ -101,7 +107,7 @@ const PAGESHOW_RECOVERY_STATUS: Record<InterpreterStatus, InterpreterStatus> = {
   error: 'idle',
 }
 
-export default function InterpreterPage({ selectedLanguages, onBack }: InterpreterPageProps) {
+export default function InterpreterPage({ selectedLanguages, onBack, experiment = DEFAULT_EXPERIMENT_CONFIG }: InterpreterPageProps) {
   const [status, setStatus] = useState<InterpreterStatus>('idle')
   const [recordingFlagIndex, setRecordingFlagIndex] = useState<0 | 1 | null>(null)
   const [recognizedText, setRecognizedText] = useState('')
@@ -139,6 +145,8 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
   const hasLiveTranscriptRef = useRef(false)
   const recognizedTextRef = useRef('')
   const rippleRefs = useRef<(HTMLDivElement | null)[]>([null, null, null])
+  // 切り分けの実験のスイッチ。最初の描画のときの値だけを使う
+  const experimentRef = useRef(experiment)
 
   // 録音のセッション。状態は持たず、録音の成立、最後のデータ、失敗を callback で知らせる
   const audioSession = useAudioSession({
@@ -153,7 +161,7 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
     onRecordingStopped: (blob) => handleRecordingStopped(blob),
     onRecorderError: () => handleRecorderError(),
     isRecordingStatus: () => statusRef.current === 'recording',
-  })
+  }, experiment)
 
   // 画面の状態を変える。状態は画面だけが持つ（statusRef は、非同期の callback から最新の値を読むため）
   const changeStatus = (next: InterpreterStatus) => {
@@ -586,6 +594,8 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
   // listener は一度だけ登録し、最新の処理を ref から呼ぶ
   const interruptRef = useRef(interrupt)
   const pageShowRef = useRef(handlePageShow)
+  // 切り分けの実験（trace）の記録。AudioSession は画面が外れるまで同じもの
+  const audioSessionRef = useRef(audioSession)
   useEffect(() => {
     interruptRef.current = interrupt
     pageShowRef.current = handlePageShow
@@ -593,18 +603,47 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
 
   useEffect(() => {
     const handlers = { interruptRef, pageShowRef }
+    const exp = experimentRef.current
+    const session = audioSessionRef.current
     const onVisibilityChange = () => {
+      // 実験の trace：もともとある handler の中で記録する
+      if (exp.trace) session.recordPageEvent('visibilitychange')
       if (document.visibilityState === 'hidden') handlers.interruptRef.current('hidden')
     }
-    const onPageHide = () => handlers.interruptRef.current('pagehide')
-    const onPageShow = (e: PageTransitionEvent) => handlers.pageShowRef.current(e.persisted)
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    window.addEventListener('pagehide', onPageHide)
-    window.addEventListener('pageshow', onPageShow)
+    const onPageHide = (e: PageTransitionEvent) => {
+      if (exp.trace) session.recordPageEvent('pagehide', e.persisted)
+      handlers.interruptRef.current('pagehide')
+    }
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (exp.trace) session.recordPageEvent('pageshow', e.persisted)
+      handlers.pageShowRef.current(e.persisted)
+    }
+    // 実験の nolifecycle と trace：本来の handler を付けないので、記録のためだけの listener を付ける。
+    // 時刻、出来事の名前、visibilityState の記録だけをし、中断の片付けや状態の変更などの処理は一切しない
+    const recordOnlyVisibilityChange = () => session.recordPageEvent('visibilitychange')
+    const recordOnlyPageHide = (e: PageTransitionEvent) => session.recordPageEvent('pagehide', e.persisted)
+    const recordOnlyPageShow = (e: PageTransitionEvent) => session.recordPageEvent('pageshow', e.persisted)
+    // 実験の nolifecycle：visibilitychange、pagehide、pageshow の listener を付けない
+    if (!exp.noLifecycle) {
+      document.addEventListener('visibilitychange', onVisibilityChange)
+      window.addEventListener('pagehide', onPageHide)
+      window.addEventListener('pageshow', onPageShow)
+    } else if (exp.trace) {
+      document.addEventListener('visibilitychange', recordOnlyVisibilityChange)
+      window.addEventListener('pagehide', recordOnlyPageHide)
+      window.addEventListener('pageshow', recordOnlyPageShow)
+      session.markTraceListenerOnly()
+    }
     return () => {
-      document.removeEventListener('visibilitychange', onVisibilityChange)
-      window.removeEventListener('pagehide', onPageHide)
-      window.removeEventListener('pageshow', onPageShow)
+      if (!exp.noLifecycle) {
+        document.removeEventListener('visibilitychange', onVisibilityChange)
+        window.removeEventListener('pagehide', onPageHide)
+        window.removeEventListener('pageshow', onPageShow)
+      } else if (exp.trace) {
+        document.removeEventListener('visibilitychange', recordOnlyVisibilityChange)
+        window.removeEventListener('pagehide', recordOnlyPageHide)
+        window.removeEventListener('pageshow', recordOnlyPageShow)
+      }
       handlers.interruptRef.current('unmount')
     }
   }, [])
@@ -807,6 +846,17 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
         )}
       </div>
 
+      {experiment.enabled && <ExperimentPanel
+        config={experiment}
+        busy={status === 'starting' || status === 'recording' || status === 'stopping'}
+        read={() => ({
+          kind: 'audioSession',
+          takenAt: new Date().toISOString(),
+          effective: [...experiment.effective],
+          // 表示が、押した後の診断の変化で変わらないように複製する
+          diagnostics: JSON.parse(JSON.stringify(audioSession.getDiagnostics())),
+        })}
+      />}
     </main>
   )
 }
