@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import InterpreterPage from './InterpreterPage'
+import { RECORDER_STOP_TIMEOUT_MS } from '../hooks/useAudioSession'
 import { LANGUAGES } from '../languages'
 import { getLocalizedMessage } from '../messages'
 import type { MessageKey } from '../messages'
@@ -292,13 +293,13 @@ describe('InterpreterPage audio lifecycle: onstop watchdog (JJ2)', () => {
     vi.useRealTimers()
   })
 
-  it('stops the tracks, shows recording_failed, and returns to idle when onstop does not arrive within 3 seconds', async () => {
+  it('stops the tracks, shows recording_failed, and returns to idle when onstop does not arrive within RECORDER_STOP_TIMEOUT_MS', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     renderPage()
     const stream = await startJaRecording(0)
     await tapStop()
     expect(jaTalk()).toBeDisabled()
-    await act(async () => { vi.advanceTimersByTime(3000) })
+    await act(async () => { vi.advanceTimersByTime(RECORDER_STOP_TIMEOUT_MS) })
     expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
     expect(alertText()).toBe(jaEn('recording_failed'))
     expect(jaTalk()).not.toBeDisabled()

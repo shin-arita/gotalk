@@ -128,7 +128,7 @@ stateDiagram-v2
   starting --> error: getUserMedia の失敗、録音の成立までの失敗
   recording --> stopping: 同じ国旗ボタンをタップ
   recording --> error: MediaRecorder の onerror、MediaRecorder が自分で止まった
-  stopping --> error: stop() の例外、onstop が 3 秒届かない
+  stopping --> error: stop() の例外、onstop が 10 秒届かない
   stopping --> processing: 最後のデータがそろい、マイク OFF が成立
   error --> idle: 片付けてメッセージを表示
   processing --> ready: 翻訳成功
@@ -197,7 +197,7 @@ stateDiagram-v2
 
 1. 状態を `stopping` にし、止める理由を `user` にします
 2. 止める指示を先に記録してから、音声認識を `stop()` し、音量の取得を止めます
-3. `MediaRecorder` を `stop()` し、`onstop` を待ちます（最後の `ondataavailable` を受け取るため。timeslice なしの録音では、最後のデータが録音の全体です）。待ち始めたら、見張りのタイマー（`RECORDER_STOP_TIMEOUT_MS`、3 秒）を始めます
+3. `MediaRecorder` を `stop()` し、`onstop` を待ちます（最後の `ondataavailable` を受け取るため。timeslice なしの録音では、最後のデータが録音の全体です）。待ち始めたら、見張りのタイマー（`RECORDER_STOP_TIMEOUT_MS`、10 秒）を始めます
 4. `onstop` で、自分のセッションが有効で、止める理由が `user` であることを確かめてから、見張りのタイマーを止め、録音のデータをまとめます
 5. track をすべて `stop()` し、`AudioContext` を閉じ、参照を捨てます（マイク OFF の成立）
 6. マイク OFF が成立してから、状態を `processing` にし、Backend に送ります
@@ -211,9 +211,11 @@ stateDiagram-v2
 | `MediaRecorder` がすでに `inactive` で、`onstop` がまだ届いていない（`MediaRecorder` が自分で止まり、`dataavailable` と `stop` のイベントがこれから届く） | `stop()` は呼ばず、止める指示を記録して `onstop` を待ちます。届いたら、通常と同じく、最後のデータを含めて送ります |
 | `MediaRecorder` がすでに `inactive` で、`onstop` が届き済み | 録音が利用者の停止の前に止まっていたので、録音の失敗として片付けます（ふつうは、`onstop` が届いた時点で [6.5](#65-録音の途中で止まったとき) の扱いになっているので、ここには来ません） |
 | `stop()` が例外を出した | 録音の失敗として片付けます。診断のログに `recorder_stop_failed:<name>` を残します |
-| `onstop` が 3 秒以内に届かない | 録音の失敗として片付けます。診断のログに `recorder_stop_timeout` を残します |
+| `onstop` が 10 秒以内に届かない | 録音の失敗として片付けます。診断のログに `recorder_stop_timeout` を残します |
 
 「録音の失敗として片付ける」は、中断の片付け（理由 `error`）をして、Backend には送らず、「うまく録音できませんでした。もう一度お願いします」（`recording_failed`）を2つの言語で表示し、`idle` に戻すことです。見張りのタイマーは、`onstop` が届いたとき、中断の片付けのとき、セッションが無効になったときに必ず止めるので、古いセッションのタイマーが新しいセッションに作用することはありません。
+
+見張りの時間の 10 秒は、実機で確かめていない仮の値です。`stop()` から `onstop` までは、ふつうは数十から数百ミリ秒ですが、古い端末で、上限に近い長い録音（`audio/mp4` など）を止めた場合は、1 秒を超えることがあり得ます。短すぎると、正常な長い録音を「録音の失敗」として捨ててしまいます。長すぎた場合の損失は、ブラウザの不具合で `onstop` が届かないときに、`stopping` のまま track が長く開いていることだけなので、損失の小さい長めの値にしています。診断の情報には、利用者の停止で `stop()` を呼んでから（`MediaRecorder` がすでに `inactive` のときは、止める指示を記録してから）`onstop` が届くまでの時間（`stopLatencyMs`）と、見張りのタイマーで片付けたか（`stopTimedOut`）と、それまでに待った時間（`stopWaitedMs`）を残します。PR 2 の診断の表示でこの時間を測り、実測の値に余裕を足した値に見直します。
 
 中断の片付けでは、今有効なセッションを先に無効にしてから、`MediaRecorder`、音声認識、音量の取得を止め、track をすべて `stop()` し、`AudioContext` を閉じ、参照を捨てます。
 
@@ -279,7 +281,7 @@ stateDiagram-v2
 - 状態の遷移とその時刻（`status:recording` などの出来事として残します）
 - `getUserMedia` の開始と成功の時刻、エラーの `name`
 - track の `readyState`、`enabled`、`muted`
-- `MediaRecorder` の state、mimeType、録音の時間、録音の大きさ、エラー
+- `MediaRecorder` の state、mimeType、録音の時間、録音の大きさ、エラー、利用者の停止から `onstop` までの時間（`stopLatencyMs`）、見張りのタイマーで片付けたか（`stopTimedOut`）と待った時間（`stopWaitedMs`）
 - `AudioContext` の state、音量の RMS と最大値と、取れたサンプルの数
 - 音声認識の結果があったかと、その文字数（本文は残しません）
 
@@ -362,7 +364,7 @@ TTS model は `OPENAI_TTS_MODEL` を使い、未設定時は `gpt-4o-mini-tts` �
 - 利用者に表示するエラーの文言は、選んだ2つの言語で表示します（[ui.md](ui.md)）。以下では日本語の文言で示します。HTTP の status やブラウザのエラーの文字列は表示しません。
 - `getUserMedia` が失敗した場合（`NotAllowedError`、`SecurityError`、`NotFoundError`、`NotReadableError` など、エラーの `name` によらない）、Frontend は「マイクへのアクセスが許可されていません」を表示し、`idle` に戻します。
 - `getUserMedia` の成功の後、録音の成立までに失敗した場合（audio track がない、track が `live` でない、`MediaRecorder` の作成や `start()` の例外）、Frontend は開いた stream を必ず閉じ、「うまく録音を始められませんでした。もう一度お願いします」（`recording_start_failed`）を表示し、`idle` に戻します。この文言は、録音の成立の前の失敗だけに使います。
-- 録音の成立の後に録音が失敗した場合（録音の途中の `MediaRecorder` の `onerror`、利用者の停止での `stop()` の例外、`onstop` が 3 秒以内に届かない、利用者の停止の前に `MediaRecorder` が自分で止まった）、Frontend は録音を Backend に送らずに stream を閉じ、「うまく録音できませんでした。もう一度お願いします」（`recording_failed`）を表示し、`idle` に戻します（[6.4](#64-利用者の停止と中断の片付けの違い)、[6.5](#65-録音の途中で止まったとき)）。
+- 録音の成立の後に録音が失敗した場合（録音の途中の `MediaRecorder` の `onerror`、利用者の停止での `stop()` の例外、`onstop` が 10 秒以内に届かない、利用者の停止の前に `MediaRecorder` が自分で止まった）、Frontend は録音を Backend に送らずに stream を閉じ、「うまく録音できませんでした。もう一度お願いします」（`recording_failed`）を表示し、`idle` に戻します（[6.4](#64-利用者の停止と中断の片付けの違い)、[6.5](#65-録音の途中で止まったとき)）。
 - 録音の成立の後の、補助の機能（音量の取得と音声認識）の失敗では、メッセージを出さずに録音を続け、診断のログにだけ残します。
 - `SpeechRecognition` に対応していない場合や、作成や `recognition.start()` に失敗した場合、エラーは表示せずに録音を継続します。この場合 `transcript` は送られず、Backend が録音音声から文字起こしします。
 - `/api/interpret` または `/api/translate`（再翻訳）が `422` で `language_mismatch` を返した場合、Frontend は「言語不明、もう一度お話ください」を表示し、`idle` に戻します。

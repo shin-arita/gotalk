@@ -151,7 +151,8 @@ npm test
 - 録音の途中の `MediaRecorder` の `onerror` で片付けて、`recording_failed` を表示すること（録音の成立の前の失敗は `recording_start_failed` のまま）
 - 利用者の停止で `MediaRecorder` がすでに `inactive`（`onstop` が未着）のときは、`onstop` を待ち、最後のデータを含めて送ること。`onstop` が利用者の停止の前に届いていたときは送らないこと
 - 利用者の停止で `MediaRecorder` の `stop()` が例外を出したときは、Backend に送らず、track を `stop()` し、`recording_failed` を2つの言語で表示し、`idle` に戻ること。診断のログに `recorder_stop_failed:<name>` が残ること
-- 利用者の停止の後、`onstop` が 3 秒届かないと、track を `stop()` し、`recording_failed` を表示し、`idle` に戻ること（`recorder_stop_timeout`）。3 秒以内に届いた場合、待っている間に中断した場合、古いセッションのタイマーの場合は、タイマーが何もしないこと
+- 利用者の停止の後、`onstop` が見張りの時間（`RECORDER_STOP_TIMEOUT_MS`、10 秒）届かないと、track を `stop()` し、`recording_failed` を表示し、`idle` に戻ること（`recorder_stop_timeout`）。テストは時間を数字で書かず、定数を参照します。9 秒台で `onstop` が届いた場合は、録音の失敗にならずに送ること。待っている間に中断した場合、古いセッションのタイマーの場合は、タイマーが何もしないこと
+- 診断の情報に、`stop()` から `onstop` までの時間（`stopLatencyMs`。`MediaRecorder` がすでに `inactive` のときは、止める指示を記録してから）が残ること。見張りのタイマーで片付けた場合は、`stopTimedOut` と待った時間（`stopWaitedMs`）が残り、後から届いた `onstop` までの時間も残ること
 - 録音の途中で track が `ended` になり、`MediaRecorder` が自分で止まると、`recording_failed` を表示して `idle` に戻り、track を `stop()` し、Backend に送らないこと。診断のログに `track_ended` と `recorder_stopped_unexpectedly` が残ること。利用者の停止の後の `ended` と、古いセッションの `ended` では何もしないこと
 - `ready` 以外では読み上げを押せないこと。読み上げの途中に `hidden` や `pagehide` になったら、`<audio>` を止めてオブジェクト URL を解放し、`ready` に戻ること。`/api/tts` を待っている間に止めた場合は、後から来た音声を再生しないこと
 - 古いセッションの callback（`getUserMedia` の完了、`ondataavailable`、`onstop`、`onerror`、音声認識の `onresult` と `onend`、`requestAnimationFrame`）が新しいセッションを壊さないこと

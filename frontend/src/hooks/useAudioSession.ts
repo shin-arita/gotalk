@@ -49,6 +49,13 @@ export interface AudioSessionDiagnostics {
     startedAt: number | null
     stoppedAt: number | null
     durationMs: number | null
+    // 利用者の停止で stop() を呼んだ時刻（MediaRecorder がすでに inactive のときは、止める指示を記録した時刻）
+    stopRequestedAt: number | null
+    // stopRequestedAt から onstop が届くまでの時間（ミリ秒）。見張りのタイマーで片付けた後に届いた場合も残す
+    stopLatencyMs: number | null
+    // 見張りのタイマーで片付けたか。片付けたときは、それまでに待った時間を stopWaitedMs に残す
+    stopTimedOut: boolean
+    stopWaitedMs: number | null
     bytes: number
     errorName: string | null
   }
@@ -108,10 +115,13 @@ function errorName(e: unknown): string {
   return e instanceof Error || e instanceof DOMException ? e.name : typeof e
 }
 
-// 利用者の停止で、MediaRecorder の onstop を待つ最長の時間（ミリ秒）。onstop は、ふつうは stop() の直後
-// （最後の dataavailable の後）に届く。届かないままだと stopping のままマイクが開き続けるので、3 秒で見切りを付けて
-// 録音の失敗として片付ける。長い録音の最後のデータをまとめる時間を見込んでも、3 秒あれば足りる
-export const RECORDER_STOP_TIMEOUT_MS = 3_000
+// 利用者の停止で、MediaRecorder の onstop を待つ最長の時間（ミリ秒）。届かないままだと stopping のままマイクが
+// 開き続けるので、この時間で見切りを付けて録音の失敗として片付ける。
+// 実機で確かめていない仮の値。短すぎると正常な長い録音（古い端末の audio/mp4 で上限に近い録音など）を捨て、
+// 長すぎるとブラウザの不具合で onstop が届かないときに track が長く開いているだけなので、損失の小さい長めの値にしている。
+// PR 2 の診断の表示で stop() から onstop までの時間（AudioSessionDiagnostics の recorder.stopLatencyMs）を測り、
+// 実測の値に余裕を足した値に見直す
+export const RECORDER_STOP_TIMEOUT_MS = 10_000
 
 // 診断の情報をメモリの上に残す数
 const MAX_DIAGNOSTIC_SESSIONS = 10
@@ -144,7 +154,19 @@ function newDiagnostics(id: number): AudioSessionDiagnostics {
     stopReason: null,
     getUserMedia: { startedAt: null, succeededAt: null, errorName: null },
     tracks: [],
-    recorder: { state: null, mimeType: null, startedAt: null, stoppedAt: null, durationMs: null, bytes: 0, errorName: null },
+    recorder: {
+      state: null,
+      mimeType: null,
+      startedAt: null,
+      stoppedAt: null,
+      durationMs: null,
+      stopRequestedAt: null,
+      stopLatencyMs: null,
+      stopTimedOut: false,
+      stopWaitedMs: null,
+      bytes: 0,
+      errorName: null,
+    },
     audioContext: { state: null },
     level: { rms: 0, rmsMax: 0, peak: 0, samples: 0 },
     recognition: { hadResult: false, chars: 0 },
@@ -408,6 +430,9 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
       }
       recorder.onstop = () => {
         s.recorderStopped = true
+        // 利用者の停止から onstop までの時間を残す（見張りのタイマーの時間を実測で見直すため。片付けた後に届いた場合も）
+        const { stopRequestedAt } = s.diag.recorder
+        if (stopRequestedAt !== null) s.diag.recorder.stopLatencyMs = now() - stopRequestedAt
         // 中断のときは、セッションを先に無効にしているので、ここでは何もしない
         if (!isActive(id)) return
         if (s.stopReason === 'user') {
@@ -469,6 +494,8 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     stopRecognition(s)
     stopLevelMeter(s)
     const recorder = s.recorder
+    const stopRequestedAt = now()
+    s.diag.recorder.stopRequestedAt = stopRequestedAt
     if (recorder.state === 'inactive') {
       // MediaRecorder が自分で inactive になり、dataavailable と stop のイベントがまだ届いていない。onstop を待つ
       logEvent('recorder_already_inactive', s.id)
@@ -488,6 +515,8 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
       s.stopTimer = null
       // 古いセッションのタイマーは何もしない（片付けで止めているが、念のため確かめる）
       if (!isActive(s.id)) return
+      s.diag.recorder.stopTimedOut = true
+      s.diag.recorder.stopWaitedMs = now() - stopRequestedAt
       failRecording(s, 'recorder_stop_timeout')
     }, RECORDER_STOP_TIMEOUT_MS)
   }
