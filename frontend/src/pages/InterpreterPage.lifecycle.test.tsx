@@ -257,6 +257,36 @@ describe('InterpreterPage audio lifecycle: user stop', () => {
   })
 })
 
+describe('InterpreterPage audio lifecycle: user stop edge cases (JJ1)', () => {
+  it('waits for onstop and sends the whole recording when the recorder has become inactive by itself', async () => {
+    renderPage()
+    const stream = await startJaRecording(0)
+    recorders.instances[0].state = 'inactive'
+    await tapStop()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(stream.tracks[0].stop).not.toHaveBeenCalled()
+    expect(jaTalk()).toBeDisabled()
+    await finishRecorder(0, 'whole')
+    expect(fetchCalls.map(c => c.url)).toEqual(['/api/interpret'])
+    expect(((fetchCalls[0].options.body as FormData).get('audio') as Blob).size).toBe(5)
+    expect(stream.tracks[0].stop.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[0])
+  })
+
+  it('does not send, stops the tracks, shows recording_failed, and returns to idle when stop() throws', async () => {
+    renderPage()
+    const stream = await startJaRecording(0)
+    act(() => { recorders.instances[0].ondataavailable?.({ data: new Blob(['part']) }) })
+    recorders.instances[0].stop.mockImplementation(() => { throw new DOMException('x', 'InvalidStateError') })
+    await tapStop()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(alertText()).toBe(jaEn('recording_failed'))
+    expect(jaTalk()).not.toBeDisabled()
+    await finishRecorder(0)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
 describe('InterpreterPage audio lifecycle: interruption', () => {
   it('does not send, stops the tracks, and returns to idle when hidden while recording (3.11-6)', async () => {
     renderPage()

@@ -85,7 +85,7 @@ describe('useAudioSession: recording start', () => {
     const started = session.start('ja-JP')
     const stream = makeFakeStream(tracks)
     // 動画の track も含めて、すべての track を閉じること
-    stream.tracks.push({ kind: 'video', readyState: 'live', enabled: true, muted: false, stop: vi.fn() })
+    stream.tracks.push(...makeFakeStream([{ kind: 'video' }]).tracks)
     await gum.calls[0].resolve(stream)
     await started
     expect(callbacks.onStartFailed).toHaveBeenCalledWith('recording_start_failed', expect.any(String))
@@ -211,20 +211,49 @@ describe('useAudioSession: user stop', () => {
     expect(recognitions.instances[0].start).toHaveBeenCalledTimes(2)
   })
 
-  it('finishes at once when the recorder has already stopped', async () => {
+  it('waits for onstop and sends the last data when the recorder has become inactive by itself (JJ1)', async () => {
     const { session, callbacks, recorders, stream } = await startRecording()
-    recorders.instances[0].state = 'inactive'
+    const recorder = recorders.instances[0]
+    // MediaRecorder が自分で inactive になり、dataavailable と stop のイベントはまだ届いていない
+    recorder.state = 'inactive'
     session.stop()
-    expect(recorders.instances[0].stop).not.toHaveBeenCalled()
+    expect(recorder.stop).not.toHaveBeenCalled()
+    expect(callbacks.onRecordingStopped).not.toHaveBeenCalled()
+    expect(stream.tracks[0].stop).not.toHaveBeenCalled()
+    expect(session.hasActiveSession()).toBe(true)
+    // timeslice なしの録音では、最後の dataavailable が録音の全体になる
+    recorder.ondataavailable?.({ data: new Blob(['whole']) })
+    recorder.onstop?.()
     expect(callbacks.onRecordingStopped).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(callbacks.onRecordingStopped).mock.calls[0][0].size).toBe(5)
     expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(callbacks.onRecorderError).not.toHaveBeenCalled()
   })
 
-  it('finishes at once when the recorder stop() throws', async () => {
-    const { session, callbacks, recorders } = await startRecording()
+  it('does not send when onstop had already arrived before the user stop (JJ1)', async () => {
+    const { session, callbacks, recorders, stream } = await startRecording()
+    recorders.instances[0].state = 'inactive'
+    recorders.instances[0].onstop?.()
+    session.stop()
+    expect(callbacks.onRecordingStopped).not.toHaveBeenCalled()
+    expect(callbacks.onRecorderError).toHaveBeenCalledTimes(1)
+    expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(session.getDiagnostics().events.map(e => e.type)).toContain('recorder_stopped_unexpectedly')
+  })
+
+  it('treats a stop() exception as a recording failure and does not send (JJ1)', async () => {
+    const { session, callbacks, recorders, stream } = await startRecording()
+    recorders.instances[0].ondataavailable?.({ data: new Blob(['part']) })
     recorders.instances[0].stop.mockImplementation(() => { throw new DOMException('x', 'InvalidStateError') })
     session.stop()
-    expect(callbacks.onRecordingStopped).toHaveBeenCalledTimes(1)
+    expect(callbacks.onRecordingStopped).not.toHaveBeenCalled()
+    expect(callbacks.onRecorderError).toHaveBeenCalledTimes(1)
+    expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(session.hasActiveSession()).toBe(false)
+    expect(session.getDiagnostics().events.map(e => e.type)).toContain('recorder_stop_failed:InvalidStateError')
+    // 後から onstop が届いても送らない
+    recorders.instances[0].onstop?.()
+    expect(callbacks.onRecordingStopped).not.toHaveBeenCalled()
   })
 
   it('ignores stop while getUserMedia is pending and a second stop', async () => {

@@ -10,6 +10,15 @@ export interface FakeTrack {
   enabled: boolean
   muted: boolean
   stop: ReturnType<typeof vi.fn>
+  addEventListener: (type: string, listener: () => void) => void
+  removeEventListener: (type: string, listener: () => void) => void
+}
+
+// track が終わったこと（ほかのアプリがマイクを使った、OS が止めたなど）を起こす。readyState を ended にして、
+// ended の listener を呼ぶ（本物と同じく、track.stop() では ended は起きない）
+export function endTrack(track: FakeTrack) {
+  track.readyState = 'ended'
+  ;(track as FakeTrack & { listeners: Map<string, Set<() => void>> }).listeners.get('ended')?.forEach(l => l())
 }
 
 export interface FakeStream {
@@ -19,7 +28,23 @@ export interface FakeStream {
 }
 
 export function makeFakeStream(tracks: Partial<FakeTrack>[] = [{}]): FakeStream {
-  const made = tracks.map(t => ({ kind: 'audio', readyState: 'live', enabled: true, muted: false, stop: vi.fn(), ...t }))
+  const made = tracks.map(t => {
+    const listeners = new Map<string, Set<() => void>>()
+    return {
+      kind: 'audio',
+      readyState: 'live',
+      enabled: true,
+      muted: false,
+      stop: vi.fn(),
+      listeners,
+      addEventListener: (type: string, listener: () => void) => {
+        if (!listeners.has(type)) listeners.set(type, new Set())
+        listeners.get(type)!.add(listener)
+      },
+      removeEventListener: (type: string, listener: () => void) => { listeners.get(type)?.delete(listener) },
+      ...t,
+    }
+  })
   return {
     tracks: made,
     getTracks: () => made,

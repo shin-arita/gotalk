@@ -24,7 +24,8 @@ export interface AudioSessionCallbacks {
   onLevel: (amplitude: number, elapsedMs: number) => void
   // 利用者の停止で、録音の最後のデータがそろい、マイク OFF が成立した後に呼ぶ
   onRecordingStopped: (blob: Blob) => void
-  // 録音の成立の後の MediaRecorder の onerror。中断の片付け（理由 error）の後に呼ぶ
+  // 録音の成立の後の失敗（録音の途中の MediaRecorder の onerror、利用者の停止での stop() の例外など）。
+  // 中断の片付け（理由 error）の後に呼ぶ。録音のデータは送らない
   onRecorderError: () => void
   // 画面の状態が recording か（音声認識の onend で始め直してよいかの判断に使う）
   isRecordingStatus: () => boolean
@@ -123,6 +124,8 @@ interface Session {
   rafId: number | null
   stopReason: AudioSessionStopReason | null
   stopRequested: boolean
+  // MediaRecorder の onstop が届いたか（止める理由によらず記録する）
+  recorderStopped: boolean
   chunks: Blob[]
   mimeType: string
   diag: AudioSessionDiagnostics
@@ -215,6 +218,13 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     s.diag.stopReason = reason
     s.stopReason = reason
     return release(s)
+  }
+
+  // 録音の成立の後の失敗。中断の片付け（理由 error）をしてから、画面に知らせる。録音のデータは送らない
+  const failRecording = (s: Session, type: string) => {
+    logEvent(type, s.id)
+    void teardown(s, 'error')
+    callbacks().onRecorderError()
   }
 
   // 利用者の停止で、最後のデータがそろった後の処理。マイク OFF を成立させてから、画面に知らせる
@@ -329,6 +339,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
       rafId: null,
       stopReason: null,
       stopRequested: false,
+      recorderStopped: false,
       chunks: [],
       mimeType: '',
       diag: newDiagnostics(id),
@@ -380,6 +391,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
         }
       }
       recorder.onstop = () => {
+        s.recorderStopped = true
         // 中断のときは、セッションを先に無効にしているので、ここでは何もしない
         if (!isActive(id) || s.stopReason !== 'user') return
         finishUserStop(s)
@@ -388,9 +400,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
         if (!isActive(id)) return
         const name = errorName((e as Event & { error?: unknown }).error ?? e)
         s.diag.recorder.errorName = name
-        logEvent(`recorder_error:${name}`, id)
-        void teardown(s, 'error')
-        callbacks().onRecorderError()
+        failRecording(s, `recorder_error:${name}`)
       }
       recorder.start()
       s.diag.recorder.state = recorder.state
@@ -414,10 +424,16 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     startRecognition(s, speechCode)
   }
 
-  // 利用者の停止。止める指示を先に記録してから、音声認識と音量の取得を止め、MediaRecorder の onstop を待つ
+  // 利用者の停止。止める指示を先に記録してから、音声認識と音量の取得を止め、MediaRecorder の onstop を待つ。
+  // 録音のデータは、最後の ondataavailable の後の onstop でまとめる（timeslice なしの録音では、最後のデータが録音の全体）
   const stop = () => {
     const s = current
     if (!s || s.stopRequested || !s.recorder) return
+    if (s.recorderStopped) {
+      // onstop が利用者の停止の前に届いていた（録音が先に止まっていた）。最後のデータがそろったかが分からないので送らない
+      failRecording(s, 'recorder_stopped_unexpectedly')
+      return
+    }
     s.stopRequested = true
     s.stopReason = 'user'
     s.diag.stopReason = 'user'
@@ -425,16 +441,18 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     stopRecognition(s)
     stopLevelMeter(s)
     const recorder = s.recorder
-    if (recorder.state !== 'inactive') {
-      try {
-        recorder.stop()
-        return
-      } catch (e) {
-        s.diag.recorder.errorName = errorName(e)
-      }
+    if (recorder.state === 'inactive') {
+      // MediaRecorder が自分で inactive になり、dataavailable と stop のイベントがまだ届いていない。onstop を待つ
+      logEvent('recorder_already_inactive', s.id)
+      return
     }
-    // MediaRecorder がすでに止まっている場合は、onstop を待たずに終える
-    finishUserStop(s)
+    try {
+      recorder.stop()
+    } catch (e) {
+      const name = errorName(e)
+      s.diag.recorder.errorName = name
+      failRecording(s, `recorder_stop_failed:${name}`)
+    }
   }
 
   // 中断の片付け。今有効なセッションを先に無効にしてから、資源を片付ける。録音のデータは送らない
