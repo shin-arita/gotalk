@@ -412,11 +412,11 @@ export default function InterpreterPage({ selectedLanguages, onBack }: Interpret
     changeStatus('idle')
   }
 
-  // 録音の成立の後の MediaRecorder の onerror。hook が中断の片付け（理由 error）をした後に呼ばれる
+  // 録音の成立の後の失敗（MediaRecorder の onerror など）。hook が中断の片付け（理由 error）をした後に呼ばれる
   const handleRecorderError = () => {
     changeStatus('error')
     resetRipples()
-    showMessage('recording_start_failed')
+    showMessage('recording_failed')
     setRecordingFlagIndex(null)
     changeStatus('idle')
   }

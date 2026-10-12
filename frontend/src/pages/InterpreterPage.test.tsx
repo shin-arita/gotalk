@@ -1427,6 +1427,18 @@ describe('InterpreterPage messages in the two selected languages', () => {
     await waitFor(() => expect(alertText()).toBe(twoLanguages('recording_start_failed', 'th', 'vi')))
   })
 
+  it('recording_failed (MediaRecorder onerror after the recording is established)', async () => {
+    mockRecorder = undefined
+    setupMediaRecorderMock()
+    setupGetUserMediaMock()
+    renderPage([th, vi_])
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Thaiで話す' }))
+    })
+    await act(async () => { (mockRecorder as unknown as { onerror: (e: unknown) => void }).onerror({}) })
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('recording_failed', 'th', 'vi')))
+  })
+
   it('generic_error', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeErrorResponse(502, { error: 'translation failed', code: 'upstream_error' }))
     await interpretWith([th, vi_])

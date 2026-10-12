@@ -309,12 +309,12 @@ describe('InterpreterPage audio lifecycle: interruption', () => {
     expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
   })
 
-  it('cleans up and shows the message when MediaRecorder reports an error', async () => {
+  it('cleans up and shows recording_failed when MediaRecorder reports an error while recording', async () => {
     renderPage()
     const stream = await startJaRecording(0)
     await act(async () => { recorders.instances[0].onerror?.({}) })
     expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
-    expect(alertText()).toBe(jaEn('recording_start_failed'))
+    expect(alertText()).toBe(jaEn('recording_failed'))
     expect(jaTalk()).not.toBeDisabled()
     await finishRecorder(0)
     expect(fetchMock).not.toHaveBeenCalled()
