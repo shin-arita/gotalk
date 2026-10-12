@@ -1,4 +1,10 @@
 import { useLayoutEffect, useState } from 'react'
+import { DEFAULT_EXPERIMENT_CONFIG } from '../experiments'
+import type { ExperimentConfig } from '../experiments'
+import {
+  addExperimentSession, addPageEvent, cloneExperimentDiagnostics, newExperimentDiagnostics, newExperimentSessionTrace, pushBounded,
+} from './experimentTrace'
+import type { ExperimentDiagnostics, ExperimentSessionTrace } from './experimentTrace'
 
 // 通訳の画面の録音のセッション（docs/speech-flow.md）。getUserMedia、track の stop()、MediaRecorder、音声認識、
 // 音量の取得（AudioContext と analyser、requestAnimationFrame）を、ここにまとめる。
@@ -67,6 +73,8 @@ export interface AudioSessionDiagnostics {
 export interface AudioDiagnostics {
   sessions: AudioSessionDiagnostics[]
   events: AudioDiagnosticEvent[]
+  // 切り分けの実験の診断（URL に exp があるときだけ。docs/testing.md）
+  experiment?: ExperimentDiagnostics
 }
 
 export interface AudioSession {
@@ -78,6 +86,10 @@ export interface AudioSession {
   getDiagnostics: () => AudioDiagnostics
   // 最新の callback に入れ替える（画面の再描画のたびに呼ぶ）
   setCallbacks: (callbacks: AudioSessionCallbacks) => void
+  // 切り分けの実験（trace）で、ページの出来事（visibilitychange、pagehide、pageshow）を記録する。trace でないときは何もしない
+  recordPageEvent: (type: string, persisted?: boolean) => void
+  // 切り分けの実験（nolifecycle と trace）で、記録のためだけの listener を付けたことを診断に残す
+  markTraceListenerOnly: () => void
 }
 
 interface SpeechRecognitionEvent {
@@ -95,6 +107,10 @@ interface SpeechRecognition {
   onresult: ((event: SpeechRecognitionEvent) => void) | null
   onerror: ((event?: SpeechRecognitionErrorEvent) => void) | null
   onend: (() => void) | null
+  // 切り分けの実験（trace）でだけ付ける
+  onstart?: (() => void) | null
+  onaudiostart?: (() => void) | null
+  onaudioend?: (() => void) | null
   start(): void
   stop(): void
 }
@@ -148,6 +164,8 @@ interface Session {
   chunks: Blob[]
   mimeType: string
   diag: AudioSessionDiagnostics
+  // 切り分けの実験の記録（URL に exp がないときは null で、何も記録しない）
+  exp: ExperimentSessionTrace | null
 }
 
 function newDiagnostics(id: number): AudioSessionDiagnostics {
@@ -176,8 +194,14 @@ function newDiagnostics(id: number): AudioSessionDiagnostics {
 }
 
 // 録音のセッションを作る。callback は setCallbacks で最新のものに入れ替え、呼ぶたびに最新のものを使う
-// （React の closure の古い値を使わないため）
-export function createAudioSession(initialCallbacks: AudioSessionCallbacks): AudioSession {
+// （React の closure の古い値を使わないため）。
+// config は切り分けの実験のスイッチ（docs/testing.md）。省略したときは、すべてのスイッチが false で、今の本番と同じ動き。
+// スイッチの分岐は、今のコードをそのまま条件の中に置く形にしている（スイッチがないときのブラウザの API の呼び出しの
+// 順番と回数を変えないため）
+export function createAudioSession(
+  initialCallbacks: AudioSessionCallbacks,
+  config: ExperimentConfig = DEFAULT_EXPERIMENT_CONFIG,
+): AudioSession {
   let latestCallbacks = initialCallbacks
   const callbacks = () => latestCallbacks
   let nextId = 0
@@ -185,6 +209,9 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
   let activeId: number | null = null
   let current: Session | null = null
   const diagnostics: AudioDiagnostics = { sessions: [], events: [] }
+  // 切り分けの実験の診断。URL に exp がないときは作らない（performance.now() の記録もしない）
+  const expDiag: ExperimentDiagnostics | null = config.enabled ? newExperimentDiagnostics(config) : null
+  const perfNow = () => performance.now()
 
   const now = () => Date.now()
   const isActive = (id: number) => activeId === id
@@ -198,6 +225,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     const recognition = s.recognition
     s.recognition = null
     if (!recognition) return
+    if (s.exp) pushBounded(s.exp.recognition.events, { type: 'stop_call', at: perfNow() })
     try { recognition.stop() } catch { /* 止める処理の例外は捨てる */ }
   }
 
@@ -218,7 +246,13 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
   // releaseLevelMeter の1回目の中身。source node を disconnect() し、AudioContext の close() を始める
   const closeLevelMeter = (s: Session): Promise<void> => {
     if (s.sourceNode) {
-      try { s.sourceNode.disconnect() } catch { /* 捨てる */ }
+      // 実験の nodisconnect：disconnect() を呼ばず、close() だけにする（PR #26 の前と同じ）
+      if (!config.noDisconnect) {
+        try { s.sourceNode.disconnect() } catch { /* 捨てる */ }
+        if (s.exp) s.exp.audioContext.disconnectedAt = perfNow()
+      } else if (s.exp) {
+        s.exp.audioContext.disconnectSkipped = true
+      }
     }
     s.sourceNode = null
     s.analyser = null
@@ -226,9 +260,13 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     s.audioContext = null
     if (!audioContext || audioContext.state === 'closed') return Promise.resolve()
     try {
+      if (s.exp) s.exp.audioContext.closeCalledAt = perfNow()
       return audioContext.close()
         .catch(() => { /* close() の拒否は捨てる */ })
-        .finally(() => { s.diag.audioContext.state = audioContext.state })
+        .finally(() => {
+          s.diag.audioContext.state = audioContext.state
+          if (s.exp) s.exp.audioContext.closeResolvedAt = perfNow()
+        })
     } catch {
       return Promise.resolve()
     }
@@ -259,6 +297,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     const recorder = s.recorder
     s.recorder = null
     if (recorder && recorder.state !== 'inactive') {
+      if (s.exp) s.exp.recorder.stopCalls.push({ at: perfNow(), by: 'cleanup' })
       try { recorder.stop() } catch { /* 止める処理の例外は捨てる */ }
     }
     if (recorder) s.diag.recorder.state = recorder.state
@@ -290,6 +329,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
   // 利用者の停止で、最後のデータがそろった後の処理。マイク OFF を成立させてから、画面に知らせる
   const finishUserStop = (s: Session) => {
     const blob = new Blob(s.chunks, { type: s.mimeType || 'audio/webm' })
+    if (s.exp) s.exp.recorder.blobSize = blob.size
     s.chunks = []
     s.diag.recorder.stoppedAt = now()
     if (s.diag.recorder.startedAt !== null) s.diag.recorder.durationMs = s.diag.recorder.stoppedAt - s.diag.recorder.startedAt
@@ -307,6 +347,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     if (s.stopRequested || s.levelMeterClosed) return
     try {
       const audioContext = new AudioContext()
+      if (s.exp) s.exp.audioContext.createdAt = perfNow()
       s.audioContext = audioContext
       s.diag.audioContext.state = audioContext.state
       const source = audioContext.createMediaStreamSource(stream)
@@ -314,6 +355,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
       const analyser = audioContext.createAnalyser()
       analyser.fftSize = 256
       source.connect(analyser)
+      if (s.exp) s.exp.audioContext.sourceConnectedAt = perfNow()
       s.analyser = analyser
 
       const timeData = new Uint8Array(analyser.fftSize)
@@ -336,6 +378,10 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
         level.rmsMax = Math.max(level.rmsMax, rms)
         level.peak = Math.max(level.peak, peak)
         level.samples += 1
+        if (s.exp) {
+          if (s.exp.level.firstSampleAt === null) s.exp.level.firstSampleAt = time
+          if (rms > 0 && s.exp.level.firstNonZeroAt === null) s.exp.level.firstNonZeroAt = time
+        }
         s.diag.audioContext.state = audioContext.state
         callbacks().onLevel(Math.min(1, rms * 8), time - startTime)
         s.rafId = requestAnimationFrame(tick)
@@ -366,26 +412,61 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
       recognition.interimResults = true
       recognition.continuous = true
       recognition.onresult = (event) => {
-        if (!isActive(s.id)) return
+        if (!isActive(s.id)) {
+          if (s.exp) pushBounded(s.exp.recognition.events, { type: 'result_stale', at: perfNow() })
+          return
+        }
         let transcript = ''
         for (let i = 0; i < event.results.length; i++) {
           transcript += event.results[i][0].transcript
         }
+        // 実験の記録は文字数だけ（認識した本文は残さない）
+        if (s.exp) pushBounded(s.exp.recognition.events, { type: 'result', at: perfNow(), chars: transcript.length })
         s.diag.recognition.hadResult = true
         s.diag.recognition.chars = transcript.length
         callbacks().onTranscript(transcript)
       }
       recognition.onerror = (event) => {
+        if (s.exp) pushBounded(s.exp.recognition.events, { type: 'error', at: perfNow(), error: event?.error ?? 'unknown' })
         if (!isActive(s.id)) return
         logEvent(`recognition_error:${event?.error ?? 'unknown'}`, s.id)
       }
       recognition.onend = () => {
+        if (s.exp) pushBounded(s.exp.recognition.events, { type: 'end', at: perfNow() })
+        // 実験の legacyrecog：PR #26 の前（07f06f0）と同じく、MediaRecorder が recording なら始め直す。
+        // 07f06f0 では、止める指示と MediaRecorder の stop() が同じ同期の処理の中にあったので、「recording なら」は
+        // 「止める指示が出ていなければ」と同じだった。awaitclose と組み合わせると、その間に close() を待つので、
+        // 止める指示の後には始め直さない条件を足して、同じ意味を保つ
+        if (config.legacyRecog) {
+          if (s.recorder?.state === 'recording' && !s.stopRequested) {
+            if (s.exp) pushBounded(s.exp.recognition.events, { type: 'start_call', at: perfNow() })
+            try { recognition.start() } catch { /* ignore */ }
+          }
+          return
+        }
         // 始め直すのは、自分のセッションが有効で、画面が recording で、止める指示が出ていないときだけ
         if (!isActive(s.id) || s.stopRequested || s.recognition !== recognition || !callbacks().isRecordingStatus()) return
+        if (s.exp) pushBounded(s.exp.recognition.events, { type: 'start_call', at: perfNow() })
         try { recognition.start() } catch { /* 始め直しの失敗は捨てる */ }
       }
-      s.recognition = recognition
-      recognition.start()
+      // 実験の trace：今の版にない出来事だけ、新しく listener を付ける
+      if (config.trace) {
+        const exp = s.exp
+        const record = (type: string) => () => { if (exp) pushBounded(exp.recognition.events, { type, at: perfNow() }) }
+        recognition.onstart = record('start')
+        recognition.onaudiostart = record('audiostart')
+        recognition.onaudioend = record('audioend')
+      }
+      if (config.legacyRecog) {
+        // 実験の legacyrecog：PR #26 の前と同じく、start() が成功した後に ref に入れる（例外なら ref は空のまま）
+        if (s.exp) pushBounded(s.exp.recognition.events, { type: 'start_call', at: perfNow() })
+        recognition.start()
+        s.recognition = recognition
+      } else {
+        s.recognition = recognition
+        if (s.exp) pushBounded(s.exp.recognition.events, { type: 'start_call', at: perfNow() })
+        recognition.start()
+      }
     } catch (e) {
       // 補助の機能の失敗。録音は続け、Backend の文字起こしだけで結果を出す
       s.recognition = null
@@ -418,15 +499,18 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
       chunks: [],
       mimeType: '',
       diag: newDiagnostics(id),
+      exp: expDiag ? newExperimentSessionTrace(id, config) : null,
     }
     activeId = id
     current = s
     diagnostics.sessions.push(s.diag)
     if (diagnostics.sessions.length > MAX_DIAGNOSTIC_SESSIONS) diagnostics.sessions.shift()
+    if (expDiag && s.exp) addExperimentSession(expDiag, s.exp)
 
     s.diag.getUserMedia.startedAt = now()
     logEvent('get_user_media_start', id)
     let stream: MediaStream
+    if (s.exp) s.exp.getUserMediaCalledAt = perfNow()
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     } catch (e) {
@@ -450,14 +534,21 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
 
     try {
       const tracks = stream.getAudioTracks()
-      s.diag.tracks = tracks.map(t => ({ readyState: t.readyState, enabled: t.enabled, muted: t.muted }))
+      // 実験の notrackread：getAudioTracks() は呼ぶが、track の readyState、enabled、muted を読まず（診断の tracks は空のまま）、
+      // live でないときの失敗の判定もしない。track がないときの失敗の判定は残す
+      if (!config.noTrackRead) {
+        s.diag.tracks = tracks.map(t => ({ readyState: t.readyState, enabled: t.enabled, muted: t.muted }))
+      }
       if (tracks.length === 0) throw new DOMException('no audio track', 'NoAudioTrackError')
-      if (tracks.some(t => t.readyState !== 'live')) throw new DOMException('audio track is not live', 'TrackNotLiveError')
+      if (!config.noTrackRead) {
+        if (tracks.some(t => t.readyState !== 'live')) throw new DOMException('audio track is not live', 'TrackNotLiveError')
+      }
 
       s.mimeType = getSupportedMimeType()
       const recorder = new MediaRecorder(stream, s.mimeType ? { mimeType: s.mimeType } : undefined)
       s.recorder = recorder
       recorder.ondataavailable = (e) => {
+        if (s.exp) pushBounded(s.exp.recorder.data, { at: perfNow(), size: e.data.size, activeSession: isActive(id) })
         // 無効なセッションのデータは捨てる
         if (!isActive(id)) return
         if (e.data.size > 0) {
@@ -466,6 +557,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
         }
       }
       recorder.onstop = () => {
+        if (s.exp) s.exp.recorder.onstopAt = perfNow()
         s.recorderStopped = true
         // 利用者の停止から onstop までの時間を残す（見張りのタイマーの時間を実測で見直すため。片付けた後に届いた場合も）
         const { stopRequestedAt } = s.diag.recorder
@@ -485,17 +577,37 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
         s.diag.recorder.errorName = name
         failRecording(s, `recorder_error:${name}`)
       }
+      // 実験の trace：今の版にない出来事（MediaRecorder の onstart）だけ、新しく listener を付ける
+      if (config.trace) {
+        const exp = s.exp
+        recorder.onstart = () => { if (exp) exp.recorder.onstartAt = perfNow() }
+      }
+      if (s.exp) s.exp.recorder.startCalledAt = perfNow()
       recorder.start()
       // 録音の途中で track が終わったこと（ほかのアプリがマイクを使った、OS が止めたなど）を診断のログに残す。
-      // 録音の失敗の扱いは、その後に MediaRecorder が自分で止まったとき（onstop）に行う
-      tracks.forEach((track, i) => {
-        track.addEventListener('ended', () => {
-          // 古いセッションと、利用者の停止や中断の後（自分で止めた結果）は何もしない
-          if (!isActive(id) || s.stopRequested) return
-          if (s.diag.tracks[i]) s.diag.tracks[i].readyState = 'ended'
-          logEvent('track_ended', id)
+      // 録音の失敗の扱いは、その後に MediaRecorder が自分で止まったとき（onstop）に行う。
+      // 実験の noendedlistener：ended の listener を付けない
+      if (!config.noEndedListener) {
+        tracks.forEach((track, i) => {
+          track.addEventListener('ended', () => {
+            // 実験の trace：もともとある handler の中で記録する
+            if (config.trace && s.exp) pushBounded(s.exp.trackEvents, { type: 'ended', at: perfNow(), track: i })
+            // 古いセッションと、利用者の停止や中断の後（自分で止めた結果）は何もしない
+            if (!isActive(id) || s.stopRequested) return
+            if (s.diag.tracks[i]) s.diag.tracks[i].readyState = 'ended'
+            logEvent('track_ended', id)
+          })
         })
-      })
+      }
+      // 実験の trace：今の版にない出来事（track の mute と unmute）だけ、新しく listener を付ける
+      if (config.trace) {
+        const exp = s.exp
+        tracks.forEach((track, i) => {
+          const record = (type: string) => () => { if (exp) pushBounded(exp.trackEvents, { type, at: perfNow(), track: i }) }
+          track.addEventListener('mute', record('mute'))
+          track.addEventListener('unmute', record('unmute'))
+        })
+      }
       s.diag.recorder.state = recorder.state
       s.diag.recorder.mimeType = recorder.mimeType || s.mimeType || null
       s.diag.recorder.startedAt = now()
@@ -512,9 +624,11 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     logEvent('recording_started', id)
     callbacks().onRecordingStarted()
     if (!isActive(id)) return
-    // 補助の機能は、録音の成立の後に開始を試みる。失敗しても録音は続ける
-    startLevelMeter(s, stream)
-    startRecognition(s, speechCode)
+    // 補助の機能は、録音の成立の後に開始を試みる。失敗しても録音は続ける。
+    // 実験の nometer：音量の取得（AudioContext、analyser、requestAnimationFrame）を一切使わない。
+    // 実験の norecog：音声認識を一切作らない（constructor も呼ばない）
+    if (!config.noMeter) startLevelMeter(s, stream)
+    if (!config.noRecog) startRecognition(s, speechCode)
   }
 
   // 利用者の停止。止める指示を先に記録してから、音声認識と音量の取得を止め、MediaRecorder の onstop を待つ。
@@ -532,8 +646,25 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     logEvent('user_stop', s.id)
     stopRecognition(s)
     stopLevelMeter(s)
-    void releaseLevelMeter(s)
+    const levelMeterClosed = releaseLevelMeter(s)
+    if (config.awaitClose) {
+      // 実験の awaitclose：AudioContext の close() の完了を待ってから MediaRecorder の stop() を呼ぶ。待っている間に
+      // セッションが無効になったとき（中断など）は、stop() を呼ばずに終える（中断の片付けに任せる）。
+      // close() が終わらないままにならないよう、見張りのタイマーは待つ前に始める
+      startStopWatchdog(s, now())
+      void levelMeterClosed.then(() => {
+        if (!isActive(s.id)) return
+        stopRecorder(s)
+      })
+      return
+    }
+    stopRecorder(s)
+  }
+
+  // 利用者の停止で MediaRecorder を止め、onstop を待つ見張りのタイマーを始める（stop の後半）
+  const stopRecorder = (s: Session) => {
     const recorder = s.recorder
+    if (!recorder) return
     const stopRequestedAt = now()
     s.diag.recorder.stopRequestedAt = stopRequestedAt
     if (recorder.state === 'inactive') {
@@ -541,6 +672,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
       logEvent('recorder_already_inactive', s.id)
     } else {
       try {
+        if (s.exp) s.exp.recorder.stopCalls.push({ at: perfNow(), by: 'user' })
         recorder.stop()
       } catch (e) {
         const name = errorName(e)
@@ -551,6 +683,12 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     }
     // onstop が同期で届いて終わっていれば、見張りは要らない
     if (!isActive(s.id)) return
+    startStopWatchdog(s, stopRequestedAt)
+  }
+
+  // onstop を待つ見張りのタイマー。すでに始めているとき（実験の awaitclose）は始め直さない
+  const startStopWatchdog = (s: Session, stopRequestedAt: number) => {
+    if (s.stopTimer !== null) return
     s.stopTimer = setTimeout(() => {
       s.stopTimer = null
       // 古いセッションのタイマーは何もしない（片付けで止めているが、念のため確かめる）
@@ -577,8 +715,17 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     abort,
     hasActiveSession: () => current !== null,
     logEvent: (type: string) => logEvent(type),
-    getDiagnostics: () => ({ sessions: [...diagnostics.sessions], events: [...diagnostics.events] }),
+    getDiagnostics: () => {
+      const result: AudioDiagnostics = { sessions: [...diagnostics.sessions], events: [...diagnostics.events] }
+      if (expDiag) result.experiment = cloneExperimentDiagnostics(expDiag)
+      return result
+    },
     setCallbacks: (next: AudioSessionCallbacks) => { latestCallbacks = next },
+    recordPageEvent: (type: string, persisted?: boolean) => {
+      if (!expDiag || !config.trace) return
+      addPageEvent(expDiag, { type, at: perfNow(), visibilityState: document.visibilityState, ...(persisted === undefined ? {} : { persisted }) })
+    },
+    markTraceListenerOnly: () => { if (expDiag) expDiag.traceListenerOnly = true },
   }
 }
 
@@ -586,8 +733,9 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
 // callback は、描画のたびに useLayoutEffect で最新のものに入れ替える（描画の直後、ブラウザのイベントより前に入れ替わる）。
 // hook に渡す callback の中では、React の状態（useState の値）を読まず、ref（statusRef など）を読むこと。
 // 非同期の callback が呼ばれる時点では、closure の中の状態は古いことがあるため
-export function useAudioSession(callbacks: AudioSessionCallbacks): AudioSession {
-  const [session] = useState(() => createAudioSession(callbacks))
+// config（切り分けの実験のスイッチ）は、最初の描画のときの値だけを使う
+export function useAudioSession(callbacks: AudioSessionCallbacks, config: ExperimentConfig = DEFAULT_EXPERIMENT_CONFIG): AudioSession {
+  const [session] = useState(() => createAudioSession(callbacks, config))
   useLayoutEffect(() => {
     session.setCallbacks(callbacks)
   })
