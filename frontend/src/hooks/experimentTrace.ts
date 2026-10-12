@@ -92,6 +92,9 @@ export interface ExperimentRecognitionOnce {
   // 出来事ごとの、結び付けたセッションの番号と、そのときの有効なセッションの番号（null は、有効なセッションがない）。
   // 2つが一致しない出来事は、記録だけで、録音の処理には作用させない
   events: { type: string; at: number; boundSessionId: number; activeSessionId: number | null }[]
+  // 前の実行の end が届いていなかったので、音声認識を始めなかった録音（セッションの番号と時刻）。
+  // end が届かないまま残ると、以後の録音がすべてここに入る（それ自体が実験の結果）
+  skippedPendingEnd: { sessionId: number; at: number }[]
 }
 
 export interface ExperimentPageEvent {
@@ -133,7 +136,7 @@ export function newExperimentDiagnostics(config: ExperimentConfig): ExperimentDi
     endedNotRecorded: config.trace && config.noEndedListener ? 'noendedlistener のため ended は記録しない' : null,
     pageEvents: [],
     sessions: [],
-    recognitionOnce: config.recogOnce ? { createdCount: 0, disposedAt: null, events: [] } : null,
+    recognitionOnce: config.recogOnce ? { createdCount: 0, disposedAt: null, events: [], skippedPendingEnd: [] } : null,
   }
 }
 

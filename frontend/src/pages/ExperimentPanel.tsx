@@ -184,6 +184,9 @@ function RecognitionOnceView({ once }: { once: ExperimentRecognitionOnce }) {
       {`recogonce：部品を作った回数=${once.createdCount}、手放した=${once.disposedAt === null ? 'まだ' : 'した'}、一致しない出来事=${mismatched.length}件`}
       <br />
       {once.events.map(e => `${e.type}#${e.boundSessionId}/${e.activeSessionId ?? '-'}${e.boundSessionId !== e.activeSessionId ? '（不一致）' : ''}`).join(' ') || '-'}
+      <br />
+      {`前の実行の end を待たずに飛ばした録音=${once.skippedPendingEnd.length}件`}
+      {once.skippedPendingEnd.length > 0 && `（${once.skippedPendingEnd.map(k => `セッション ${k.sessionId}@${ms(k.at, 0)}`).join('、')}。recogonce の判定に使わない）`}
     </p>
   )
 }

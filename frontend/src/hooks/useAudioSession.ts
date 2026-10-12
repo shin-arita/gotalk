@@ -235,8 +235,12 @@ export function createAudioSession(
   // 切り分けの実験の診断。URL に exp がないときは作らない（performance.now() の記録もしない）
   const expDiag: ExperimentDiagnostics | null = config.enabled ? newExperimentDiagnostics(config) : null
   const perfNow = () => performance.now()
-  // 実験の recogonce：画面で1つだけ作る音声認識の部品
+  // 実験の recogonce：画面で1つだけ作る音声認識の部品と、その前の実行が終わっていないか（start() の成功の後に true、
+  // どのセッションの handler でも onend の最初に false）。end は1回の実行の最後の出来事なので、true の間に次のセッションの
+  // handler を付け替えると、前の実行の遅れた出来事が次のセッションのものとして配られる。そのため true の間は次の録音で
+  // 音声認識を始めない
   let onceRecognition: SpeechRecognition | null = null
+  let onceRecognitionRunning = false
   const recordOnce = (type: string, sessionId: number) => {
     if (expDiag?.recognitionOnce) pushBounded(expDiag.recognitionOnce.events, { type, at: perfNow(), boundSessionId: sessionId, activeSessionId: activeId })
   }
@@ -450,6 +454,13 @@ export function createAudioSession(
       // s が今有効なセッションでないときは、録音の処理に作用させない）
       let recognition: SpeechRecognition
       if (config.recogOnce) {
+        // 前の実行の end が届いていないときは、handler の付け替えも start() もせず、この録音は音声認識なしで続ける
+        // （s.recognition は空のまま）。飛ばしたことを記録する
+        if (onceRecognitionRunning) {
+          logEvent('recognition_once_previous_end_pending', s.id)
+          if (expDiag?.recognitionOnce) pushBounded(expDiag.recognitionOnce.skippedPendingEnd, { sessionId: s.id, at: perfNow() })
+          return
+        }
         if (!onceRecognition) {
           onceRecognition = new RecognitionCtor()
           if (expDiag?.recognitionOnce) expDiag.recognitionOnce.createdCount += 1
@@ -484,6 +495,8 @@ export function createAudioSession(
         logEvent(`recognition_error:${event?.error ?? 'unknown'}`, s.id)
       }
       recognition.onend = () => {
+        // 実験の recogonce：前の実行が終わった（どのセッションの handler でも）
+        if (config.recogOnce) onceRecognitionRunning = false
         if (s.exp) pushBounded(s.exp.recognition.events, { type: 'end', at: perfNow() })
         if (config.recogOnce) recordOnce('end', s.id)
         // 実験の recogfirst：利用者の停止で end を待っていれば、ここで待ちを解く。下の「始め直してよいか」の判定は、
@@ -503,7 +516,14 @@ export function createAudioSession(
         // 始め直すのは、自分のセッションが有効で、画面が recording で、止める指示が出ていないときだけ
         if (!isActive(s.id) || s.stopRequested || s.recognition !== recognition || !callbacks().isRecordingStatus()) return
         if (s.exp) pushBounded(s.exp.recognition.events, { type: 'start_call', at: perfNow() })
-        if (config.recogOnce) recordOnce('start_call', s.id)
+        if (config.recogOnce) {
+          recordOnce('start_call', s.id)
+          try {
+            recognition.start()
+            onceRecognitionRunning = true
+          } catch { /* 始め直しの失敗は捨てる */ }
+          return
+        }
         try { recognition.start() } catch { /* 始め直しの失敗は捨てる */ }
       }
       // 実験の trace：今の版にない出来事だけ、新しく listener を付ける
@@ -524,6 +544,7 @@ export function createAudioSession(
         if (s.exp) pushBounded(s.exp.recognition.events, { type: 'start_call', at: perfNow() })
         if (config.recogOnce) recordOnce('start_call', s.id)
         recognition.start()
+        if (config.recogOnce) onceRecognitionRunning = true
       }
     } catch (e) {
       // 補助の機能の失敗。録音は続け、Backend の文字起こしだけで結果を出す
@@ -888,10 +909,12 @@ export function createAudioSession(
 
   // 実験の recogonce：画面で1つの部品を手放す。部品を start() するのは有効なセッションの中だけで、セッションの片付け
   // （release の stopRecognition）が必ず止める（recogabort なら abort()）。画面が外れるときは、abort の中で今のセッションを
-  // 片付けた後にここを呼ぶので、部品はすでに止まっている。ここでは参照を捨てるだけにする（止めた部品をもう一度止めない）
+  // 片付けた後にここを呼ぶので、部品はすでに止まっている。ここでは参照を捨てるだけにする（止めた部品をもう一度止めない）。
+  // 前の実行が終わっていないかの変数も、初期の値に戻す
   const disposeOnceRecognition = () => {
     if (!onceRecognition) return
     onceRecognition = null
+    onceRecognitionRunning = false
     if (expDiag?.recognitionOnce) expDiag.recognitionOnce.disposedAt = perfNow()
   }
 
