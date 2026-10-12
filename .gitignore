@@ -4,6 +4,7 @@
 
 node_modules
 dist
+frontend/coverage/
 
 .DS_Store
 
