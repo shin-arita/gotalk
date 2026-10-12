@@ -565,6 +565,30 @@ describe('useAudioSession: abort', () => {
     expect(session.hasActiveSession()).toBe(false)
   })
 
+  it('does not start the recognition after the stop request (KK5)', async () => {
+    // KK4 と同じ、今の画面からは起きない経路。onRecordingStarted の中で利用者の停止を呼ぶと、セッションは有効のまま
+    // 止める指示が出た状態で、start が音声認識を始めようとする
+    const gum = setupDeferredGetUserMedia()
+    const recorders = setupMediaRecorder()
+    const recognitions = setupSpeechRecognition()
+    setupAudioContext()
+    setupAnimationFrame()
+    // session は onRecordingStarted が呼ばれる時点（start の後）には作られている
+    const callbacks = makeCallbacks({ onRecordingStarted: vi.fn(() => session.stop()) })
+    const session = createAudioSession(callbacks)
+    const started = session.start('ja-JP')
+    const stream = await gum.calls[0].resolve()
+    await started
+    expect(recorders.instances[0].stop).toHaveBeenCalledTimes(1)
+    expect(recognitions.Ctor).not.toHaveBeenCalled()
+    expect(recognitions.instances).toEqual([])
+    expect(session.getDiagnostics().events.map(e => e.type)).not.toContain('recognition_unavailable')
+    // onstop の後の片付けで、track が止まり、マイク OFF になる
+    recorders.instances[0].onstop?.()
+    expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(session.hasActiveSession()).toBe(false)
+  })
+
   it('can be called again and again without double stops or exceptions (3.11-8)', async () => {
     const { session, recorders, recognitions, contexts, frames, stream } = await startRecording()
     await session.abort('hidden')

@@ -348,6 +348,13 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
   }
 
   const startRecognition = (s: Session, speechCode: string) => {
+    // 止める指示の後は始めない（音量の取得の守りとそろえ、止める指示の後に新しい音声の部品を始めない）。
+    // 始めても onstop の後の片付けで止まるので残らないが、MediaRecorder の stop() の直後に音声認識を始めてすぐ止める
+    // 並びが、iPhone の Chrome（WebKit）の音声のセッションに影響しないとは言い切れないため（今回の不具合が、音声の
+    // 部品の始まりと終わりの順番による仮説のため）。
+    // 今の経路では来ない（将来の変更への守り）。理由は startLevelMeter の守りと同じで、画面は利用者の停止を
+    // 国旗のタップからだけ呼ぶので、onRecordingStarted の中で呼ばれることはない
+    if (s.stopRequested) return
     const RecognitionCtor = getSpeechRecognitionCtor()
     if (!RecognitionCtor) {
       logEvent('recognition_unavailable', s.id)
