@@ -137,6 +137,8 @@ interface Session {
   sourceNode: MediaStreamAudioSourceNode | null
   analyser: AnalyserNode | null
   rafId: number | null
+  // 音量の取得の資源の片付け（releaseLevelMeter）で始めた AudioContext の close() の完了。片付けの前は null
+  levelMeterClosed: Promise<void> | null
   stopReason: AudioSessionStopReason | null
   stopRequested: boolean
   // MediaRecorder の onstop が届いたか（止める理由によらず記録する）
@@ -213,22 +215,8 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     }
   }
 
-  // 資源を止めて参照を捨てる（冪等）。AudioContext の close() が終わるまでの Promise を返す
-  const release = (s: Session): Promise<void> => {
-    s.stopRequested = true
-    clearStopTimer(s)
-    stopRecognition(s)
-    stopLevelMeter(s)
-    const recorder = s.recorder
-    s.recorder = null
-    if (recorder && recorder.state !== 'inactive') {
-      try { recorder.stop() } catch { /* 止める処理の例外は捨てる */ }
-    }
-    if (recorder) s.diag.recorder.state = recorder.state
-    const stream = s.stream
-    s.stream = null
-    // ended の track に stop() を呼んでも害はない
-    stream?.getTracks().forEach(t => t.stop())
+  // releaseLevelMeter の1回目の中身。source node を disconnect() し、AudioContext の close() を始める
+  const closeLevelMeter = (s: Session): Promise<void> => {
     if (s.sourceNode) {
       try { s.sourceNode.disconnect() } catch { /* 捨てる */ }
     }
@@ -244,6 +232,41 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     } catch {
       return Promise.resolve()
     }
+  }
+
+  // 音量の取得の資源（MediaStreamAudioSourceNode と AudioContext）を片付ける（冪等）。
+  // close() が終わるまでの Promise を返す。2回目以降は、1回目に始めた close() の完了の Promise を返す
+  // （利用者の停止で先に close() を始めた後の abort でも、close() の完了まで待つため）。
+  // MediaRecorder の stop() と track の stop() より前に呼ぶこと。iPhone の Chrome（WebKit）では、AudioContext に
+  // MediaStreamAudioSourceNode でつながったままの track を stop() すると、次の getUserMedia で開いたマイクから
+  // 音が来なくなる（2回目からの録音が空になる）という仮説による（実機で確かめていない）。
+  // PR #26 の前（07f06f0）は、AudioContext を先に close() してから MediaRecorder と track を止めており、
+  // 2回目からも録音できていたので、その順番に戻している
+  const releaseLevelMeter = (s: Session): Promise<void> => {
+    if (s.levelMeterClosed) return s.levelMeterClosed
+    s.levelMeterClosed = closeLevelMeter(s)
+    return s.levelMeterClosed
+  }
+
+  // 資源を止めて参照を捨てる（冪等）。AudioContext の close() が終わるまでの Promise を返す。
+  // 音量の取得の資源を先に片付けてから、MediaRecorder と track を止める（順番の理由は releaseLevelMeter）
+  const release = (s: Session): Promise<void> => {
+    s.stopRequested = true
+    clearStopTimer(s)
+    stopRecognition(s)
+    stopLevelMeter(s)
+    const closed = releaseLevelMeter(s)
+    const recorder = s.recorder
+    s.recorder = null
+    if (recorder && recorder.state !== 'inactive') {
+      try { recorder.stop() } catch { /* 止める処理の例外は捨てる */ }
+    }
+    if (recorder) s.diag.recorder.state = recorder.state
+    const stream = s.stream
+    s.stream = null
+    // ended の track に stop() を呼んでも害はない
+    stream?.getTracks().forEach(t => t.stop())
+    return closed
   }
 
   // 今有効なセッションが s なら無効にしてから、s の資源を片付ける
@@ -276,6 +299,12 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
   }
 
   const startLevelMeter = (s: Session, stream: MediaStream) => {
+    // 止める指示の後や、音量の取得の片付け（releaseLevelMeter）の後は始めない。片付けは2回目以降、1回目の
+    // Promise を返すだけなので、その後に作った AudioContext は閉じられず、マイクの track につながったまま残るため。
+    // 今の経路では来ない（将来の変更への守り）。onRecordingStarted の中の中断は、start がその後にセッションが有効かを
+    // 確かめて止めるが、利用者の停止はセッションを有効のまま残すので、その確かめでは止まらない。画面は、利用者の停止を
+    // 国旗のタップからだけ呼ぶので、onRecordingStarted の中で呼ばれることはない
+    if (s.stopRequested || s.levelMeterClosed) return
     try {
       const audioContext = new AudioContext()
       s.audioContext = audioContext
@@ -319,6 +348,13 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
   }
 
   const startRecognition = (s: Session, speechCode: string) => {
+    // 止める指示の後は始めない（音量の取得の守りとそろえ、止める指示の後に新しい音声の部品を始めない）。
+    // 始めても onstop の後の片付けで止まるので残らないが、MediaRecorder の stop() の直後に音声認識を始めてすぐ止める
+    // 並びが、iPhone の Chrome（WebKit）の音声のセッションに影響しないとは言い切れないため（今回の不具合が、音声の
+    // 部品の始まりと終わりの順番による仮説のため）。
+    // 今の経路では来ない（将来の変更への守り）。理由は startLevelMeter の守りと同じで、画面は利用者の停止を
+    // 国旗のタップからだけ呼ぶので、onRecordingStarted の中で呼ばれることはない
+    if (s.stopRequested) return
     const RecognitionCtor = getSpeechRecognitionCtor()
     if (!RecognitionCtor) {
       logEvent('recognition_unavailable', s.id)
@@ -374,6 +410,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
       sourceNode: null,
       analyser: null,
       rafId: null,
+      levelMeterClosed: null,
       stopReason: null,
       stopRequested: false,
       recorderStopped: false,
@@ -481,6 +518,8 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
   }
 
   // 利用者の停止。止める指示を先に記録してから、音声認識と音量の取得を止め、MediaRecorder の onstop を待つ。
+  // 音量の取得の資源（AudioContext など）は、MediaRecorder の stop() より前に片付ける（順番の理由は releaseLevelMeter。
+  // close() の完了は待たない）。track は onstop の後の片付けで止める。
   // 録音のデータは、最後の ondataavailable の後の onstop でまとめる（timeslice なしの録音では、最後のデータが録音の全体）
   const stop = () => {
     const s = current
@@ -493,6 +532,7 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
     logEvent('user_stop', s.id)
     stopRecognition(s)
     stopLevelMeter(s)
+    void releaseLevelMeter(s)
     const recorder = s.recorder
     const stopRequestedAt = now()
     s.diag.recorder.stopRequestedAt = stopRequestedAt

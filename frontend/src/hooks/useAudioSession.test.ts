@@ -45,6 +45,11 @@ async function startRecording(callbacks = makeCallbacks()) {
   return { session, callbacks, gum, recorders, recognitions, contexts, frames, stream }
 }
 
+// 先に呼ばれた mock の呼び出しの順番（vitest の invocationCallOrder）。呼ばれていなければ Infinity
+function firstCall(fn: { mock: { invocationCallOrder: number[] } }) {
+  return fn.mock.invocationCallOrder[0] ?? Infinity
+}
+
 describe('useAudioSession: recording start', () => {
   it('starts the recorder, the level meter, and the recognition after the recording is established', async () => {
     const { callbacks, recorders, recognitions, contexts, frames, session } = await startRecording()
@@ -165,6 +170,24 @@ describe('useAudioSession: recording start', () => {
 })
 
 describe('useAudioSession: user stop', () => {
+  it('closes the AudioContext and disconnects the source before MediaRecorder stop() on a user stop (iPhone Chrome)', async () => {
+    const { session, recorders, contexts, stream } = await startRecording()
+    const recorder = recorders.instances[0]
+    const ctx = contexts.instances[0]
+    session.stop()
+    // close() の完了は待たずに、MediaRecorder の stop() を呼ぶ
+    expect(ctx.close).toHaveBeenCalledTimes(1)
+    expect(ctx.source.disconnect).toHaveBeenCalledTimes(1)
+    expect(recorder.stop).toHaveBeenCalledTimes(1)
+    expect(firstCall(ctx.source.disconnect)).toBeLessThan(firstCall(recorder.stop))
+    expect(firstCall(ctx.close)).toBeLessThan(firstCall(recorder.stop))
+    recorder.onstop?.()
+    expect(firstCall(ctx.close)).toBeLessThan(firstCall(stream.tracks[0].stop))
+    // onstop の後の片付けで、二重に close() や disconnect() をしない
+    expect(ctx.close).toHaveBeenCalledTimes(1)
+    expect(ctx.source.disconnect).toHaveBeenCalledTimes(1)
+  })
+
   it('waits for onstop, then stops the tracks before handing over the blob (3.11-5)', async () => {
     const { session, callbacks, recorders, recognitions, contexts, frames, stream } = await startRecording(
       makeCallbacks({ onRecordingStopped: vi.fn(() => { expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1) }) }),
@@ -409,6 +432,41 @@ describe('useAudioSession: the recording stops by itself (JJ5)', () => {
 })
 
 describe('useAudioSession: abort', () => {
+  it.each(['hidden', 'pagehide', 'back', 'unmount', 'error'] as const)(
+    'closes the AudioContext and disconnects the source before the track stop() on abort (%s)',
+    async (reason) => {
+      const { session, recorders, contexts, stream } = await startRecording()
+      const ctx = contexts.instances[0]
+      const track = stream.tracks[0]
+      await session.abort(reason)
+      expect(track.stop).toHaveBeenCalledTimes(1)
+      expect(firstCall(ctx.source.disconnect)).toBeLessThan(firstCall(track.stop))
+      expect(firstCall(ctx.close)).toBeLessThan(firstCall(track.stop))
+      expect(firstCall(ctx.close)).toBeLessThan(firstCall(recorders.instances[0].stop))
+    },
+  )
+
+  it('closes the AudioContext and disconnects the source before the track stop() on a MediaRecorder error', async () => {
+    const { recorders, contexts, stream } = await startRecording()
+    const ctx = contexts.instances[0]
+    const track = stream.tracks[0]
+    recorders.instances[0].onerror?.({ error: new DOMException('x', 'UnknownError') })
+    expect(track.stop).toHaveBeenCalledTimes(1)
+    expect(firstCall(ctx.source.disconnect)).toBeLessThan(firstCall(track.stop))
+    expect(firstCall(ctx.close)).toBeLessThan(firstCall(track.stop))
+  })
+
+  it('closes the AudioContext and disconnects the source before the track stop() when the recorder stops by itself', async () => {
+    const { recorders, contexts, stream } = await startRecording()
+    const ctx = contexts.instances[0]
+    const track = stream.tracks[0]
+    recorders.instances[0].state = 'inactive'
+    recorders.instances[0].onstop?.()
+    expect(track.stop).toHaveBeenCalledTimes(1)
+    expect(firstCall(ctx.source.disconnect)).toBeLessThan(firstCall(track.stop))
+    expect(firstCall(ctx.close)).toBeLessThan(firstCall(track.stop))
+  })
+
   it('invalidates the session first, so the later onstop and data do nothing (3.11-6)', async () => {
     const { session, callbacks, recorders, recognitions, stream } = await startRecording()
     const recorder = recorders.instances[0]
@@ -435,6 +493,100 @@ describe('useAudioSession: abort', () => {
     recorders.instances[0].onstop?.()
     expect(callbacks.onRecordingStopped).not.toHaveBeenCalled()
     expect(session.getDiagnostics().sessions[0].stopReason).toBe('pagehide')
+  })
+
+  it('waits for the close() started by the user stop when aborted while stopping (KK1)', async () => {
+    const { session, contexts } = await startRecording()
+    const ctx = contexts.instances[0]
+    let finishClose!: () => void
+    ctx.close.mockImplementation(() => new Promise<void>(resolve => { finishClose = () => { ctx.state = 'closed'; resolve() } }))
+    session.stop()
+    expect(ctx.close).toHaveBeenCalledTimes(1)
+    let settled = false
+    const aborted = session.abort('pagehide').then(() => { settled = true })
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(settled).toBe(false)
+    finishClose()
+    await aborted
+    expect(settled).toBe(true)
+    // close() と disconnect() は、利用者の停止で1回だけ
+    expect(ctx.close).toHaveBeenCalledTimes(1)
+    expect(ctx.source.disconnect).toHaveBeenCalledTimes(1)
+    expect(session.getDiagnostics().sessions[0].audioContext.state).toBe('closed')
+  })
+
+  it('resolves the abort while stopping without an unhandled rejection when close() rejects (KK1)', async () => {
+    // 未処理の拒否は Node の process に届く（frontend の型には Node がないので、必要なところだけ型を書く）
+    type UnhandledListener = (reason: unknown) => void
+    const proc = (globalThis as unknown as {
+      process: { on: (e: string, l: UnhandledListener) => void; off: (e: string, l: UnhandledListener) => void }
+    }).process
+    const unhandled = vi.fn()
+    proc.on('unhandledRejection', unhandled)
+    try {
+      const { session, contexts } = await startRecording()
+      const ctx = contexts.instances[0]
+      let failClose!: () => void
+      ctx.close.mockImplementation(() => new Promise<void>((_, reject) => { failClose = () => reject(new Error('close failed')) }))
+      session.stop()
+      const aborted = session.abort('hidden')
+      failClose()
+      await expect(aborted).resolves.toBeUndefined()
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(unhandled).not.toHaveBeenCalled()
+      expect(ctx.close).toHaveBeenCalledTimes(1)
+      expect(ctx.source.disconnect).toHaveBeenCalledTimes(1)
+    } finally {
+      proc.off('unhandledRejection', unhandled)
+    }
+  })
+
+  it('does not create an AudioContext when the level meter would start after the cleanup (KK4)', async () => {
+    // 今の画面からは起きない経路。onRecordingStarted の中で利用者の停止を呼ぶと、セッションは有効のまま
+    // 止める指示と音量の取得の片付け（1回目）が済んだ状態で、start が音量の取得を始めようとする
+    const gum = setupDeferredGetUserMedia()
+    const recorders = setupMediaRecorder()
+    setupSpeechRecognition()
+    const contexts = setupAudioContext()
+    const frames = setupAnimationFrame()
+    // session は onRecordingStarted が呼ばれる時点（start の後）には作られている
+    const callbacks = makeCallbacks({ onRecordingStarted: vi.fn(() => session.stop()) })
+    const session = createAudioSession(callbacks)
+    const started = session.start('ja-JP')
+    const stream = await gum.calls[0].resolve()
+    await started
+    expect(callbacks.onRecordingStarted).toHaveBeenCalledTimes(1)
+    expect(recorders.instances[0].stop).toHaveBeenCalledTimes(1)
+    expect(contexts.Ctor).not.toHaveBeenCalled()
+    expect(frames.request).not.toHaveBeenCalled()
+    // onstop の後の片付けで、track が止まり、マイク OFF になる
+    recorders.instances[0].onstop?.()
+    expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(session.hasActiveSession()).toBe(false)
+  })
+
+  it('does not start the recognition after the stop request (KK5)', async () => {
+    // KK4 と同じ、今の画面からは起きない経路。onRecordingStarted の中で利用者の停止を呼ぶと、セッションは有効のまま
+    // 止める指示が出た状態で、start が音声認識を始めようとする
+    const gum = setupDeferredGetUserMedia()
+    const recorders = setupMediaRecorder()
+    const recognitions = setupSpeechRecognition()
+    setupAudioContext()
+    setupAnimationFrame()
+    // session は onRecordingStarted が呼ばれる時点（start の後）には作られている
+    const callbacks = makeCallbacks({ onRecordingStarted: vi.fn(() => session.stop()) })
+    const session = createAudioSession(callbacks)
+    const started = session.start('ja-JP')
+    const stream = await gum.calls[0].resolve()
+    await started
+    expect(recorders.instances[0].stop).toHaveBeenCalledTimes(1)
+    expect(recognitions.Ctor).not.toHaveBeenCalled()
+    expect(recognitions.instances).toEqual([])
+    expect(session.getDiagnostics().events.map(e => e.type)).not.toContain('recognition_unavailable')
+    // onstop の後の片付けで、track が止まり、マイク OFF になる
+    recorders.instances[0].onstop?.()
+    expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(session.hasActiveSession()).toBe(false)
   })
 
   it('can be called again and again without double stops or exceptions (3.11-8)', async () => {

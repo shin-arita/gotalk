@@ -145,9 +145,13 @@ npm test
 - `getUserMedia` の成功の後に、`MediaRecorder` の作成や `start()` が失敗した場合、audio track がない場合、track が `live` でない場合に、track を `stop()` し、`recording_start_failed` を2つの言語で表示し、`idle` に戻ること。`getUserMedia` の失敗は `microphone_denied` のままであること
 - 音量の取得や音声認識が失敗しても、録音は成立し、利用者の停止で Backend に送ること
 - 利用者の停止で、最後の `ondataavailable` の後に送ること。track の `stop()` が送るより先であること
+- 片付けの順番（[speech-flow.md](speech-flow.md) の 6.4 の「片付けの順番」）。利用者の停止では、`MediaStreamAudioSourceNode` の `disconnect()` と `AudioContext` の `close()` が、`MediaRecorder` の `stop()` より先であること。中断（`hidden`、`pagehide`、戻る、外れる、`error`）と失敗（`MediaRecorder` の `onerror`、`MediaRecorder` が自分で止まった）の片付けでは、track の `stop()` より先であること
 - 録音中や `stopping` の間に `hidden` になったら、Backend に送らず、track を `stop()` し、`idle` に戻ること。後から来た `onstop` が何もしないこと。`visible` に戻っても自動でマイクを開かないこと
 - 音声認識の `onend` で、止める指示の後や、無効なセッションでは始め直さないこと
 - 片付けを2回、3回と続けて呼んでも、例外や二重の `stop()` が出ないこと。`AudioContext` の `close()` の拒否や、音声認識の `stop()` の例外を捨てること
+- 利用者の停止の後（`stopping` の間）に中断した場合、`abort` の Promise は、利用者の停止で始めた `AudioContext` の `close()` が終わるまで解決しないこと。`close()` が拒否されても `abort` の Promise は解決し、未処理の拒否が出ないこと。`close()` と `disconnect()` は1回だけであること（KK1）
+- 止める指示と音量の取得の片付けの後に音量の取得を始めようとしても、`AudioContext` を作らず、`requestAnimationFrame` も頼まないこと（KK4）。今の画面からは起きない経路なので、テストでは録音の成立の callback（`onRecordingStarted`）の中で利用者の停止を呼んで作ります。その後の `onstop` で track を止め、マイク OFF になること
+- 止める指示の後に音声認識を始めようとしても、音声認識の constructor も `start()` も呼ばないこと（KK5）。KK4 と同じく、テストでは録音の成立の callback（`onRecordingStarted`）の中で利用者の停止を呼んで作ります。その後の `onstop` で track を止め、マイク OFF になること
 - 録音の途中の `MediaRecorder` の `onerror` で片付けて、`recording_failed` を表示すること（録音の成立の前の失敗は `recording_start_failed` のまま）
 - 利用者の停止で `MediaRecorder` がすでに `inactive`（`onstop` が未着）のときは、`onstop` を待ち、最後のデータを含めて送ること。`onstop` が利用者の停止の前に届いていたときは送らないこと
 - 利用者の停止で `MediaRecorder` の `stop()` が例外を出したときは、Backend に送らず、track を `stop()` し、`recording_failed` を2つの言語で表示し、`idle` に戻ること。診断のログに `recorder_stop_failed:<name>` が残ること
