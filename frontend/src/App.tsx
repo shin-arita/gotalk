@@ -27,8 +27,8 @@ export default function App() {
   }
 
   if (page === 'interpreter') {
-    // 実験の legacy：PR #26 の前の通訳の画面を、別の部品として使う
-    if (experiment.legacy) {
+    // 実験の legacy と legacykeep：PR #26 の前の通訳の画面を、別の部品として使う
+    if (experiment.legacy || experiment.legacyKeep) {
       return (
         <LegacyInterpreterPage
           selectedLanguages={selectedLanguages}

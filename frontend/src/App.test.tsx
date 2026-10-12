@@ -45,6 +45,21 @@ describe('App experiment routing', () => {
     expect(rendered.current[0].experiment?.effective).toEqual(['legacy'])
   })
 
+  it('uses LegacyInterpreterPage with exp=legacykeep', () => {
+    openInterpreter('?exp=legacykeep')
+    expect(screen.getByText('legacy')).toBeInTheDocument()
+    expect(rendered.current.every(r => r.name === 'LegacyInterpreterPage')).toBe(true)
+    expect(rendered.current[0].experiment?.effective).toEqual(['legacykeep'])
+    expect(rendered.current[0].experiment?.legacyKeep).toBe(true)
+    expect(rendered.current[0].experiment?.legacy).toBe(false)
+  })
+
+  it('uses LegacyInterpreterPage with exp=legacy,legacykeep', () => {
+    openInterpreter('?exp=legacy,legacykeep')
+    expect(rendered.current.every(r => r.name === 'LegacyInterpreterPage')).toBe(true)
+    expect(rendered.current[0].experiment?.effective).toEqual(['legacykeep'])
+  })
+
   it('uses the current InterpreterPage with the other switches', () => {
     openInterpreter('?exp=norecog')
     expect(screen.getByText('current')).toBeInTheDocument()
