@@ -114,6 +114,7 @@ export interface FakeRecognition {
   onend: (() => void) | null
   start: ReturnType<typeof vi.fn>
   stop: ReturnType<typeof vi.fn>
+  abort: ReturnType<typeof vi.fn>
 }
 
 export function setupSpeechRecognition(options: { throwOnCreate?: boolean; throwOnStop?: boolean } = {}) {
@@ -129,6 +130,7 @@ export function setupSpeechRecognition(options: { throwOnCreate?: boolean; throw
       onend: null,
       start: vi.fn(),
       stop: vi.fn(() => { if (options.throwOnStop) throw new Error('stop failed') }),
+      abort: vi.fn(),
     }
     instances.push(recognition)
     return recognition

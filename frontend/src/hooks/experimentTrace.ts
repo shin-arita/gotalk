@@ -10,7 +10,7 @@ const MAX_EVENTS_PER_SESSION = 200
 const MAX_PAGE_EVENTS = 200
 
 export interface ExperimentRecognitionEvent {
-  // start_call、stop_call、result、error、end、（trace）start、audiostart、audioend
+  // start_call、stop_call、（recogabort）abort_call、result、result_stale、error、end、（trace）start、audiostart、audioend
   type: string
   at: number
   error?: string
@@ -59,6 +59,39 @@ export interface ExperimentSessionTrace {
   }
   recognition: { events: ExperimentRecognitionEvent[] }
   trackEvents: ExperimentTrackEvent[]
+  // recogfirst のときだけ（ほかは null）。利用者の停止で、音声認識の end を待った記録
+  recognitionEndWait: ExperimentRecognitionEndWait | null
+  // recogearly のときだけ（ほかは null）。録音の成立の前の失敗や中断で、先に始めた音声認識を止めた時刻
+  recogEarly: { stoppedBeforeRecordingAt: number | null } | null
+}
+
+export interface ExperimentRecognitionEndWait {
+  // end を待ち始めた時刻（音声認識の stop() か abort() を呼ぶ直前）
+  waitStartedAt: number | null
+  // 音声認識がなかった（作れなかった、start() が失敗したなど）ので、待たずに MediaRecorder を止めた
+  noRecognition: boolean
+  // 待っている間に届いた end の時刻
+  endAt: number | null
+  // 1.5 秒で見切ったか（見張りのタイマーの見切り recorder.stopTimedOut とは別）と、見切った時刻
+  recognitionEndTimedOut: boolean
+  timedOutAt: number | null
+  // 見切った後に届いた end の時刻（記録だけで、録音の処理には作用させない）
+  lateEndAt: number | null
+  // （recogdelay）end の後の 500 ミリ秒の待ちが終わった時刻
+  delayEndedAt: number | null
+  // 待っている間に中断して、待ちを無効にした時刻
+  cancelledAt: number | null
+}
+
+// recogonce のときだけ。部品は画面で1つなので、セッションではなく画面の単位で記録する
+export interface ExperimentRecognitionOnce {
+  // 音声認識の constructor を呼んだ回数（1 のはず）
+  createdCount: number
+  // 画面が外れるとき（unmount）に部品を手放した時刻
+  disposedAt: number | null
+  // 出来事ごとの、結び付けたセッションの番号と、そのときの有効なセッションの番号（null は、有効なセッションがない）。
+  // 2つが一致しない出来事は、記録だけで、録音の処理には作用させない
+  events: { type: string; at: number; boundSessionId: number; activeSessionId: number | null }[]
 }
 
 export interface ExperimentPageEvent {
@@ -83,6 +116,8 @@ export interface ExperimentDiagnostics {
   // （trace）visibilitychange、pagehide、pageshow
   pageEvents: ExperimentPageEvent[]
   sessions: ExperimentSessionTrace[]
+  // recogonce のときだけ（ほかは null）
+  recognitionOnce: ExperimentRecognitionOnce | null
 }
 
 export function newExperimentDiagnostics(config: ExperimentConfig): ExperimentDiagnostics {
@@ -98,6 +133,7 @@ export function newExperimentDiagnostics(config: ExperimentConfig): ExperimentDi
     endedNotRecorded: config.trace && config.noEndedListener ? 'noendedlistener のため ended は記録しない' : null,
     pageEvents: [],
     sessions: [],
+    recognitionOnce: config.recogOnce ? { createdCount: 0, disposedAt: null, events: [] } : null,
   }
 }
 
@@ -119,6 +155,13 @@ export function newExperimentSessionTrace(id: number, config: ExperimentConfig):
     level: { firstSampleAt: null, firstNonZeroAt: null },
     recognition: { events: [] },
     trackEvents: [],
+    recognitionEndWait: config.recogFirst
+      ? {
+        waitStartedAt: null, noRecognition: false, endAt: null, recognitionEndTimedOut: false, timedOutAt: null, lateEndAt: null,
+        delayEndedAt: null, cancelledAt: null,
+      }
+      : null,
+    recogEarly: config.recogEarly ? { stoppedBeforeRecordingAt: null } : null,
   }
 }
 
