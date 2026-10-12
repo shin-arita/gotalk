@@ -88,7 +88,8 @@ Frontend の音声処理は、画面の `frontend/src/pages/InterpreterPage.tsx`
 | --- | --- |
 | `MediaRecorder` の MIME type | `audio/webm;codecs=opus`、`audio/webm`、`audio/mp4`、`audio/ogg;codecs=opus` の順に対応を確認し、最初に対応しているものを使います。 |
 | `ondataavailable` | 自分のセッションが有効な場合だけ、サイズが 0 より大きい録音データを、そのセッションの資源のまとまりに追加します。無効なセッションのデータは捨てます。 |
-| `onstop` | 自分のセッションが有効で、止める理由が `user` の場合だけ、録音データから `Blob` を作成し、track をすべて `stop()` して `AudioContext` を閉じ（マイク OFF）、`onRecordingStopped` で画面に渡します。中断のときはセッションを先に無効にしているので、何もしません。 |
+| `onstop` | 届いたことを記録します（止める理由によらない）。自分のセッションが有効で、止める理由が `user` の場合だけ、録音データから `Blob` を作成し、track をすべて `stop()` して `AudioContext` を閉じ（マイク OFF）、`onRecordingStopped` で画面に渡します。利用者の停止の前に届いた場合（`MediaRecorder` が自分で止まった場合）は、録音の失敗として片付けます（[6.5](#65-録音の途中で止まったとき)）。中断のときはセッションを先に無効にしているので、何もしません。 |
+| `MediaRecorder` の `onerror` | 自分のセッションが有効な場合だけ、録音の失敗として片付けます（理由 `error`）。録音のデータは送りません。 |
 | `SpeechRecognition` constructor | `window.SpeechRecognition` があれば使用し、なければ `window.webkitSpeechRecognition` を使用します。どちらもなければ `SpeechRecognition` を使わずに録音だけを行います。 |
 | `speechCode` | タップされた国旗の `Language.speechCode` を `recognition.lang` に設定します。 |
 | `interimResults` | `true` に設定し、途中の認識結果も `onresult` で受け取ります。 |
@@ -126,7 +127,8 @@ stateDiagram-v2
   starting --> recording: 録音の成立
   starting --> error: getUserMedia の失敗、録音の成立までの失敗
   recording --> stopping: 同じ国旗ボタンをタップ
-  recording --> error: MediaRecorder の onerror
+  recording --> error: MediaRecorder の onerror、MediaRecorder が自分で止まった
+  stopping --> error: stop() の例外、onstop が 3 秒届かない
   stopping --> processing: 最後のデータがそろい、マイク OFF が成立
   error --> idle: 片付けてメッセージを表示
   processing --> ready: 翻訳成功
@@ -195,15 +197,35 @@ stateDiagram-v2
 
 1. 状態を `stopping` にし、止める理由を `user` にします
 2. 止める指示を先に記録してから、音声認識を `stop()` し、音量の取得を止めます
-3. `MediaRecorder` を `stop()` し、`onstop` を待ちます（最後の `ondataavailable` を受け取るため）
-4. `onstop` で、自分のセッションが有効で、止める理由が `user` であることを確かめてから、録音のデータをまとめます
+3. `MediaRecorder` を `stop()` し、`onstop` を待ちます（最後の `ondataavailable` を受け取るため。timeslice なしの録音では、最後のデータが録音の全体です）。待ち始めたら、見張りのタイマー（`RECORDER_STOP_TIMEOUT_MS`、3 秒）を始めます
+4. `onstop` で、自分のセッションが有効で、止める理由が `user` であることを確かめてから、見張りのタイマーを止め、録音のデータをまとめます
 5. track をすべて `stop()` し、`AudioContext` を閉じ、参照を捨てます（マイク OFF の成立）
 6. マイク OFF が成立してから、状態を `processing` にし、Backend に送ります
 7. 翻訳の結果が出たら `ready` にします
 
+利用者の停止の経路ごとの動きは、次のとおりです。
+
+| 経路 | 動き |
+| --- | --- |
+| 通常（`MediaRecorder` が `recording`） | `stop()` を呼び、`onstop` を待って送ります |
+| `MediaRecorder` がすでに `inactive` で、`onstop` がまだ届いていない（`MediaRecorder` が自分で止まり、`dataavailable` と `stop` のイベントがこれから届く） | `stop()` は呼ばず、止める指示を記録して `onstop` を待ちます。届いたら、通常と同じく、最後のデータを含めて送ります |
+| `MediaRecorder` がすでに `inactive` で、`onstop` が届き済み | 録音が利用者の停止の前に止まっていたので、録音の失敗として片付けます（ふつうは、`onstop` が届いた時点で [6.5](#65-録音の途中で止まったとき) の扱いになっているので、ここには来ません） |
+| `stop()` が例外を出した | 録音の失敗として片付けます。診断のログに `recorder_stop_failed:<name>` を残します |
+| `onstop` が 3 秒以内に届かない | 録音の失敗として片付けます。診断のログに `recorder_stop_timeout` を残します |
+
+「録音の失敗として片付ける」は、中断の片付け（理由 `error`）をして、Backend には送らず、「うまく録音できませんでした。もう一度お願いします」（`recording_failed`）を2つの言語で表示し、`idle` に戻すことです。見張りのタイマーは、`onstop` が届いたとき、中断の片付けのとき、セッションが無効になったときに必ず止めるので、古いセッションのタイマーが新しいセッションに作用することはありません。
+
 中断の片付けでは、今有効なセッションを先に無効にしてから、`MediaRecorder`、音声認識、音量の取得を止め、track をすべて `stop()` し、`AudioContext` を閉じ、参照を捨てます。
 
-### 6.5 中断のときの状態
+### 6.5 録音の途中で止まったとき
+
+録音の途中で track が終わる（`ended`。ほかのアプリがマイクを使った、OS が止めたなど）と、`MediaRecorder` は自分で止まり、`dataavailable` と `stop` のイベントを届けます。
+
+- 録音の成立の後に、track の `ended` を受け取り、診断のログに `track_ended` を残します。利用者の停止や中断の後の `ended`（自分で止めた結果）と、古いセッションの `ended` では何もしません
+- 利用者の停止の前に（止める指示が出ていないときに）`onstop` が届いたら、診断のログに `recorder_stopped_unexpectedly` を残し、録音の失敗として片付けます（Backend には送らず、`recording_failed` を表示して `idle` に戻します）
+- 録音の途中の `MediaRecorder` の `onerror` も、録音の失敗として片付けます（診断のログは `recorder_error:<name>`）
+
+### 6.6 中断のときの状態
 
 中断の後の状態は、中断したときの状態と理由によって、次の表のとおりにします。`hidden`（`visibilitychange` で `hidden`）は一時的に GoTalk から離れる（戻ってくる）こと、`pagehide` はページそのものを離れること、`back`（言語の選択の画面に戻る）と `unmount`（コンポーネントが外れる）は画面が外れることとして扱います。
 
@@ -219,7 +241,7 @@ stateDiagram-v2
 
 `hidden` から `visible` に戻っても、自動ではマイクを開きません。次のタップで新しいセッションを始めます。`back` の後には `unmount` が続けて呼ばれますが、片付けは冪等なので問題ありません。
 
-### 6.6 bfcache から戻ったとき
+### 6.7 bfcache から戻ったとき
 
 `pagehide` は、bfcache に入るとき（`event.persisted === true`）にも起き、その後に `pageshow` でページが戻ってくることがあります。`pagehide` の中で状態を変えても、戻ったときにその状態になっている保証はないため、`pagehide` のときに「戻ったときにするべき状態」を ref（`pagehideRecoveryStatusRef`）に記録し、`pageshow`（`event.persisted === true`）で明示的に直して、記録を消します。
 
@@ -236,7 +258,7 @@ stateDiagram-v2
 - `pageshow` では、自動でマイクを開いたり、問い合わせをやり直したりしません。メッセージも出しません（`processing` の間に離れた場合、話した内容の翻訳は失われますが、利用者がページを離れた結果なので、知らせません）
 - `event.persisted === false` の `pageshow`（ふつうの読み込み）では何もしません
 
-### 6.7 冪等な片付け
+### 6.8 冪等な片付け
 
 片付けは、何回呼んでも、どの順番で重なっても壊れないようにしています。
 
@@ -249,7 +271,7 @@ stateDiagram-v2
 
 `handleSpeak` の最初には、「有効な録音のセッションが残っていれば、中断の片付けが終わるのを待ってから鳴らす」守りがあります。これは正常な経路では起きない異常の検知で、`unexpected_active_audio_session_before_tts` を診断のログと `console.warn` に残します。これが出た場合は、片付けの不具合として直します。
 
-### 6.8 診断の情報
+### 6.9 診断の情報
 
 `useAudioSession` は、録音ごとに次をメモリの上に残します（最新の 10 回の録音と、200 件の出来事）。Backend には送らず、録音した音声と会話の本文は残しません。今は内部で集めるだけで、画面には出しません。
 
@@ -331,7 +353,7 @@ Backend の `/api/tts` は `POST` のみ受け付けます。`OPENAI_API_KEY` �
 
 TTS model は `OPENAI_TTS_MODEL` を使い、未設定時は `gpt-4o-mini-tts` です。voice は `OPENAI_TTS_VOICE` を使い、未設定時は `marin` です。Backend は OpenAI Audio Speech API に `model`、`input`、`voice` を送信し、成功時は `audio/mpeg` を Frontend に返します。
 
-`/api/tts` のタイムアウトは 30 秒で、タイムアウトになったら `AbortController` で `fetch` を abort します。Frontend は返却された音声からオブジェクト URL を作成し、`Audio` で再生します。再生終了時または再生エラー時は URL を解放し、`audioRef` を `null` にして `status` を `ready` に戻します。`/api/tts` の呼び出しまたは `audio.play()` に失敗した場合も `ready` に戻します。`speaking` の間に画面が隠れた場合やページを離れた場合は、読み上げを止めて URL を解放し、`ready` に戻します（[6.5 中断のときの状態](#65-中断のときの状態)）。
+`/api/tts` のタイムアウトは 30 秒で、タイムアウトになったら `AbortController` で `fetch` を abort します。Frontend は返却された音声からオブジェクト URL を作成し、`Audio` で再生します。再生終了時または再生エラー時は URL を解放し、`audioRef` を `null` にして `status` を `ready` に戻します。`/api/tts` の呼び出しまたは `audio.play()` に失敗した場合も `ready` に戻します。`speaking` の間に画面が隠れた場合やページを離れた場合は、読み上げを止めて URL を解放し、`ready` に戻します（[6.6 中断のときの状態](#66-中断のときの状態)）。
 
 ## 10. エラー処理
 
@@ -339,7 +361,8 @@ TTS model は `OPENAI_TTS_MODEL` を使い、未設定時は `gpt-4o-mini-tts` �
 
 - 利用者に表示するエラーの文言は、選んだ2つの言語で表示します（[ui.md](ui.md)）。以下では日本語の文言で示します。HTTP の status やブラウザのエラーの文字列は表示しません。
 - `getUserMedia` が失敗した場合（`NotAllowedError`、`SecurityError`、`NotFoundError`、`NotReadableError` など、エラーの `name` によらない）、Frontend は「マイクへのアクセスが許可されていません」を表示し、`idle` に戻します。
-- `getUserMedia` の成功の後、録音の成立までに失敗した場合（audio track がない、track が `live` でない、`MediaRecorder` の作成や `start()` の例外）と、録音中に `MediaRecorder` の `onerror` が起きた場合、Frontend は開いた stream を必ず閉じ、「うまく録音を始められませんでした。もう一度お願いします」を表示し、`idle` に戻します。
+- `getUserMedia` の成功の後、録音の成立までに失敗した場合（audio track がない、track が `live` でない、`MediaRecorder` の作成や `start()` の例外）、Frontend は開いた stream を必ず閉じ、「うまく録音を始められませんでした。もう一度お願いします」（`recording_start_failed`）を表示し、`idle` に戻します。この文言は、録音の成立の前の失敗だけに使います。
+- 録音の成立の後に録音が失敗した場合（録音の途中の `MediaRecorder` の `onerror`、利用者の停止での `stop()` の例外、`onstop` が 3 秒以内に届かない、利用者の停止の前に `MediaRecorder` が自分で止まった）、Frontend は録音を Backend に送らずに stream を閉じ、「うまく録音できませんでした。もう一度お願いします」（`recording_failed`）を表示し、`idle` に戻します（[6.4](#64-利用者の停止と中断の片付けの違い)、[6.5](#65-録音の途中で止まったとき)）。
 - 録音の成立の後の、補助の機能（音量の取得と音声認識）の失敗では、メッセージを出さずに録音を続け、診断のログにだけ残します。
 - `SpeechRecognition` に対応していない場合や、作成や `recognition.start()` に失敗した場合、エラーは表示せずに録音を継続します。この場合 `transcript` は送られず、Backend が録音音声から文字起こしします。
 - `/api/interpret` または `/api/translate`（再翻訳）が `422` で `language_mismatch` を返した場合、Frontend は「言語不明、もう一度お話ください」を表示し、`idle` に戻します。
