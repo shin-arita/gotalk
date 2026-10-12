@@ -150,6 +150,7 @@ npm test
 - 音声認識の `onend` で、止める指示の後や、無効なセッションでは始め直さないこと
 - 片付けを2回、3回と続けて呼んでも、例外や二重の `stop()` が出ないこと。`AudioContext` の `close()` の拒否や、音声認識の `stop()` の例外を捨てること
 - 利用者の停止の後（`stopping` の間）に中断した場合、`abort` の Promise は、利用者の停止で始めた `AudioContext` の `close()` が終わるまで解決しないこと。`close()` が拒否されても `abort` の Promise は解決し、未処理の拒否が出ないこと。`close()` と `disconnect()` は1回だけであること（KK1）
+- 止める指示と音量の取得の片付けの後に音量の取得を始めようとしても、`AudioContext` を作らず、`requestAnimationFrame` も頼まないこと（KK4）。今の画面からは起きない経路なので、テストでは録音の成立の callback（`onRecordingStarted`）の中で利用者の停止を呼んで作ります。その後の `onstop` で track を止め、マイク OFF になること
 - 録音の途中の `MediaRecorder` の `onerror` で片付けて、`recording_failed` を表示すること（録音の成立の前の失敗は `recording_start_failed` のまま）
 - 利用者の停止で `MediaRecorder` がすでに `inactive`（`onstop` が未着）のときは、`onstop` を待ち、最後のデータを含めて送ること。`onstop` が利用者の停止の前に届いていたときは送らないこと
 - 利用者の停止で `MediaRecorder` の `stop()` が例外を出したときは、Backend に送らず、track を `stop()` し、`recording_failed` を2つの言語で表示し、`idle` に戻ること。診断のログに `recorder_stop_failed:<name>` が残ること

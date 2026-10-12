@@ -299,6 +299,12 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
   }
 
   const startLevelMeter = (s: Session, stream: MediaStream) => {
+    // 止める指示の後や、音量の取得の片付け（releaseLevelMeter）の後は始めない。片付けは2回目以降、1回目の
+    // Promise を返すだけなので、その後に作った AudioContext は閉じられず、マイクの track につながったまま残るため。
+    // 今の経路では来ない（将来の変更への守り）。onRecordingStarted の中の中断は、start がその後にセッションが有効かを
+    // 確かめて止めるが、利用者の停止はセッションを有効のまま残すので、その確かめでは止まらない。画面は、利用者の停止を
+    // 国旗のタップからだけ呼ぶので、onRecordingStarted の中で呼ばれることはない
+    if (s.stopRequested || s.levelMeterClosed) return
     try {
       const audioContext = new AudioContext()
       s.audioContext = audioContext

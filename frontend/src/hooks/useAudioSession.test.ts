@@ -541,6 +541,30 @@ describe('useAudioSession: abort', () => {
     }
   })
 
+  it('does not create an AudioContext when the level meter would start after the cleanup (KK4)', async () => {
+    // 今の画面からは起きない経路。onRecordingStarted の中で利用者の停止を呼ぶと、セッションは有効のまま
+    // 止める指示と音量の取得の片付け（1回目）が済んだ状態で、start が音量の取得を始めようとする
+    const gum = setupDeferredGetUserMedia()
+    const recorders = setupMediaRecorder()
+    setupSpeechRecognition()
+    const contexts = setupAudioContext()
+    const frames = setupAnimationFrame()
+    // session は onRecordingStarted が呼ばれる時点（start の後）には作られている
+    const callbacks = makeCallbacks({ onRecordingStarted: vi.fn(() => session.stop()) })
+    const session = createAudioSession(callbacks)
+    const started = session.start('ja-JP')
+    const stream = await gum.calls[0].resolve()
+    await started
+    expect(callbacks.onRecordingStarted).toHaveBeenCalledTimes(1)
+    expect(recorders.instances[0].stop).toHaveBeenCalledTimes(1)
+    expect(contexts.Ctor).not.toHaveBeenCalled()
+    expect(frames.request).not.toHaveBeenCalled()
+    // onstop の後の片付けで、track が止まり、マイク OFF になる
+    recorders.instances[0].onstop?.()
+    expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(session.hasActiveSession()).toBe(false)
+  })
+
   it('can be called again and again without double stops or exceptions (3.11-8)', async () => {
     const { session, recorders, recognitions, contexts, frames, stream } = await startRecording()
     await session.abort('hidden')
