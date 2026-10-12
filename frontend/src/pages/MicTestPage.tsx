@@ -5,6 +5,8 @@ import { useState, useEffect, useRef } from 'react'
 // 音声認識の始め直しのどちらで出るのかを、実機で確かめるために使います。
 // 録音した音声と音声認識の結果は、送信も保存もせず、ページの中に表示するだけです。
 // 直前の1件の録音だけは、音が取れているかを確かめるため、ページの中で再生できるようにメモリに持ちます。
+// 再生は <audio> と AudioContext（Web Audio API）の2つの方法で行えます。iPhone の Chrome で、<audio> で
+// 再生した後にマイクから音が来なくなることが分かったため、別の方法で鳴らしたときの影響を確かめるためです。
 //
 // 通訳の画面との違い：音声認識の continuous と interimResults は同じですが、lang は ja-JP に
 // 固定しています（通訳の画面は押した国旗の言語）。また、通訳の画面にある、録音の間の
@@ -72,6 +74,24 @@ interface Playback {
   stopReason: string | null
 }
 
+// AudioContext での再生ごとの状態
+interface ContextPlayback {
+  label: string
+  // start() を呼んだ AudioBufferSourceNode。decodeAudioData などを待っている間は null
+  source: AudioBufferSourceNode | null
+  // 再生が終わったか、失敗して、止めるものがない
+  finished: boolean
+  // stopContextPlayback で止めた理由
+  stopReason: string | null
+}
+
+type AudioContextCtor = new () => AudioContext
+
+function getAudioContextCtor(): AudioContextCtor | null {
+  const w = window as Window & { AudioContext?: AudioContextCtor; webkitAudioContext?: AudioContextCtor }
+  return w.AudioContext ?? w.webkitAudioContext ?? null
+}
+
 // 直前の録音。Blob は object URL を通してメモリにだけ持つ
 interface LastRecording {
   test: TestId
@@ -80,6 +100,8 @@ interface LastRecording {
   // 録音の開始から停止までの秒数。onstart のイベントが来なかった場合は分からない
   seconds: number | null
   url: string
+  // AudioContext で再生するときに arrayBuffer() で読む
+  blob: Blob
 }
 
 function recordingLabel(r: LastRecording): string {
@@ -119,6 +141,9 @@ export default function MicTestPage() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   // Audio ごとの再生の状態
   const playbacksRef = useRef(new WeakMap<HTMLAudioElement, Playback>())
+  // AudioContext は最初に押したときに1つだけ作り、S6、pagehide、コンポーネントが外れたときに閉じる
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const contextPlaybackRef = useRef<ContextPlayback | null>(null)
   // 録音を始めるときと、録音を捨てるたびに増やす。止めた後に遅れて来る onstop のうち、
   // 古い録音のものや、捨てた後のものを持たないために使う
   const recordingTokenRef = useRef(0)
@@ -223,10 +248,42 @@ export default function MicTestPage() {
     if (playback.settled) logPlaybackStopped(playback)
   }
 
+  // AudioContext での再生を止める。decodeAudioData などを待っている間なら、待った後に始めない
+  const stopContextPlayback = (reason: string) => {
+    const playback = contextPlaybackRef.current
+    contextPlaybackRef.current = null
+    if (!playback || playback.finished || playback.stopReason !== null) return
+    playback.stopReason = reason
+    if (playback.source) {
+      try {
+        playback.source.stop()
+      } catch (e) {
+        addLog(`AudioContext stop() 失敗 name=${errorName(e)}`)
+      }
+    }
+    // 開始の前は、decodeAudioData などを待っている間に止めたもの（待った後に始めない）
+    addLog(`AudioContext 再生を止めた（${reason}${playback.source ? '' : '、開始の前'}）（${playback.label}）`)
+    logTracks('AudioContext 再生を止めた')
+  }
+
+  // AudioContext を閉じる。次の録音の開始では閉じず、使い回す
+  const closeAudioContext = () => {
+    const context = audioContextRef.current
+    audioContextRef.current = null
+    if (!context) return
+    addLog('AudioContext close()')
+    try {
+      void Promise.resolve(context.close()).catch(e => addLog(`AudioContext close() 失敗 name=${errorName(e)}`))
+    } catch (e) {
+      addLog(`AudioContext close() 失敗 name=${errorName(e)}`)
+    }
+  }
+
   // 直前の録音を捨てる。再生中なら止め、object URL を解放する
   const discardRecording = (reason: string) => {
     recordingTokenRef.current++
     stopAudio('録音を捨てたため')
+    stopContextPlayback('録音を捨てたため')
     const recording = lastRecordingRef.current
     if (!recording) return
     lastRecordingRef.current = null
@@ -270,7 +327,7 @@ export default function MicTestPage() {
           addLog(`録音を持てませんでした name=${errorName(e)}`)
           return
         }
-        keepRecording({ test, count, bytes, seconds, url })
+        keepRecording({ test, count, bytes, seconds, url, blob })
       }
       recorder.start()
       recorderRef.current = recorder
@@ -476,6 +533,7 @@ export default function MicTestPage() {
     addLog('S6 すべて閉じる')
     closeAll()
     discardRecording('S6')
+    closeAudioContext()
     logTracks('S6 すべて閉じる')
     void logPermission('S6 すべて閉じる')
   }
@@ -534,6 +592,147 @@ export default function MicTestPage() {
     }
   }
 
+  // AudioContext を、なければ作り、suspended などのときは resume() する。
+  // iPhone では、押した操作の中で作るか resume() しないと鳴らないため、await の前に呼ぶ
+  // resume() の成功と失敗のログは、止めたかどうかで出し分けるため、handleContextPlay で出す
+  const prepareAudioContext = (): { context: AudioContext; resumed: Promise<void> | null } | null => {
+    let context = audioContextRef.current
+    if (!context) {
+      const Ctor = getAudioContextCtor()
+      if (!Ctor) {
+        addLog('AudioContext このブラウザは対応していません')
+        return null
+      }
+      try {
+        context = new Ctor()
+      } catch (e) {
+        addLog(`AudioContext 作成に失敗 name=${errorName(e)}`)
+        return null
+      }
+      const created = context
+      created.onstatechange = () => addLog(`AudioContext state=${created.state}（変化）`)
+      audioContextRef.current = created
+      // baseLatency は対応していないブラウザがあるため、あるときだけ出す
+      const latency = typeof created.baseLatency === 'number' ? ` baseLatency=${created.baseLatency.toFixed(4)}秒` : ''
+      addLog(`AudioContext 作成 state=${created.state} sampleRate=${created.sampleRate}${latency}`)
+    }
+    // iPhone では、ほかの音声で中断されると interrupted になる
+    const state = context.state as string
+    if (state !== 'suspended' && state !== 'interrupted') return { context, resumed: null }
+    addLog(`AudioContext resume()（state=${state}）`)
+    let resumed: Promise<void>
+    try {
+      resumed = Promise.resolve(context.resume())
+    } catch (e) {
+      // 呼び出し元ですぐに await するので、未処理の拒否にはならない
+      resumed = Promise.reject(e)
+    }
+    return { context, resumed }
+  }
+
+  // ボタンから呼ぶ。中のどの例外も、未処理の Promise の拒否にしない
+  const handleContextPlay = async () => {
+    let started: ContextPlayback | null = null
+    try {
+      await playWithContext(playback => { started = playback })
+    } catch (e) {
+      addLog(`AudioContext 再生の処理で例外 name=${errorName(e)}`)
+      // 例外の後は止めるものがないので、終わったことにする（後で録音を捨てても「再生を止めた」を出さない）
+      const playback = started as ContextPlayback | null
+      if (playback) {
+        playback.finished = true
+        if (contextPlaybackRef.current === playback) contextPlaybackRef.current = null
+      }
+    }
+  }
+
+  const playWithContext = async (onCreated: (playback: ContextPlayback) => void) => {
+    const recording = lastRecordingRef.current
+    if (!recording) return
+    stopContextPlayback('もう一度再生したため')
+    const prepared = prepareAudioContext()
+    if (!prepared) return
+    const { context, resumed } = prepared
+    const label = recordingLabel(recording)
+    const playback: ContextPlayback = { label, source: null, finished: false, stopReason: null }
+    contextPlaybackRef.current = playback
+    onCreated(playback)
+    const fail = (msg: string) => {
+      // 待っている間に止めた後の失敗は、「再生を止めた」で出しているので出さない
+      if (playback.stopReason !== null || playback.finished) return
+      playback.finished = true
+      if (contextPlaybackRef.current === playback) contextPlaybackRef.current = null
+      addLog(`AudioContext ${msg}（${label}）`)
+      logTracks('AudioContext 再生の失敗')
+    }
+    // resume() を待っている間に、この再生を止めたか、AudioContext を閉じた
+    const stoppedOrClosed = () =>
+      playback.stopReason !== null || audioContextRef.current !== context || context.state === 'closed'
+    if (resumed) {
+      try {
+        await resumed
+      } catch (e) {
+        // 待っている間に止めて close() すると、待っていた resume() が拒否されることがある。
+        // 本当の失敗と紛らわしくならないよう、止めた後か閉じた後の拒否は「中止」と出す
+        if (stoppedOrClosed()) {
+          addLog(`AudioContext resume() を中止（止めたため、または閉じたため）name=${errorName(e)}`)
+          return
+        }
+        addLog(`AudioContext resume() 失敗 name=${errorName(e)}`)
+        fail('再生しない（resume() に失敗したため）')
+        return
+      }
+      // 解決した場合も、止めた後か閉じた後なら「成功」とは出さずに終える（止めたことは「再生を止めた」で出ている）
+      if (stoppedOrClosed()) {
+        addLog(`AudioContext resume() は済んだが、止めたため、または閉じたため再生しない（${label}）`)
+        return
+      }
+      addLog(`AudioContext resume() 成功 state=${context.state}`)
+    }
+    let data: ArrayBuffer
+    try {
+      data = await recording.blob.arrayBuffer()
+    } catch (e) {
+      fail(`録音の読み込みの失敗 name=${errorName(e)}`)
+      return
+    }
+    if (playback.stopReason !== null) return
+    let buffer: AudioBuffer | undefined
+    try {
+      buffer = await context.decodeAudioData(data)
+    } catch (e) {
+      // 録音の形式（MediaRecorder の mimeType）で変換できないことがあるため、Blob の type を出す
+      fail(`decodeAudioData 失敗 name=${errorName(e)} type=${recording.blob.type || '（空）'}`)
+      return
+    }
+    if (playback.stopReason !== null) return
+    // Promise を返さない古い実装（callback 形式だけの webkitAudioContext）では、結果がない
+    if (!buffer || typeof buffer.duration !== 'number') {
+      fail('decodeAudioData 失敗（結果がない。古い実装の可能性）')
+      return
+    }
+    addLog(`AudioContext decodeAudioData 成功 長さ=${buffer.duration.toFixed(2)}秒`)
+    try {
+      const source = context.createBufferSource()
+      source.buffer = buffer
+      source.connect(context.destination)
+      // stop() の後にも onended は届くので、止めた後と終わった後は出さない
+      source.onended = () => {
+        if (playback.stopReason !== null || playback.finished) return
+        playback.finished = true
+        if (contextPlaybackRef.current === playback) contextPlaybackRef.current = null
+        addLog(`AudioContext 再生の終わり（${label}）`)
+        logTracks('AudioContext 再生の終わり')
+      }
+      logTracks('AudioContext 再生の前')
+      source.start()
+      playback.source = source
+      addLog(`AudioContext 再生の開始 state=${context.state}（${label}）`)
+    } catch (e) {
+      fail(`再生の失敗 name=${errorName(e)}`)
+    }
+  }
+
   const handleCopy = async () => {
     const text = log.join('\n')
     try {
@@ -553,6 +752,7 @@ export default function MicTestPage() {
   // 後片付けと、ページの状態の変化のログ。closeAll などは ref だけを触るので、最初の描画のものを使う
   const closeAllRef = useRef(closeAll)
   const discardRecordingRef = useRef(discardRecording)
+  const closeAudioContextRef = useRef(closeAudioContext)
   const addLogRef = useRef(addLog)
   useEffect(() => {
     const log = (msg: string) => addLogRef.current(msg)
@@ -561,6 +761,7 @@ export default function MicTestPage() {
       log('pagehide すべて閉じる')
       closeAllRef.current()
       discardRecordingRef.current('pagehide')
+      closeAudioContextRef.current()
     }
     document.addEventListener('visibilitychange', handleVisibility)
     window.addEventListener('pagehide', handlePageHide)
@@ -585,6 +786,7 @@ export default function MicTestPage() {
 
     const closeAllOnUnmount = closeAllRef.current
     const discardRecordingOnUnmount = discardRecordingRef.current
+    const closeAudioContextOnUnmount = closeAudioContextRef.current
     return () => {
       cancelled = true
       document.removeEventListener('visibilitychange', handleVisibility)
@@ -592,6 +794,7 @@ export default function MicTestPage() {
       permissionStatus?.removeEventListener('change', handlePermissionChange)
       closeAllOnUnmount()
       discardRecordingOnUnmount('コンポーネントが外れた')
+      closeAudioContextOnUnmount()
     }
   }, [])
 
@@ -600,7 +803,7 @@ export default function MicTestPage() {
       <h1 style={{ fontSize: '20px', marginBottom: '12px' }}>Mic Test</h1>
 
       <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '24px' }}>
-        マイク動作確認用の開発ページです。録音した音声と音声認識の結果は、GoTalk の Backend や OpenAI API には送信・保存しません。音声認識を使うテスト（S3、S4、S5）では、ブラウザまたは OS の音声認識サービスへ音声が送信される場合があります。録音した音声は、このページの中で再生するためだけにメモリに持ちます。送信も保存もしません。次の録音を始めたとき、S6 を押したとき、ページを閉じたときに捨てます。
+        マイク動作確認用の開発ページです。録音した音声と音声認識の結果は、GoTalk の Backend や OpenAI API には送信・保存しません。音声認識を使うテスト（S3、S4、S5）では、ブラウザまたは OS の音声認識サービスへ音声が送信される場合があります。録音した音声は、このページの中で再生するためだけにメモリに持ちます。送信も保存もしません。次の録音を始めたとき、S6 を押したとき、ページを閉じたときに捨てます。「AudioContext で再生」は、&lt;audio&gt; とは別の方法（Web Audio API）で鳴らし、再生の後もマイクから音が取れるかを確かめるためのものです。試すときは、ページを読み込み直してから、「直前の録音を再生」を押さずに試してください。
       </p>
 
       <section style={sectionStyle}>
@@ -641,6 +844,13 @@ export default function MicTestPage() {
             style={{ padding: '10px 14px', fontSize: '15px', flexShrink: 0 }}
           >
             直前の録音を再生
+          </button>
+          <button
+            onClick={() => void handleContextPlay()}
+            disabled={!lastRecording || playBlocked}
+            style={{ padding: '10px 14px', fontSize: '15px', flexShrink: 0 }}
+          >
+            AudioContext で再生
           </button>
           <span data-testid="mic-test-recording" style={{ fontSize: '13px', lineHeight: 1.5 }}>
             {lastRecording ? recordingLabel(lastRecording) : '録音なし（S1、S2、S5、S7 で録音して停止すると再生できます）'}

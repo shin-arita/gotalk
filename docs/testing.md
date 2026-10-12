@@ -150,9 +150,9 @@ npm test
 
 Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeObjectURL` を mock します。`navigator.mediaDevices`、`URL.createObjectURL`、`URL.revokeObjectURL`、`Audio` は各テストの前の状態を `beforeEach` で保存し、`afterEach` で元に戻します。`MediaRecorder` と `window.SpeechRecognition` は `afterEach` で削除します。API 呼び出しは `fetch` mock で検証します。
 
-開発用のマイクの確認のページ（`#mic-test`、`MicTestPage.test.tsx`）のテストでは、`getUserMedia`、`MediaRecorder`、`SpeechRecognition`、`navigator.permissions`、`URL.createObjectURL`、`URL.revokeObjectURL`、`HTMLMediaElement` の `play()` と `pause()` を mock し（`URL` の2つは `beforeEach` で保存し、`afterEach` で元に戻します）、次を確かめます。ページの使い方は [development.md](development.md) の「8. 注意点」に書いています。
+開発用のマイクの確認のページ（`#mic-test`、`MicTestPage.test.tsx`）のテストでは、`getUserMedia`、`MediaRecorder`、`SpeechRecognition`、`navigator.permissions`、`URL.createObjectURL`、`URL.revokeObjectURL`、`HTMLMediaElement` の `play()` と `pause()`、`window.AudioContext`（`decodeAudioData`、`createBufferSource`、`resume`、`close`、`state`、`onstatechange`）を mock し（`URL` の2つは `beforeEach` で保存し、`afterEach` で元に戻します。`window.AudioContext` は `afterEach` で削除します）、次を確かめます。ページの使い方は [development.md](development.md) の「8. 注意点」に書いています。
 
-- `#mic-test` のときだけページを表示し、通常の URL では表示しないこと。上部の説明の文（録音をメモリにだけ持ち、捨てるときの説明を含む）を表示すること
+- `#mic-test` のときだけページを表示し、通常の URL では表示しないこと。上部の説明の文（録音をメモリにだけ持ち、捨てるときの説明と、「AudioContext で再生」の目的と試し方の説明を含む）を表示すること
 - S1 では開始のたびに `getUserMedia` を呼び、停止で track の `stop()` を呼び、閉じる前の track の状態と閉じたことをログに出すこと
 - S2 では `getUserMedia` を最初の1回だけ呼び、開始と停止で `track.enabled` を true と false に切り替え、track の `stop()` を呼ばないこと
 - S7 では `getUserMedia` を最初の1回だけ呼び、`track.enabled` が true のままであること
@@ -180,6 +180,21 @@ Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeOb
 - 再生が始まった後に、次の録音の開始、S6、`pagehide`、もう一度の再生のそれぞれで止めると、「再生を止めた（理由）（録音の情報）」と止めた後の track の状態を1回ずつだけ出し、未処理の Promise の拒否が出ないこと。開始を待っている間に止めた場合（`AbortError` で拒否される場合と、拒否されずに解決する場合）も1回だけ出すこと。再生が終わった後と、再生に失敗した後に録音を捨てても、「再生を止めた」を出さないこと
 - `play()` が解決した後に `Audio` の `error` のイベントが起きると、「再生の失敗 code=…」（分からない場合は `code=不明`）と track の状態を1回だけ出し、その後に録音を捨てても「再生を止めた」を出さないこと。`play()` の拒否と `error` のイベントの両方が起きても（どちらの順番でも）「再生の失敗」を1回だけ出すこと。録音を捨てて止めた後に `error` が届いても「再生の失敗」を出さないこと（再生が始まった後に止めた場合と、開始を待っている間に止めて `AbortError` で拒否される場合）。開始を待っている間の `error` の後に録音を捨てても「再生を止めた」を出さないこと。どの場合も未処理の Promise の拒否が出ないこと
 - 再生で、再生の開始と終わり、その前後の track の状態をログに出し、Backend への `fetch` を呼ばず、`localStorage` に書かないこと。再生に失敗した場合に、エラーの `name` と track の状態をログに出し、未処理の Promise の拒否が出ないこと。再生している間に次の録音を始めると、再生を止めること
+- 「AudioContext で再生」のボタンは、録音がないとき、テストが動いている間、開始を待っている間は押せないこと
+- 「AudioContext で再生」を押すと、録音の `Blob` の `ArrayBuffer` で `decodeAudioData` を呼び、`AudioBufferSourceNode` を `destination` につないで `start()` を呼び、`decodeAudioData` の成功（長さの秒数）、再生の前の track の状態、再生の開始をログに出すこと。`<audio>` の `play()` を呼ばないこと。`onended` で、再生の終わりと track の状態をログに出すこと
+- `AudioContext` は2回押しても1つだけ作ること。`suspended` のときは `resume()` を呼び、`interrupted` になった後に押したときも `resume()` を呼ぶこと。`running` のときは `resume()` を呼ばないこと。`state` の変化（`running`、`interrupted`、`closed`）をログに出すこと
+- `AudioContext` の作成のログに `sampleRate` と `baseLatency` を出し、`baseLatency` がないブラウザでは `sampleRate` だけを出すこと（II3）
+- `decodeAudioData` の失敗（`EncodingError`）と `resume()` の失敗（`NotAllowedError`）を、`name` を付けてログに出し（`decodeAudioData` の失敗には録音の `Blob` の `type` も出し、空なら「（空）」、`audio/mp4` ならそのまま出すこと）、`resume()` に失敗したときは `decodeAudioData` を呼ばず、未処理の Promise の拒否が出ないこと。`decodeAudioData` に失敗した後に録音を捨てても、「再生を止めた」を出さないこと。`AudioContext` がないブラウザでは、対応していないとログに出すこと
+- 再生している間に、次の録音の開始、S6、`pagehide`、もう一度押したとき、コンポーネントが外れたときに、`AudioBufferSourceNode` の `stop()` を呼び、「AudioContext 再生を止めた（理由）」と止めた後の track の状態を1回だけ出すこと（コンポーネントが外れたときは、`stop()` と `close()` を呼ぶことと、React の警告が出ないことを確かめます）。`stop()` の後に届く `onended` で「再生の終わり」を出さないこと。`decodeAudioData` を待っている間に S6 を押すと、「開始の前」と付けて止めたことを出し、待った後に再生しないこと
+- S6、`pagehide`、コンポーネントが外れたときに `AudioContext` の `close()` を呼び、`close()` したことと `closed` への変化をログに出すこと（コンポーネントが外れたときは、画面のログを読めないため、`close()` を呼ぶことだけを確かめます）。次の録音の開始では `close()` を呼ばずに使い回し、S6 の後に押すと新しく作ること。`AudioContext` を作っていなければ、S6 で `AudioContext` のログを出さないこと
+- 押した操作の中で（`fireEvent.click` の直後、`await` の前に）`AudioContext` を作って `resume()`（`suspended` のとき）を呼び、`decodeAudioData` はまだ呼ばないこと（II4）
+- `resume()` を待っている間に S6 または `pagehide` で止めた場合と、`arrayBuffer()` を待っている間に S6 で止めた場合に、待った後に `decodeAudioData` と `start()` を呼ばず、「開始の前」と付けて止めたことを1回だけ出すこと。待っている間にもう一度押すと、前の再生を「もう一度再生したため、開始の前」として止め、前の `decodeAudioData` が先に解決しても鳴らさず、新しい再生だけを鳴らすこと。待っている間にコンポーネントが外れると、待った後に `start()` を呼ばず、React の警告と未処理の Promise の拒否が出ないこと（II5）
+- `resume()` を待っている間に S6 で止めて `close()` した後に `resume()` が拒否されると、「resume() 失敗」と「再生しない」を出さず、「AudioContext resume() を中止（止めたため、または閉じたため）name=…」を出すこと。止めていないときに `resume()` が遅れて拒否されると、これまでどおり「resume() 失敗」を出すこと（II6）
+- `resume()` を待っている間に S6 で止めて閉じた後に `resume()` が解決すると、「resume() 成功」を出さず、「resume() は済んだが、止めたため、または閉じたため再生しない」を1回出し、`decodeAudioData` と `start()` を呼ばないこと。`resume()` を待っている間にもう一度押すと、前の再生の分は「resume() 成功」を出さず（済んだが再生しない行を出し）、新しい再生の分だけ「resume() 成功」を出して1回だけ鳴らすこと。止めていないときに `resume()` が遅れて解決すると、これまでどおり「resume() 成功」を出して再生すること（II10）
+- `decodeAudioData` が Promise を返さず `undefined` を返す（古い実装）場合に、「decodeAudioData 失敗（結果がない。古い実装の可能性）」と track の状態を出し、`start()` を呼ばず、未処理の Promise の拒否が出ないこと。`try` の外の予期しない例外（結果の `duration` を読むと例外になる場合）も、「AudioContext 再生の処理で例外 name=…」と出し、未処理の Promise の拒否にしないこと（II7）
+- `try` の外の例外の後に、S6、`pagehide`、次の録音の開始、もう一度押したときのそれぞれで、「再生を止めた」を出さず、例外の行は1回だけ（もう一度押したときは、その再生の分を合わせて2回）出すこと（II9）
+- `<audio>` の再生と `AudioContext` の再生が、互いに止めないこと
+- 「AudioContext で再生」でも、Backend への `fetch` を呼ばず、`localStorage` に書かないこと
 
 ## 4. テスト対象
 
