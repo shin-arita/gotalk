@@ -13,6 +13,8 @@ export type MessageKey =
   | 'generic_error'
   | 'language_unclear'
   | 'request_timeout'
+  | 'recording_start_failed'
+  | 'recording_failed'
 
 // 文言がない言語のときに使う言語
 const FALLBACK_LANGUAGE = 'en'
@@ -117,6 +119,27 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
     'ko':    '번역이 잘되지 않았습니다. 다시 시도해 주세요.',
     'th':    'แปลไม่สำเร็จ กรุณาลองอีกครั้ง',
     'vi':    'Bản dịch chưa thành công. Vui lòng thử lại.',
+  },
+  // マイクを開いた後、録音の成立までに失敗した場合（track がない、live でない、MediaRecorder の作成や start() の例外）。
+  // getUserMedia の失敗は microphone_denied、録音の成立の後の失敗は recording_failed
+  recording_start_failed: {
+    'ja':    'うまく録音を始められませんでした。もう一度お願いします',
+    'en':    'Recording could not be started. Please try again.',
+    'zh-CN': '未能开始录音，请再试一次。',
+    'zh-TW': '無法開始錄音，請再試一次。',
+    'ko':    '녹음을 시작하지 못했습니다. 다시 시도해 주세요.',
+    'th':    'ไม่สามารถเริ่มบันทึกเสียงได้ กรุณาลองอีกครั้ง',
+    'vi':    'Không thể bắt đầu ghi âm. Vui lòng thử lại.',
+  },
+  // 録音の成立の後に、録音が失敗した場合（録音の途中の MediaRecorder の onerror など。docs/speech-flow.md の 10.）
+  recording_failed: {
+    'ja':    'うまく録音できませんでした。もう一度お願いします',
+    'en':    'Recording failed. Please try again.',
+    'zh-CN': '录音失败，请再试一次。',
+    'zh-TW': '錄音失敗，請再試一次。',
+    'ko':    '녹음하지 못했습니다. 다시 시도해 주세요.',
+    'th':    'ไม่สามารถบันทึกเสียงได้ กรุณาลองอีกครั้ง',
+    'vi':    'Không thể ghi âm. Vui lòng thử lại.',
   },
 }
 

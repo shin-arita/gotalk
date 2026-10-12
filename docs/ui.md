@@ -38,7 +38,9 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 | `timeout` | 処理に時間がかかっています。もう一度お試しください | Backend の `timeout`（504） |
 | `tts_too_long` | この翻訳は長いため、読み上げできません（500文字まで） | 読み上げる翻訳が 500 文字を超える場合（Frontend の確認）と、`/api/tts` の `input_too_large`。500 は `TTS_MAX_CHARS` から作ります |
 | `recording_too_long` | 録音が長すぎます。短く区切って話してください。 | `/api/interpret` の 413（本文の形式によらない）と、送る前の録音のサイズの確認で上限を超えた場合 |
-| `microphone_denied` | マイクへのアクセスが許可されていません | `getUserMedia` や `MediaRecorder` の作成に失敗した場合 |
+| `microphone_denied` | マイクへのアクセスが許可されていません | `getUserMedia` が失敗した場合（エラーの `name` によらない。`NotAllowedError`、`SecurityError`、`NotFoundError`、`NotReadableError` など） |
+| `recording_start_failed` | うまく録音を始められませんでした。もう一度お願いします | 録音の成立の**前**の失敗：`getUserMedia` の成功の後、録音の成立までに失敗した場合（audio track がない、track が `live` でない、`MediaRecorder` の作成や `start()` の例外）。録音の成立の後の失敗には使いません |
+| `recording_failed` | うまく録音できませんでした。もう一度お願いします | 録音の成立の**後**の失敗：録音の途中の `MediaRecorder` の `onerror`、利用者の停止で `MediaRecorder` の `stop()` が例外を出した場合、`onstop` が見張りの時間（`RECORDER_STOP_TIMEOUT_MS`、今は 10 秒）以内に届かなかった場合、利用者の停止の前に `MediaRecorder` が自分で止まった場合（マイクの track が終わったときなど）。どの場合も録音は Backend に送りません（[speech-flow.md](speech-flow.md) の「10. エラー処理」） |
 | `generic_error` | エラーが発生しました。もう一度お試しください。 | 対応する文言がない status や `code`（502 `upstream_error` など）、ネットワークのエラー（`fetch` の reject）、応答が JSON として読めない場合など |
 | `language_unclear` | 言語不明、もう一度お話ください | `/api/interpret` と `/api/translate`（再翻訳）の 422 `language_mismatch` |
 | `request_timeout` | うまく翻訳できませんでした。もう一度お願いします。 | Frontend の `fetch` の timeout（`AbortController` の abort。`/api/interpret` は 65 秒、再翻訳の `/api/translate` は 30 秒）。Backend の 504（`timeout`）とは別の文言です |
@@ -65,11 +67,11 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 | 箇所 | 今の値 | 対象の要素 |
 | --- | --- | --- |
 | `frontend/src/pages/LanguageSelectPage.tsx:34` | `使用する言語を2つ選択` | 言語の選択の画面の、言語のカードの一覧 |
-| `frontend/src/pages/InterpreterPage.tsx:534` | `トップ画面へ戻る` | 通訳の画面の「GoTalk」の見出し（タップで戻る） |
-| `frontend/src/pages/InterpreterPage.tsx:559` | `${lang.label}で話す`、`${lang.label}の録音を停止` | 国旗のボタン |
-| `frontend/src/pages/InterpreterPage.tsx:602` | `原文を編集` | 原文の編集の textarea |
-| `frontend/src/pages/InterpreterPage.tsx:614` | `編集` | 原文の編集のボタン |
-| `frontend/src/pages/InterpreterPage.tsx:662` | `発声する` | 読み上げのボタン |
+| `frontend/src/pages/InterpreterPage.tsx:651` | `トップ画面へ戻る` | 通訳の画面の「GoTalk」の見出し（タップで戻る） |
+| `frontend/src/pages/InterpreterPage.tsx:676` | `${lang.label}で話す`、`${lang.label}の録音を停止` | 国旗のボタン |
+| `frontend/src/pages/InterpreterPage.tsx:719` | `原文を編集` | 原文の編集の textarea |
+| `frontend/src/pages/InterpreterPage.tsx:731` | `編集` | 原文の編集のボタン |
+| `frontend/src/pages/InterpreterPage.tsx:779` | `発声する` | 読み上げのボタン |
 | `frontend/index.html` | `<html lang="ja">` | ページの言語（スクリーンリーダーの読み上げの言語の判定に使われます） |
 
 開発用の確認のページ（URL の末尾に `#tts-test` を付けたときの `frontend/src/pages/TtsTestPage.tsx` と、`#mic-test` を付けたときの `frontend/src/pages/MicTestPage.tsx`）は、開発者が実機で動作を確かめるためのもので、通常の画面からはリンクしていません。これらのページの文言は日本語だけで、[1. 利用者向けの文言の言語](#1-利用者向けの文言の言語) の決まりの対象外です。

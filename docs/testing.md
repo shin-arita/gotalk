@@ -84,9 +84,12 @@ Frontend のテストファイルは次のとおりです。
 | --- | --- |
 | `frontend/src/languages.test.ts` | 言語定義 |
 | `frontend/src/api.test.ts` | API の timeout の値、エラーの `code` ごとの文言のキー（`apiErrorFromResponse`）、エラーの文言のキーとログ（`messageKeyForError`）、読み上げの文字数の判定（`isTooLongForTts`）、`/api/interpret` に送る録音の大きさの上限（`MAX_INTERPRET_AUDIO_BYTES`） |
-| `frontend/src/messages.test.ts` | 利用者向けの文言の共通の関数（`getLocalizedMessage`）と、10 の文言の7言語の辞書 |
+| `frontend/src/messages.test.ts` | 利用者向けの文言の共通の関数（`getLocalizedMessage`）と、12 の文言の7言語の辞書 |
 | `frontend/src/pages/LanguageSelectPage.test.tsx` | 言語選択画面 |
 | `frontend/src/pages/InterpreterPage.test.tsx` | 通訳画面、録音、確定翻訳、再翻訳、TTS、読み上げの文字数の上限、状態遷移、エラーの文言を選んだ2つの言語で表示すること |
+| `frontend/src/hooks/useAudioSession.test.ts` | 録音のセッションの hook（`createAudioSession`、`useAudioSession`）：録音の成立と失敗、利用者の停止、中断の片付け、古いセッションの callback、冪等な片付け、診断の情報 |
+| `frontend/src/pages/InterpreterPage.lifecycle.test.tsx` | 通訳画面の録音のライフサイクル：二重のタップ、中断（`hidden`、`pagehide`、戻る、外れる）、古いセッションと古い問い合わせの結果、読み上げの中断、bfcache から戻ったとき |
+| `frontend/src/pages/InterpreterPage.ttsGuard.test.tsx` | `handleSpeak` の守り（`useAudioSession` を差し替えて、`ready` で録音のセッションが残っている状態を作る） |
 | `frontend/src/pages/MicTestPage.test.tsx` | 開発用のマイクの確認のページ（`#mic-test`） |
 
 実行コマンド:
@@ -135,11 +138,35 @@ npm test
 - `/api/translate` と `/api/tts` の 413 の表示は変わらないこと
 - 録音が長すぎる文言を表示した後の画面の状態（録音していない、両方の国旗が押せる、読み上げボタンがない、翻訳カードが処理中でない、履歴が増えない）が、`/api/interpret` のほかのエラー（502）のときと同じであること
 
+録音のライフサイクル（[speech-flow.md](speech-flow.md) の「6. 録音のライフサイクル」）は、次のテストで確かめます。`getUserMedia`、`MediaRecorder`、`SpeechRecognition`、`AudioContext`、`requestAnimationFrame` の代わりは `frontend/src/test/audioMocks.ts` にまとめています。`getUserMedia` と `fetch` は、テストが resolve や reject をするまで終わらず、`MediaRecorder` の `ondataavailable` と `onstop` はテストが起こします。
+
+- `starting` の間にもう一度タップしても、`getUserMedia` は1回だけであること
+- `getUserMedia` を待っている間に、`hidden`、`pagehide`、戻る、外れるが起きたら、後から成功した stream の track を `stop()` し、録音を始めないこと
+- `getUserMedia` の成功の後に、`MediaRecorder` の作成や `start()` が失敗した場合、audio track がない場合、track が `live` でない場合に、track を `stop()` し、`recording_start_failed` を2つの言語で表示し、`idle` に戻ること。`getUserMedia` の失敗は `microphone_denied` のままであること
+- 音量の取得や音声認識が失敗しても、録音は成立し、利用者の停止で Backend に送ること
+- 利用者の停止で、最後の `ondataavailable` の後に送ること。track の `stop()` が送るより先であること
+- 録音中や `stopping` の間に `hidden` になったら、Backend に送らず、track を `stop()` し、`idle` に戻ること。後から来た `onstop` が何もしないこと。`visible` に戻っても自動でマイクを開かないこと
+- 音声認識の `onend` で、止める指示の後や、無効なセッションでは始め直さないこと
+- 片付けを2回、3回と続けて呼んでも、例外や二重の `stop()` が出ないこと。`AudioContext` の `close()` の拒否や、音声認識の `stop()` の例外を捨てること
+- 録音の途中の `MediaRecorder` の `onerror` で片付けて、`recording_failed` を表示すること（録音の成立の前の失敗は `recording_start_failed` のまま）
+- 利用者の停止で `MediaRecorder` がすでに `inactive`（`onstop` が未着）のときは、`onstop` を待ち、最後のデータを含めて送ること。`onstop` が利用者の停止の前に届いていたときは送らないこと
+- 利用者の停止で `MediaRecorder` の `stop()` が例外を出したときは、Backend に送らず、track を `stop()` し、`recording_failed` を2つの言語で表示し、`idle` に戻ること。診断のログに `recorder_stop_failed:<name>` が残ること
+- 利用者の停止の後、`onstop` が見張りの時間（`RECORDER_STOP_TIMEOUT_MS`、10 秒）届かないと、track を `stop()` し、`recording_failed` を表示し、`idle` に戻ること（`recorder_stop_timeout`）。テストは時間を数字で書かず、定数を参照します。9 秒台で `onstop` が届いた場合は、録音の失敗にならずに送ること。待っている間に中断した場合、古いセッションのタイマーの場合は、タイマーが何もしないこと
+- 診断の情報に、`stop()` から `onstop` までの時間（`stopLatencyMs`。`MediaRecorder` がすでに `inactive` のときは、止める指示を記録してから）が残ること。見張りのタイマーで片付けた場合は、`stopTimedOut` と待った時間（`stopWaitedMs`）が残り、後から届いた `onstop` までの時間も残ること
+- 録音の途中で track が `ended` になり、`MediaRecorder` が自分で止まると、`recording_failed` を表示して `idle` に戻り、track を `stop()` し、Backend に送らないこと。診断のログに `track_ended` と `recorder_stopped_unexpectedly` が残ること。利用者の停止の後の `ended` と、古いセッションの `ended` では何もしないこと
+- `ready` 以外では読み上げを押せないこと。読み上げの途中に `hidden` や `pagehide` になったら、`<audio>` を止めてオブジェクト URL を解放し、`ready` に戻ること。`/api/tts` を待っている間に止めた場合は、後から来た音声を再生しないこと
+- 古いセッションの callback（`getUserMedia` の完了、`ondataavailable`、`onstop`、`onerror`、音声認識の `onresult` と `onend`、`requestAnimationFrame`）が新しいセッションを壊さないこと
+- `processing` の間に `hidden` になっても状態は `processing` のままで、国旗を押せず、結果が来たら `ready` になること。戻るや `pagehide` のときは問い合わせを止め、後から結果や失敗が来ても画面に反映しないこと
+- 止めた問い合わせ1の結果が遅れて戻っても、画面には問い合わせ2の結果だけが出ること
+- `handleSpeak` の守りが働いたときに、`unexpected_active_audio_session_before_tts` が診断のログに残り、片付けが終わってから `/api/tts` を呼ぶこと
+- bfcache から戻ったとき（`pagehide` と `pageshow` の `persisted: true`）に、`starting`、`recording`、`stopping`、`processing` は `idle` に、`ready` と `speaking` は `ready` に直り、マイクを開かず、問い合わせも送らないこと。`pageshow` のときに画面がまだ `processing` でも、記録した状態に直すこと。`persisted: false` の `pageshow` では何もしないこと。bfcache から戻った後に始めたセッション2が、セッション1の古い callback の影響を受けないこと
+- 診断の情報に、録音ごとの数値（`getUserMedia` の時刻、track の状態、録音の大きさ、音量、音声認識の文字数など）が残り、会話の本文が残らないこと
+
 利用者向けの文言を選んだ2つの言語で表示すること（[ui.md](ui.md)）は、次のテストで確かめます。画面のテストの期待する文言は、既定の日本語と英語の組み合わせでは helper `jaEn` で作ります。エラーのときの `console.warn` は、ログを確かめるテスト以外では `beforeEach` で出力を止めています。
 
 - `getLocalizedMessage` が、2つの言語（`ja` と `en`、`th` と `vi` など）の文言を選んだ順に空行をはさんで連結すること、辞書にない言語では英語になること、選んだ言語が1つだけのときはその言語の文言だけ、1つもないときは英語の文言になること（`messages.test.ts`）
-- 10 の文言のすべてのキーに、7言語の空でない文言がそろっていること。読み上げの文言の 500 が `TTS_MAX_CHARS` から作られること。`request_timeout` の英語の文言のアポストロフィが U+2019 であること（`messages.test.ts`）
-- 10 の文言のそれぞれが、実際の画面で選んだ2つの言語（主にタイ語とベトナム語。ほかにベトナム語とタイ語の順、韓国語と英語）で表示されること（`InterpreterPage messages in the two selected languages`）
+- 12 の文言のすべてのキーに、7言語の空でない文言がそろっていること。`recording_start_failed` と `recording_failed` の7言語の文言が決めたとおりであること（日本語だけ句点なし）。読み上げの文言の 500 が `TTS_MAX_CHARS` から作られること。`request_timeout` の英語の文言のアポストロフィが U+2019 であること（`messages.test.ts`）
+- 12 の文言のそれぞれが、実際の画面で選んだ2つの言語（主にタイ語とベトナム語。ほかにベトナム語とタイ語の順、韓国語と英語）で表示されること（`InterpreterPage messages in the two selected languages`）
 - 対応する文言がない status（502）、ネットワークのエラー（`fetch` の reject）、JSON として読めない応答で汎用のエラーの文言を表示し、`HTTP`、`502`、`Failed to fetch`、Backend の `error` の文字列を表示しないこと
 - Frontend の timeout では「うまく翻訳できませんでした」、Backend の 504 では「処理に時間がかかっています」を表示すること
 - エラーのとき、`console.warn` にエンドポイント、status、エラーの種類（Backend の `code`、`frontend_timeout`、`recording_too_large_before_send`、`TypeError` など）が残り、発話の内容、翻訳の結果、`e.message`、Backend の `error` の文字列が残らないこと（`api.test.ts` と `InterpreterPage.test.tsx`）

@@ -141,8 +141,14 @@ function setupMediaRecorderMock() {
   return mock
 }
 
+// getUserMedia が返す stream の代わり。audio track が1本で、readyState は live
+function makeFakeStream() {
+  const track = { kind: 'audio', readyState: 'live', enabled: true, muted: false, stop: vi.fn(), addEventListener: vi.fn() }
+  return { getTracks: () => [track], getAudioTracks: () => [track] }
+}
+
 function setupGetUserMediaMock(rejects = false) {
-  const fakeStream = { getTracks: () => [{ stop: vi.fn() }] }
+  const fakeStream = makeFakeStream()
   const getUserMedia = rejects
     ? vi.fn().mockRejectedValue(new Error('Permission denied'))
     : vi.fn().mockResolvedValue(fakeStream)
@@ -534,7 +540,7 @@ describe('InterpreterPage translation visibility during recording', () => {
     mock.stop = vi.fn(function () { mock.state = 'inactive'; mock.onstop?.() })
     Object.defineProperty(globalThis, 'MediaRecorder', { value: Ctor, writable: true, configurable: true })
     Object.defineProperty(globalThis.navigator, 'mediaDevices', {
-      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }) },
+      value: { getUserMedia: vi.fn().mockResolvedValue(makeFakeStream()) },
       writable: true, configurable: true,
     })
 
@@ -563,7 +569,7 @@ describe('InterpreterPage translation visibility during recording', () => {
     mock2.stop = vi.fn(function () { mock2.state = 'inactive'; mock2.onstop?.() })
     Object.defineProperty(globalThis, 'MediaRecorder', { value: Ctor2, writable: true, configurable: true })
     Object.defineProperty(globalThis.navigator, 'mediaDevices', {
-      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }) },
+      value: { getUserMedia: vi.fn().mockResolvedValue(makeFakeStream()) },
       writable: true, configurable: true,
     })
 
@@ -1407,6 +1413,30 @@ describe('InterpreterPage messages in the two selected languages', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Thaiで話す' }))
     })
     await waitFor(() => expect(alertText()).toBe(twoLanguages('microphone_denied', 'th', 'vi')))
+  })
+
+  it('recording_start_failed (after getUserMedia, before the recording is established)', async () => {
+    const Ctor = vi.fn(function () { throw new DOMException('not supported', 'NotSupportedError') }) as unknown as typeof MediaRecorder & { isTypeSupported: (t: string) => boolean }
+    Ctor.isTypeSupported = vi.fn().mockReturnValue(false)
+    Object.defineProperty(globalThis, 'MediaRecorder', { value: Ctor, writable: true, configurable: true })
+    setupGetUserMediaMock()
+    renderPage([th, vi_])
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Thaiで話す' }))
+    })
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('recording_start_failed', 'th', 'vi')))
+  })
+
+  it('recording_failed (MediaRecorder onerror after the recording is established)', async () => {
+    mockRecorder = undefined
+    setupMediaRecorderMock()
+    setupGetUserMediaMock()
+    renderPage([th, vi_])
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Thaiで話す' }))
+    })
+    await act(async () => { (mockRecorder as unknown as { onerror: (e: unknown) => void }).onerror({}) })
+    await waitFor(() => expect(alertText()).toBe(twoLanguages('recording_failed', 'th', 'vi')))
   })
 
   it('generic_error', async () => {
