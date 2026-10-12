@@ -450,9 +450,9 @@ export function createAudioSession(
         try { recognition.start() } catch { /* 始め直しの失敗は捨てる */ }
       }
       // 実験の trace：今の版にない出来事だけ、新しく listener を付ける
-      if (config.trace) {
+      if (config.trace && s.exp) {
         const exp = s.exp
-        const record = (type: string) => () => { if (exp) pushBounded(exp.recognition.events, { type, at: perfNow() }) }
+        const record = (type: string) => () => { pushBounded(exp.recognition.events, { type, at: perfNow() }) }
         recognition.onstart = record('start')
         recognition.onaudiostart = record('audiostart')
         recognition.onaudioend = record('audioend')
@@ -578,9 +578,9 @@ export function createAudioSession(
         failRecording(s, `recorder_error:${name}`)
       }
       // 実験の trace：今の版にない出来事（MediaRecorder の onstart）だけ、新しく listener を付ける
-      if (config.trace) {
+      if (config.trace && s.exp) {
         const exp = s.exp
-        recorder.onstart = () => { if (exp) exp.recorder.onstartAt = perfNow() }
+        recorder.onstart = () => { exp.recorder.onstartAt = perfNow() }
       }
       if (s.exp) s.exp.recorder.startCalledAt = perfNow()
       recorder.start()
@@ -600,10 +600,10 @@ export function createAudioSession(
         })
       }
       // 実験の trace：今の版にない出来事（track の mute と unmute）だけ、新しく listener を付ける
-      if (config.trace) {
+      if (config.trace && s.exp) {
         const exp = s.exp
         tracks.forEach((track, i) => {
-          const record = (type: string) => () => { if (exp) pushBounded(exp.trackEvents, { type, at: perfNow(), track: i }) }
+          const record = (type: string) => () => { pushBounded(exp.trackEvents, { type, at: perfNow(), track: i }) }
           track.addEventListener('mute', record('mute'))
           track.addEventListener('unmute', record('unmute'))
         })
@@ -647,6 +647,7 @@ export function createAudioSession(
     stopRecognition(s)
     stopLevelMeter(s)
     const levelMeterClosed = releaseLevelMeter(s)
+    const recorder = s.recorder
     if (config.awaitClose) {
       // 実験の awaitclose：AudioContext の close() の完了を待ってから MediaRecorder の stop() を呼ぶ。待っている間に
       // セッションが無効になったとき（中断など）は、stop() を呼ばずに終える（中断の片付けに任せる）。
@@ -654,17 +655,15 @@ export function createAudioSession(
       startStopWatchdog(s, now())
       void levelMeterClosed.then(() => {
         if (!isActive(s.id)) return
-        stopRecorder(s)
+        stopRecorder(s, recorder)
       })
       return
     }
-    stopRecorder(s)
+    stopRecorder(s, recorder)
   }
 
   // 利用者の停止で MediaRecorder を止め、onstop を待つ見張りのタイマーを始める（stop の後半）
-  const stopRecorder = (s: Session) => {
-    const recorder = s.recorder
-    if (!recorder) return
+  const stopRecorder = (s: Session, recorder: MediaRecorder) => {
     const stopRequestedAt = now()
     s.diag.recorder.stopRequestedAt = stopRequestedAt
     if (recorder.state === 'inactive') {

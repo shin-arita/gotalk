@@ -95,6 +95,7 @@ Frontend のテストファイルは次のとおりです。
 | `frontend/src/hooks/useAudioSession.callLog.test.ts` | スイッチがないとき（と `?exp=` のとき）に、ブラウザの API の呼び出しの順番と回数が、スイッチを入れる前（`782635e`）と同じであること |
 | `frontend/src/hooks/useAudioSession.experiments.test.ts` | `useAudioSession` のスイッチごとの動きと、実験の診断の記録 |
 | `frontend/src/pages/InterpreterPage.experiments.test.tsx` | 通訳の画面のスイッチ（`norecog`、`nolifecycle`、`trace`）と、診断の表示（「更新」「コピー」） |
+| `frontend/src/pages/ExperimentPanel.test.tsx` | 診断の表示の部品（スナップショットの表示、直近の5回分、クリップボードがないときの表示） |
 | `frontend/src/pages/LegacyInterpreterPage.test.tsx` | `legacy` の部品。`07f06f0` の `InterpreterPage.test.tsx` を、import だけを変えて残したもの |
 | `frontend/src/pages/LegacyInterpreterPage.experiments.test.tsx` | `legacy` の部品の実験の記録と、足していないもの（`useAudioSession`、track の読み取り、listener） |
 | `frontend/src/App.test.tsx` | `exp` に `legacy` があるときだけ `LegacyInterpreterPage` を使うこと |

@@ -28,14 +28,17 @@ const [ja, en] = LANGUAGES
 let restoreGlobals: () => void
 let gum: ReturnType<typeof setupDeferredGetUserMedia>
 let recorders: ReturnType<typeof setupMediaRecorder>
+let recognitions: ReturnType<typeof setupSpeechRecognition>
+let contexts: ReturnType<typeof setupAudioContext>
+let frames: ReturnType<typeof setupAnimationFrame>
 
 beforeEach(() => {
   restoreGlobals = saveGlobals(AUDIO_GLOBALS)
   gum = setupDeferredGetUserMedia()
   recorders = setupMediaRecorder()
-  setupSpeechRecognition()
-  setupAudioContext()
-  setupAnimationFrame()
+  recognitions = setupSpeechRecognition()
+  contexts = setupAudioContext()
+  frames = setupAnimationFrame()
   vi.spyOn(globalThis, 'fetch').mockResolvedValue({
     ok: true,
     status: 200,
@@ -152,5 +155,72 @@ describe('LegacyInterpreterPage without exp', () => {
     renderLegacy()
     expect(screen.queryByRole('region', { name: '実験の診断' })).toBeNull()
     expect(screen.queryByRole('button', { name: '更新' })).toBeNull()
+  })
+})
+
+// 07f06f0 のテストで通っていなかった、PR #26 の前の動き（legacy の部品が、そのまま動くことを確かめる）
+describe('LegacyInterpreterPage behaviors of 07f06f0', () => {
+  it('moves the ripples with the level meter and closes the AudioContext on the stop', async () => {
+    renderLegacy()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' })) })
+    await act(async () => { await gum.calls[0].resolve() })
+    act(() => { frames.frame(16) })
+    act(() => { frames.frame(766) })
+    const ripples = document.querySelectorAll<HTMLDivElement>('.flag-ripple')
+    expect(ripples).toHaveLength(3)
+    expect(ripples[0].style.transform).toBe('scale(0.5)')
+    expect(Number(ripples[0].style.opacity)).toBeGreaterThan(0)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' })) })
+    expect(frames.cancel).toHaveBeenCalledTimes(1)
+    expect(contexts.instances[0].close).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the recognized text and restarts the recognition only while recording', async () => {
+    renderLegacy()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' })) })
+    await act(async () => { await gum.calls[0].resolve() })
+    const recognition = recognitions.instances[0]
+    act(() => { recognition.onresult?.({ results: [[{ transcript: 'こんに' }], [{ transcript: 'ちは' }]] }) })
+    expect(screen.getByText('こんにちは')).toBeInTheDocument()
+    recognition.onerror?.()
+    recognition.onend?.()
+    expect(recognition.start).toHaveBeenCalledTimes(2)
+    recognition.start.mockImplementationOnce(() => { throw new Error('busy') })
+    expect(() => recognition.onend?.()).not.toThrow()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' })) })
+    expect(recognition.stop).toHaveBeenCalledTimes(1)
+    recognition.onend?.()
+    expect(recognition.start).toHaveBeenCalledTimes(3)
+  })
+
+  it('closes everything when the screen goes away while recording', async () => {
+    const { unmount } = renderLegacy()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' })) })
+    const stream = await act(async () => gum.calls[0].resolve())
+    unmount()
+    expect(recorders.instances[0].stop).toHaveBeenCalledTimes(1)
+    expect(stream.tracks[0].stop).toHaveBeenCalled()
+    expect(recognitions.instances[0].stop).toHaveBeenCalledTimes(1)
+    expect(frames.cancel).toHaveBeenCalledTimes(1)
+    expect(contexts.instances[0].close).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows microphone_denied when getUserMedia fails', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    renderLegacy()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' })) })
+    await act(async () => { await gum.calls[0].reject(new DOMException('denied', 'NotAllowedError')) })
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Japaneseで話す' })).toBeEnabled()
+  })
+
+  it('keeps only the latest ten recordings in the experiment record', async () => {
+    renderLegacy(readExperimentConfig('?exp=legacy'))
+    for (let i = 0; i < 11; i++) await recordOnce(i, [String(i).padStart(i + 1, 'x')])
+    let copied = ''
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn(async (text: string) => { copied = text }) }, configurable: true })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'コピー' })) })
+    const sizes = JSON.parse(copied).recordings.map((r: { blobSize: number }) => r.blobSize)
+    expect(sizes).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
   })
 })

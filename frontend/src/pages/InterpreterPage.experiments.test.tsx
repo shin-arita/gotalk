@@ -242,6 +242,7 @@ describe('InterpreterPage experiment switches', () => {
     expect(recorders.instances[0].stop).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Japaneseの録音を停止' })).toBeInTheDocument()
     act(() => { setVisibility('visible') })
+    act(() => { window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true })) })
     await stopAndFinish(0, ['ab'])
     const json = await copyJson()
     const experiment = json.diagnostics.experiment as unknown as { traceListenerOnly: boolean; pageEvents: { type: string; visibilityState: string; persisted?: boolean }[] }
@@ -250,6 +251,7 @@ describe('InterpreterPage experiment switches', () => {
       ['visibilitychange', 'hidden', undefined],
       ['pagehide', 'hidden', true],
       ['visibilitychange', 'visible', undefined],
+      ['pageshow', 'visible', true],
     ])
   })
 
@@ -261,11 +263,14 @@ describe('InterpreterPage experiment switches', () => {
     expect(recorders.instances[0].stop).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('button', { name: 'Japaneseの録音を停止' })).toBeNull()
     act(() => { setVisibility('visible') })
+    act(() => { window.dispatchEvent(Object.assign(new Event('pagehide'), { persisted: false })) })
     act(() => { window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: false })) })
     const json = await copyJson()
-    const experiment = json.diagnostics.experiment as unknown as { traceListenerOnly: boolean; pageEvents: { type: string }[] }
+    const experiment = json.diagnostics.experiment as unknown as { traceListenerOnly: boolean; pageEvents: { type: string; persisted?: boolean }[] }
     expect(experiment.traceListenerOnly).toBe(false)
-    expect(experiment.pageEvents.map(e => e.type)).toEqual(['visibilitychange', 'visibilitychange', 'pageshow'])
+    expect(experiment.pageEvents.map(e => [e.type, e.persisted])).toEqual([
+      ['visibilitychange', undefined], ['visibilitychange', undefined], ['pagehide', false], ['pageshow', false],
+    ])
   })
 
   it('removes the record-only listeners when the screen goes away', () => {

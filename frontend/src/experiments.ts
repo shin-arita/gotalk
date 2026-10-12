@@ -79,7 +79,8 @@ export interface ParsedExperimentQuery {
 export function parseExperimentQuery(search: string): ParsedExperimentQuery {
   const params = new URLSearchParams(search)
   if (!params.has('exp')) return { enabled: false, raw: null, names: [] }
-  const raw = params.get('exp') ?? ''
+  // has('exp') の後なので、get は文字列を返す（?exp だけのときは空の文字列）
+  const raw = params.get('exp') as string
   const names = raw.split(',').map(n => n.trim()).filter(n => n !== '')
   return { enabled: true, raw, names }
 }

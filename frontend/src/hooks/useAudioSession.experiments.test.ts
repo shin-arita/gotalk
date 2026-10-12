@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { RECORDER_STOP_TIMEOUT_MS, createAudioSession } from './useAudioSession'
 import type { AudioSessionCallbacks } from './useAudioSession'
-import { readExperimentConfig } from '../experiments'
+import { DEFAULT_EXPERIMENT_CONFIG, readExperimentConfig } from '../experiments'
+import type { ExperimentConfig } from '../experiments'
+import { addExperimentSession, addPageEvent, newExperimentDiagnostics, newExperimentSessionTrace, pushBounded } from './experimentTrace'
 import {
   AUDIO_GLOBALS, endTrack, makeFakeStream, saveGlobals, setupAnimationFrame, setupAudioContext, setupDeferredGetUserMedia,
   setupMediaRecorder, setupSpeechRecognition,
@@ -430,5 +432,59 @@ describe('experiment: passive diagnostics', () => {
     const before = session.getDiagnostics().experiment!
     recorders.instances[0].ondataavailable?.({ data: new Blob(['x']) })
     expect(before.sessions[0].recorder.data).toEqual([])
+  })
+})
+
+describe('experiment switches without the diagnostics', () => {
+  // URL からは作れない組み合わせ（enabled が false のままスイッチだけが true）。記録の分岐がなくても、スイッチの動きが
+  // 変わらないことを確かめる（記録は、どれも s.exp があるときだけ行う）
+  const crafted = (overrides: Partial<ExperimentConfig>): ExperimentConfig => ({ ...DEFAULT_EXPERIMENT_CONFIG, ...overrides })
+
+  async function startCrafted(config: ExperimentConfig) {
+    const gum = setupDeferredGetUserMedia()
+    const recorders = setupMediaRecorder()
+    const recognitions = setupSpeechRecognition()
+    const contexts = setupAudioContext()
+    setupAnimationFrame()
+    const stream = makeFakeStream()
+    const listeners = countListeners(stream)
+    const session = createAudioSession(makeCallbacks(), config)
+    const started = session.start('ja-JP')
+    await gum.calls[0].resolve(stream)
+    await started
+    return { session, recorders, recognitions, contexts, stream, listeners }
+  }
+
+  it('runs legacyrecog, nodisconnect and trace without recording anything', async () => {
+    const { session, recorders, recognitions, contexts, stream, listeners } = await startCrafted(crafted({ legacyRecog: true, noDisconnect: true, trace: true }))
+    expect(Object.fromEntries(listeners)).toEqual({ ended: 1 })
+    expect(handlerKeys(recorders.instances[0])).toEqual(['ondataavailable', 'onerror', 'onstop'])
+    recognitions.instances[0].onend?.()
+    expect(recognitions.instances[0].start).toHaveBeenCalledTimes(2)
+    endTrack(stream.tracks[0])
+    session.stop()
+    expect(contexts.instances[0].source.disconnect).not.toHaveBeenCalled()
+    expect(session.getDiagnostics().experiment).toBeUndefined()
+  })
+})
+
+describe('experiment diagnostics limits', () => {
+  it('records a recognition error without an event as unknown', async () => {
+    const { session, recognitions } = await startWith('?exp=')
+    recognitions.instances[0].onerror?.()
+    expect(session.getDiagnostics().experiment!.sessions[0].recognition.events.at(-1)).toEqual({ type: 'error', at: expect.any(Number), error: 'unknown' })
+  })
+
+  it('keeps only the latest events and sessions', () => {
+    const list: number[] = []
+    for (let i = 0; i < 205; i++) pushBounded(list, i)
+    expect(list).toHaveLength(200)
+    expect(list[0]).toBe(5)
+    const diag = newExperimentDiagnostics(readExperimentConfig('?exp=trace'))
+    for (let i = 1; i <= 12; i++) addExperimentSession(diag, newExperimentSessionTrace(i, readExperimentConfig('?exp=trace')))
+    expect(diag.sessions.map(s => s.id)).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+    for (let i = 0; i < 201; i++) addPageEvent(diag, { type: `e${i}`, at: i, visibilityState: 'visible' })
+    expect(diag.pageEvents).toHaveLength(200)
+    expect(diag.pageEvents[0].type).toBe('e1')
   })
 })
