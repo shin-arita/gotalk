@@ -665,14 +665,16 @@ export default function MicTestPage() {
       addLog(`AudioContext ${msg}（${label}）`)
       logTracks('AudioContext 再生の失敗')
     }
+    // resume() を待っている間に、この再生を止めたか、AudioContext を閉じた
+    const stoppedOrClosed = () =>
+      playback.stopReason !== null || audioContextRef.current !== context || context.state === 'closed'
     if (resumed) {
       try {
         await resumed
-        addLog(`AudioContext resume() 成功 state=${context.state}`)
       } catch (e) {
         // 待っている間に止めて close() すると、待っていた resume() が拒否されることがある。
         // 本当の失敗と紛らわしくならないよう、止めた後か閉じた後の拒否は「中止」と出す
-        if (playback.stopReason !== null || audioContextRef.current !== context || context.state === 'closed') {
+        if (stoppedOrClosed()) {
           addLog(`AudioContext resume() を中止（止めたため、または閉じたため）name=${errorName(e)}`)
           return
         }
@@ -680,6 +682,12 @@ export default function MicTestPage() {
         fail('再生しない（resume() に失敗したため）')
         return
       }
+      // 解決した場合も、止めた後か閉じた後なら「成功」とは出さずに終える（止めたことは「再生を止めた」で出ている）
+      if (stoppedOrClosed()) {
+        addLog(`AudioContext resume() は済んだが、止めたため、または閉じたため再生しない（${label}）`)
+        return
+      }
+      addLog(`AudioContext resume() 成功 state=${context.state}`)
     }
     let data: ArrayBuffer
     try {

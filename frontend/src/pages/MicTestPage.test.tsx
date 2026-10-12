@@ -1872,6 +1872,60 @@ describe('MicTestPage: AudioContext で再生', () => {
     expect(rejections.handler).not.toHaveBeenCalled()
   })
 
+  it('II10: resume() を待っている間に S6 で止めて閉じた後に resume() が解決すると、「resume() 成功」を出さず、済んだが再生しない行を1回出す', async () => {
+    const rejections = watchUnhandledRejections()
+    const { resolveResume } = setupAudioContextMock({ initialState: 'suspended', deferResume: true })
+    await record()
+    await clickContextPlay()
+    await click('S6 すべて閉じる')
+    await resolveResume()
+    await flush()
+    await rejections.settle()
+
+    const text = logText()
+    expect(text).not.toContain('resume() 成功')
+    expect(countMatches(text, /AudioContext resume\(\) は済んだが、止めたため、または閉じたため再生しない（S2 1回目の録音/)).toBe(1)
+    expect(countMatches(text, /AudioContext 再生を止めた（/)).toBe(1)
+    expect(audioContexts[0].decodeAudioData).not.toHaveBeenCalled()
+    expect(sources).toHaveLength(0)
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('II10: resume() を待っている間にもう一度押すと、前の再生の分は「resume() 成功」を出さず、新しい再生の分だけ出す', async () => {
+    const rejections = watchUnhandledRejections()
+    const { resolveResume } = setupAudioContextMock({ initialState: 'suspended', deferResume: true })
+    await record()
+    await clickContextPlay()
+    await clickContextPlay()
+    expect(audioContexts[0].resume).toHaveBeenCalledTimes(2)
+    await resolveResume()
+    await resolveResume()
+    await flush()
+    await rejections.settle()
+
+    const text = logText()
+    expect(countMatches(text, /AudioContext resume\(\) 成功/)).toBe(1)
+    expect(countMatches(text, /AudioContext resume\(\) は済んだが/)).toBe(1)
+    expect(audioContexts[0].decodeAudioData).toHaveBeenCalledTimes(1)
+    expect(sources).toHaveLength(1)
+    expect(sources[0].start).toHaveBeenCalledTimes(1)
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('II10: 止めていないときに resume() が遅れて解決すると、これまでどおり「resume() 成功」を出して再生する', async () => {
+    const { resolveResume } = setupAudioContextMock({ initialState: 'suspended', deferResume: true })
+    await record()
+    await clickContextPlay()
+    expect(audioContexts[0].decodeAudioData).not.toHaveBeenCalled()
+    await resolveResume()
+    await flush()
+
+    const text = logText()
+    expect(text).toContain('AudioContext resume() 成功 state=running')
+    expect(text).not.toContain('は済んだが')
+    expect(sources[0].start).toHaveBeenCalledTimes(1)
+  })
+
   it('II5: arrayBuffer() を待っている間に S6 で止めると、待った後に decodeAudioData と start() を呼ばず、止めたことを1回だけ出す', async () => {
     const rejections = watchUnhandledRejections()
     setupAudioContextMock()
