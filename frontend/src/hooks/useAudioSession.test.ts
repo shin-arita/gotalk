@@ -45,6 +45,11 @@ async function startRecording(callbacks = makeCallbacks()) {
   return { session, callbacks, gum, recorders, recognitions, contexts, frames, stream }
 }
 
+// 先に呼ばれた mock の呼び出しの順番（vitest の invocationCallOrder）。呼ばれていなければ Infinity
+function firstCall(fn: { mock: { invocationCallOrder: number[] } }) {
+  return fn.mock.invocationCallOrder[0] ?? Infinity
+}
+
 describe('useAudioSession: recording start', () => {
   it('starts the recorder, the level meter, and the recognition after the recording is established', async () => {
     const { callbacks, recorders, recognitions, contexts, frames, session } = await startRecording()
@@ -165,6 +170,24 @@ describe('useAudioSession: recording start', () => {
 })
 
 describe('useAudioSession: user stop', () => {
+  it('closes the AudioContext and disconnects the source before MediaRecorder stop() on a user stop (iPhone Chrome)', async () => {
+    const { session, recorders, contexts, stream } = await startRecording()
+    const recorder = recorders.instances[0]
+    const ctx = contexts.instances[0]
+    session.stop()
+    // close() の完了は待たずに、MediaRecorder の stop() を呼ぶ
+    expect(ctx.close).toHaveBeenCalledTimes(1)
+    expect(ctx.source.disconnect).toHaveBeenCalledTimes(1)
+    expect(recorder.stop).toHaveBeenCalledTimes(1)
+    expect(firstCall(ctx.source.disconnect)).toBeLessThan(firstCall(recorder.stop))
+    expect(firstCall(ctx.close)).toBeLessThan(firstCall(recorder.stop))
+    recorder.onstop?.()
+    expect(firstCall(ctx.close)).toBeLessThan(firstCall(stream.tracks[0].stop))
+    // onstop の後の片付けで、二重に close() や disconnect() をしない
+    expect(ctx.close).toHaveBeenCalledTimes(1)
+    expect(ctx.source.disconnect).toHaveBeenCalledTimes(1)
+  })
+
   it('waits for onstop, then stops the tracks before handing over the blob (3.11-5)', async () => {
     const { session, callbacks, recorders, recognitions, contexts, frames, stream } = await startRecording(
       makeCallbacks({ onRecordingStopped: vi.fn(() => { expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1) }) }),
@@ -409,6 +432,41 @@ describe('useAudioSession: the recording stops by itself (JJ5)', () => {
 })
 
 describe('useAudioSession: abort', () => {
+  it.each(['hidden', 'pagehide', 'back', 'unmount', 'error'] as const)(
+    'closes the AudioContext and disconnects the source before the track stop() on abort (%s)',
+    async (reason) => {
+      const { session, recorders, contexts, stream } = await startRecording()
+      const ctx = contexts.instances[0]
+      const track = stream.tracks[0]
+      await session.abort(reason)
+      expect(track.stop).toHaveBeenCalledTimes(1)
+      expect(firstCall(ctx.source.disconnect)).toBeLessThan(firstCall(track.stop))
+      expect(firstCall(ctx.close)).toBeLessThan(firstCall(track.stop))
+      expect(firstCall(ctx.close)).toBeLessThan(firstCall(recorders.instances[0].stop))
+    },
+  )
+
+  it('closes the AudioContext and disconnects the source before the track stop() on a MediaRecorder error', async () => {
+    const { recorders, contexts, stream } = await startRecording()
+    const ctx = contexts.instances[0]
+    const track = stream.tracks[0]
+    recorders.instances[0].onerror?.({ error: new DOMException('x', 'UnknownError') })
+    expect(track.stop).toHaveBeenCalledTimes(1)
+    expect(firstCall(ctx.source.disconnect)).toBeLessThan(firstCall(track.stop))
+    expect(firstCall(ctx.close)).toBeLessThan(firstCall(track.stop))
+  })
+
+  it('closes the AudioContext and disconnects the source before the track stop() when the recorder stops by itself', async () => {
+    const { recorders, contexts, stream } = await startRecording()
+    const ctx = contexts.instances[0]
+    const track = stream.tracks[0]
+    recorders.instances[0].state = 'inactive'
+    recorders.instances[0].onstop?.()
+    expect(track.stop).toHaveBeenCalledTimes(1)
+    expect(firstCall(ctx.source.disconnect)).toBeLessThan(firstCall(track.stop))
+    expect(firstCall(ctx.close)).toBeLessThan(firstCall(track.stop))
+  })
+
   it('invalidates the session first, so the later onstop and data do nothing (3.11-6)', async () => {
     const { session, callbacks, recorders, recognitions, stream } = await startRecording()
     const recorder = recorders.instances[0]
