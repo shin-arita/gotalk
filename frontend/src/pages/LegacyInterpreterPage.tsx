@@ -717,7 +717,7 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
         )}
       </div>
 
-      <ExperimentPanel
+      {experiment.enabled && <ExperimentPanel
         config={experiment}
         busy={status === 'recording'}
         read={() => ({
@@ -727,7 +727,7 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
           config: { raw: experiment.raw, requested: experiment.requested, ignored: experiment.ignored, inactive: experiment.inactive, effective: experiment.effective },
           recordings: legacyRecordingsRef.current.map(r => ({ ...r, dataSizes: [...r.dataSizes] })),
         })}
-      />
+      />}
 
     </main>
   )

@@ -89,8 +89,8 @@ function SnapshotView({ snapshot }: { snapshot: ExperimentSnapshot }) {
         <ol style={{ margin: 0, paddingLeft: '20px' }}>
           {recordings.map((r, i) => (
             <li key={i}>
-              mimeType={r.mimeType ?? '-'}、start→stop={r.startCalledAt !== null && r.stopCalledAt !== null ? `${Math.round(r.stopCalledAt - r.startCalledAt)}ms` : '-'}、
-              ondataavailable={r.dataSizes.length}回 [{r.dataSizes.join(', ')}]、Blob={r.blobSize ?? '-'}
+              {`mimeType=${r.mimeType || '-'}、start→stop=${r.startCalledAt !== null && r.stopCalledAt !== null ? `${Math.round(r.stopCalledAt - r.startCalledAt)}ms` : '-'}、`
+                + `ondataavailable=${r.dataSizes.length}回 [${r.dataSizes.join(', ')}]、Blob=${r.blobSize ?? '-'}`}
             </li>
           ))}
         </ol>
@@ -113,8 +113,8 @@ function SnapshotView({ snapshot }: { snapshot: ExperimentSnapshot }) {
             <li key={session.id} style={{ marginBottom: '6px' }}>
               <div>セッション {session.id}：止めた理由={session.stopReason ?? '-'}、mimeType={session.recorder.mimeType ?? '-'}</div>
               <div>
-                ondataavailable={trace ? `${trace.recorder.data.length}回 [${trace.recorder.data.map(d => d.size).join(', ')}]` : '-'}、
-                Blob={trace?.recorder.blobSize ?? '-'}、bytes={session.recorder.bytes}
+                {`ondataavailable=${trace ? `${trace.recorder.data.length}回 [${trace.recorder.data.map(d => d.size).join(', ')}]` : '-'}、`
+                  + `Blob=${trace?.recorder.blobSize ?? '-'}、bytes=${session.recorder.bytes}`}
               </div>
               <div>
                 track={trace && !trace.tracksRead ? '読んでいない（notrackread）' : session.tracks.map(t => `${t.readyState}/${t.enabled ? 'enabled' : 'disabled'}/${t.muted ? 'muted' : 'unmuted'}`).join(', ') || '-'}
@@ -122,17 +122,17 @@ function SnapshotView({ snapshot }: { snapshot: ExperimentSnapshot }) {
               {trace && (
                 <>
                   <div>
-                    getUserMedia={ms(trace.getUserMediaCalledAt, base)}、start()={ms(trace.recorder.startCalledAt, base)}、
-                    stop()={trace.recorder.stopCalls.map(c => `${ms(c.at, base)}(${c.by})`).join(', ') || '-'}、onstop={ms(trace.recorder.onstopAt, base)}
+                    {`getUserMedia=${ms(trace.getUserMediaCalledAt, base)}、start()=${ms(trace.recorder.startCalledAt, base)}、`
+                      + `stop()=${trace.recorder.stopCalls.map(c => `${ms(c.at, base)}(${c.by})`).join(', ') || '-'}、onstop=${ms(trace.recorder.onstopAt, base)}`}
                   </div>
                   <div>
-                    AudioContext：作成={ms(trace.audioContext.createdAt, base)}、connect={ms(trace.audioContext.sourceConnectedAt, base)}、
-                    disconnect={trace.audioContext.disconnectSkipped ? 'しない' : ms(trace.audioContext.disconnectedAt, base)}、
-                    close()={ms(trace.audioContext.closeCalledAt, base)}、完了={ms(trace.audioContext.closeResolvedAt, base)}
+                    {`AudioContext：作成=${ms(trace.audioContext.createdAt, base)}、connect=${ms(trace.audioContext.sourceConnectedAt, base)}、`
+                      + `disconnect=${trace.audioContext.disconnectSkipped ? 'しない' : ms(trace.audioContext.disconnectedAt, base)}、`
+                      + `close()=${ms(trace.audioContext.closeCalledAt, base)}、完了=${ms(trace.audioContext.closeResolvedAt, base)}`}
                   </div>
                   <div>
-                    音量：最初={ms(trace.level.firstSampleAt, base)}、最初の 0 でない値={ms(trace.level.firstNonZeroAt, base)}、
-                    RMS 最大={session.level.rmsMax.toFixed(3)}、回数={session.level.samples}
+                    {`音量：最初=${ms(trace.level.firstSampleAt, base)}、最初の 0 でない値=${ms(trace.level.firstNonZeroAt, base)}、`
+                      + `RMS 最大=${session.level.rmsMax.toFixed(3)}、回数=${session.level.samples}`}
                   </div>
                   <div>
                     音声認識：{trace.recognition.events.map(e => `${e.type}${e.error ? `(${e.error})` : ''}${e.chars !== undefined ? `(${e.chars}字)` : ''}@${ms(e.at, base)}`).join(' ') || '-'}
