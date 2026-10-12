@@ -5,7 +5,7 @@ import { LANGUAGES } from '../languages'
 import { getLocalizedMessage } from '../messages'
 import type { MessageKey } from '../messages'
 import {
-  AUDIO_GLOBALS, firePageTransition, makeFakeStream, saveGlobals, setupDeferredGetUserMedia, setupMediaRecorder,
+  AUDIO_GLOBALS, endTrack, firePageTransition, makeFakeStream, saveGlobals, setupDeferredGetUserMedia, setupMediaRecorder,
   setupSpeechRecognition, setVisibility,
 } from '../test/audioMocks'
 import type { FakeStream } from '../test/audioMocks'
@@ -304,6 +304,34 @@ describe('InterpreterPage audio lifecycle: onstop watchdog (JJ2)', () => {
     expect(jaTalk()).not.toBeDisabled()
     await finishRecorder(0)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('InterpreterPage audio lifecycle: the recording stops by itself (JJ5)', () => {
+  it('shows recording_failed, returns to idle, stops the tracks, and does not send when the track ends while recording', async () => {
+    renderPage()
+    const stream = await startJaRecording(0)
+    await act(async () => {
+      endTrack(stream.tracks[0])
+      recorders.instances[0].state = 'inactive'
+      recorders.instances[0].ondataavailable?.({ data: new Blob(['part']) })
+      recorders.instances[0].onstop?.()
+    })
+    expect(alertText()).toBe(jaEn('recording_failed'))
+    expect(jaStop()).not.toBeInTheDocument()
+    expect(jaTalk()).not.toBeDisabled()
+    expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('sends normally when the track ends after the user stop', async () => {
+    renderPage()
+    const stream = await startJaRecording(0)
+    await tapStop()
+    act(() => { endTrack(stream.tracks[0]) })
+    await finishRecorder(0)
+    expect(fetchCalls.map(c => c.url)).toEqual(['/api/interpret'])
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })
 

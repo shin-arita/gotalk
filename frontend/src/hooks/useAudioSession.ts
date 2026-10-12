@@ -409,8 +409,13 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
       recorder.onstop = () => {
         s.recorderStopped = true
         // 中断のときは、セッションを先に無効にしているので、ここでは何もしない
-        if (!isActive(id) || s.stopReason !== 'user') return
-        finishUserStop(s)
+        if (!isActive(id)) return
+        if (s.stopReason === 'user') {
+          finishUserStop(s)
+          return
+        }
+        // 利用者の停止の前に、MediaRecorder が自分で止まった（track が終わったときなど）。録音の失敗として片付け、送らない
+        if (!s.stopRequested) failRecording(s, 'recorder_stopped_unexpectedly')
       }
       recorder.onerror = (e) => {
         if (!isActive(id)) return
@@ -419,6 +424,16 @@ export function createAudioSession(initialCallbacks: AudioSessionCallbacks): Aud
         failRecording(s, `recorder_error:${name}`)
       }
       recorder.start()
+      // 録音の途中で track が終わったこと（ほかのアプリがマイクを使った、OS が止めたなど）を診断のログに残す。
+      // 録音の失敗の扱いは、その後に MediaRecorder が自分で止まったとき（onstop）に行う
+      tracks.forEach((track, i) => {
+        track.addEventListener('ended', () => {
+          // 古いセッションと、利用者の停止や中断の後（自分で止めた結果）は何もしない
+          if (!isActive(id) || s.stopRequested) return
+          if (s.diag.tracks[i]) s.diag.tracks[i].readyState = 'ended'
+          logEvent('track_ended', id)
+        })
+      })
       s.diag.recorder.state = recorder.state
       s.diag.recorder.mimeType = recorder.mimeType || s.mimeType || null
       s.diag.recorder.startedAt = now()

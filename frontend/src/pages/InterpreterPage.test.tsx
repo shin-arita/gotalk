@@ -143,7 +143,7 @@ function setupMediaRecorderMock() {
 
 // getUserMedia が返す stream の代わり。audio track が1本で、readyState は live
 function makeFakeStream() {
-  const track = { kind: 'audio', readyState: 'live', enabled: true, muted: false, stop: vi.fn() }
+  const track = { kind: 'audio', readyState: 'live', enabled: true, muted: false, stop: vi.fn(), addEventListener: vi.fn() }
   return { getTracks: () => [track], getAudioTracks: () => [track] }
 }
 

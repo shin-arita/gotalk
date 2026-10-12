@@ -3,7 +3,7 @@ import { renderHook } from '@testing-library/react'
 import { createAudioSession, useAudioSession } from './useAudioSession'
 import type { AudioSessionCallbacks } from './useAudioSession'
 import {
-  AUDIO_GLOBALS, makeFakeStream, saveGlobals, setupAnimationFrame, setupAudioContext, setupDeferredGetUserMedia,
+  AUDIO_GLOBALS, endTrack, makeFakeStream, saveGlobals, setupAnimationFrame, setupAudioContext, setupDeferredGetUserMedia,
   setupMediaRecorder, setupSpeechRecognition,
 } from '../test/audioMocks'
 
@@ -336,6 +336,48 @@ describe('useAudioSession: onstop watchdog (JJ2)', () => {
     expect(session.hasActiveSession()).toBe(true)
     expect(stream2.tracks[0].stop).not.toHaveBeenCalled()
     expect(recorders.instances[1].stop).not.toHaveBeenCalled()
+  })
+})
+
+describe('useAudioSession: the recording stops by itself (JJ5)', () => {
+  it('fails the recording when the track ends and the recorder stops before the user stop', async () => {
+    const { session, callbacks, recorders, stream } = await startRecording()
+    const recorder = recorders.instances[0]
+    endTrack(stream.tracks[0])
+    expect(session.getDiagnostics().events.map(e => e.type)).toContain('track_ended')
+    expect(session.getDiagnostics().sessions[0].tracks[0].readyState).toBe('ended')
+    // MediaRecorder が自分で止まる
+    recorder.state = 'inactive'
+    recorder.ondataavailable?.({ data: new Blob(['part']) })
+    recorder.onstop?.()
+    expect(callbacks.onRecorderError).toHaveBeenCalledTimes(1)
+    expect(callbacks.onRecordingStopped).not.toHaveBeenCalled()
+    expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
+    expect(session.hasActiveSession()).toBe(false)
+    expect(session.getDiagnostics().events.map(e => e.type)).toContain('recorder_stopped_unexpectedly')
+    expect(session.getDiagnostics().sessions[0].stopReason).toBe('error')
+  })
+
+  it('does nothing for ended after the user stop', async () => {
+    const { session, callbacks, recorders, stream } = await startRecording()
+    session.stop()
+    endTrack(stream.tracks[0])
+    expect(session.getDiagnostics().events.map(e => e.type)).not.toContain('track_ended')
+    expect(callbacks.onRecorderError).not.toHaveBeenCalled()
+    recorders.instances[0].onstop?.()
+    expect(callbacks.onRecordingStopped).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not let ended of session 1 act on session 2', async () => {
+    const { session, callbacks, gum, stream } = await startRecording()
+    await session.abort('hidden')
+    const second = session.start('ja-JP')
+    await gum.calls[1].resolve()
+    await second
+    endTrack(stream.tracks[0])
+    expect(session.getDiagnostics().events.filter(e => e.type === 'track_ended')).toEqual([])
+    expect(callbacks.onRecorderError).not.toHaveBeenCalled()
+    expect(session.hasActiveSession()).toBe(true)
   })
 })
 
