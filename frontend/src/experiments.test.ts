@@ -50,16 +50,11 @@ describe('resolveExperimentConfig', () => {
     ['noendedlistener', 'noEndedListener'],
     ['nolifecycle', 'noLifecycle'],
     ['trace', 'trace'],
-    ['recogfirst', 'recogFirst'],
-    ['recogabort', 'recogAbort'],
-    ['recogearly', 'recogEarly'],
-    ['recogonce', 'recogOnce'],
   ] as const)('turns on %s alone', (name, key) => {
     const config = readExperimentConfig(`?exp=${name}`)
     expect(config.effective).toEqual([name])
     expect(config[key]).toBe(true)
-    const others = (['legacy', 'noRecog', 'legacyRecog', 'noMeter', 'noDisconnect', 'awaitClose', 'noTrackRead', 'noEndedListener', 'noLifecycle', 'trace',
-      'recogFirst', 'recogAbort', 'recogDelay', 'recogEarly', 'recogOnce'] as const)
+    const others = (['legacy', 'noRecog', 'legacyRecog', 'noMeter', 'noDisconnect', 'awaitClose', 'noTrackRead', 'noEndedListener', 'noLifecycle', 'trace'] as const)
       .filter(k => k !== key)
     others.forEach(k => expect(config[k]).toBe(false))
   })
@@ -112,6 +107,32 @@ describe('resolveExperimentConfig', () => {
 
   it('keeps the parsed value as it is when resolving a disabled query', () => {
     expect(resolveExperimentConfig({ enabled: false, raw: null, names: [] })).toBe(DEFAULT_EXPERIMENT_CONFIG)
+  })
+})
+
+// 2回目の実験のスイッチ（recogfirst、recogabort、recogdelay、recogearly、recogonce）の指定と組み合わせ
+describe('resolveExperimentConfig: the second experiment', () => {
+  const ALL_KEYS = ['legacy', 'noRecog', 'legacyRecog', 'noMeter', 'noDisconnect', 'awaitClose', 'noTrackRead', 'noEndedListener', 'noLifecycle', 'trace',
+    'recogFirst', 'recogAbort', 'recogDelay', 'recogEarly', 'recogOnce'] as const
+
+  it.each([
+    ['recogfirst', 'recogFirst'],
+    ['recogabort', 'recogAbort'],
+    ['recogearly', 'recogEarly'],
+    ['recogonce', 'recogOnce'],
+  ] as const)('turns on %s alone', (name, key) => {
+    const config = readExperimentConfig(`?exp=${name}`)
+    expect(config.effective).toEqual([name])
+    expect(config.inactive).toEqual([])
+    expect(config[key]).toBe(true)
+    ALL_KEYS.filter(k => k !== key).forEach(k => expect(config[k]).toBe(false))
+  })
+
+  it('keeps all the new switches off without exp and with an empty exp', () => {
+    ;(['recogFirst', 'recogAbort', 'recogDelay', 'recogEarly', 'recogOnce'] as const).forEach(k => {
+      expect(DEFAULT_EXPERIMENT_CONFIG[k]).toBe(false)
+      expect(readExperimentConfig('?exp=')[k]).toBe(false)
+    })
   })
 
   it('makes recogdelay inactive without recogfirst', () => {
