@@ -113,6 +113,8 @@ interface SpeechRecognition {
   onaudioend?: (() => void) | null
   start(): void
   stop(): void
+  // 切り分けの実験（recogabort）でだけ呼ぶ
+  abort(): void
 }
 
 type SpeechRecognitionCtor = new () => SpeechRecognition
@@ -139,6 +141,25 @@ function errorName(e: unknown): string {
 // 実測の値に余裕を足した値に見直す
 export const RECORDER_STOP_TIMEOUT_MS = 10_000
 
+// 切り分けの実験（recogfirst）で、利用者の停止のときに音声認識の end を待つ最長の時間（ミリ秒）。
+// 届かないときは見切って MediaRecorder の stop() を呼ぶ（見張りのタイマー RECORDER_STOP_TIMEOUT_MS とは別）
+export const RECOGNITION_END_TIMEOUT_MS = 1_500
+// 切り分けの実験（recogfirst と recogdelay）で、end が届いた後、MediaRecorder の stop() を呼ぶまでにさらに待つ時間（ミリ秒）
+export const RECOGNITION_END_DELAY_MS = 500
+
+// 切り分けの実験（recogfirst）の、音声認識の end の待ち。音声認識の部品とセッションの番号の組に結び付ける。
+// waiting（end を待っている）→ delaying（recogdelay の 500 ミリ秒）→ done（MediaRecorder の stop() に進んだ）、
+// または timedout（1.5 秒で見切った）、cancelled（待っている間に中断した）。done、timedout、cancelled からは戻らない
+interface RecognitionEndWait {
+  recognition: SpeechRecognition
+  sessionId: number
+  state: 'waiting' | 'delaying' | 'done' | 'timedout' | 'cancelled'
+  // 1.5 秒の見切りのタイマー（waiting のとき）か、500 ミリ秒のタイマー（delaying のとき）
+  timer: ReturnType<typeof setTimeout> | null
+  // 待ちの後の処理（MediaRecorder の stop() に進む）。セッションが有効かは、この中で確かめる
+  proceed: () => void
+}
+
 // 診断の情報をメモリの上に残す数
 const MAX_DIAGNOSTIC_SESSIONS = 10
 const MAX_DIAGNOSTIC_EVENTS = 200
@@ -161,6 +182,8 @@ interface Session {
   recorderStopped: boolean
   // 利用者の停止で onstop を待つ見張りのタイマー
   stopTimer: ReturnType<typeof setTimeout> | null
+  // 切り分けの実験（recogfirst）の、音声認識の end の待ち。スイッチがないときは常に null
+  recognitionEndWait: RecognitionEndWait | null
   chunks: Blob[]
   mimeType: string
   diag: AudioSessionDiagnostics
@@ -212,6 +235,15 @@ export function createAudioSession(
   // 切り分けの実験の診断。URL に exp がないときは作らない（performance.now() の記録もしない）
   const expDiag: ExperimentDiagnostics | null = config.enabled ? newExperimentDiagnostics(config) : null
   const perfNow = () => performance.now()
+  // 実験の recogonce：画面で1つだけ作る音声認識の部品と、その前の実行が終わっていないか（start() の成功の後に true、
+  // どのセッションの handler でも onend の最初に false）。end は1回の実行の最後の出来事なので、true の間に次のセッションの
+  // handler を付け替えると、前の実行の遅れた出来事が次のセッションのものとして配られる。そのため true の間は次の録音で
+  // 音声認識を始めない
+  let onceRecognition: SpeechRecognition | null = null
+  let onceRecognitionRunning = false
+  const recordOnce = (type: string, sessionId: number) => {
+    if (expDiag?.recognitionOnce) pushBounded(expDiag.recognitionOnce.events, { type, at: perfNow(), boundSessionId: sessionId, activeSessionId: activeId })
+  }
 
   const now = () => Date.now()
   const isActive = (id: number) => activeId === id
@@ -225,6 +257,14 @@ export function createAudioSession(
     const recognition = s.recognition
     s.recognition = null
     if (!recognition) return
+    // 実験の recogearly：録音の成立（MediaRecorder の start() の成功）の前に止めた時刻を残す
+    if (s.exp?.recogEarly && s.diag.recorder.startedAt === null) s.exp.recogEarly.stoppedBeforeRecordingAt = perfNow()
+    // 実験の recogabort：stop() の代わりに abort() を呼ぶ（利用者の停止と、中断の片付けの両方）
+    if (config.recogAbort) {
+      if (s.exp) pushBounded(s.exp.recognition.events, { type: 'abort_call', at: perfNow() })
+      try { recognition.abort() } catch { /* 止める処理の例外は捨てる */ }
+      return
+    }
     if (s.exp) pushBounded(s.exp.recognition.events, { type: 'stop_call', at: perfNow() })
     try { recognition.stop() } catch { /* 止める処理の例外は捨てる */ }
   }
@@ -291,6 +331,8 @@ export function createAudioSession(
   const release = (s: Session): Promise<void> => {
     s.stopRequested = true
     clearStopTimer(s)
+    // 実験の recogfirst：end の待ちを無効にし、タイマーを取り消す（待ちの後に MediaRecorder の stop() を呼ばない）
+    if (config.recogFirst) cancelRecognitionEndWait(s)
     stopRecognition(s)
     stopLevelMeter(s)
     const closed = releaseLevelMeter(s)
@@ -407,11 +449,31 @@ export function createAudioSession(
       return
     }
     try {
-      const recognition = new RecognitionCtor()
+      // 実験の recogonce：部品は画面で1つだけ作り（最初の録音のときに作る）、録音ごとに start() と stop() を繰り返す。
+      // handler は start() のたびに、そのときのセッション s に結び付けたものに付け替える（下の handler は s を見て、
+      // s が今有効なセッションでないときは、録音の処理に作用させない）
+      let recognition: SpeechRecognition
+      if (config.recogOnce) {
+        // 前の実行の end が届いていないときは、handler の付け替えも start() もせず、この録音は音声認識なしで続ける
+        // （s.recognition は空のまま）。飛ばしたことを記録する
+        if (onceRecognitionRunning) {
+          logEvent('recognition_once_previous_end_pending', s.id)
+          if (expDiag?.recognitionOnce) pushBounded(expDiag.recognitionOnce.skippedPendingEnd, { sessionId: s.id, at: perfNow() })
+          return
+        }
+        if (!onceRecognition) {
+          onceRecognition = new RecognitionCtor()
+          if (expDiag?.recognitionOnce) expDiag.recognitionOnce.createdCount += 1
+        }
+        recognition = onceRecognition
+      } else {
+        recognition = new RecognitionCtor()
+      }
       recognition.lang = speechCode
       recognition.interimResults = true
       recognition.continuous = true
       recognition.onresult = (event) => {
+        if (config.recogOnce) recordOnce('result', s.id)
         if (!isActive(s.id)) {
           if (s.exp) pushBounded(s.exp.recognition.events, { type: 'result_stale', at: perfNow() })
           return
@@ -427,12 +489,19 @@ export function createAudioSession(
         callbacks().onTranscript(transcript)
       }
       recognition.onerror = (event) => {
+        if (config.recogOnce) recordOnce('error', s.id)
         if (s.exp) pushBounded(s.exp.recognition.events, { type: 'error', at: perfNow(), error: event?.error ?? 'unknown' })
         if (!isActive(s.id)) return
         logEvent(`recognition_error:${event?.error ?? 'unknown'}`, s.id)
       }
       recognition.onend = () => {
+        // 実験の recogonce：前の実行が終わった（どのセッションの handler でも）
+        if (config.recogOnce) onceRecognitionRunning = false
         if (s.exp) pushBounded(s.exp.recognition.events, { type: 'end', at: perfNow() })
+        if (config.recogOnce) recordOnce('end', s.id)
+        // 実験の recogfirst：利用者の停止で end を待っていれば、ここで待ちを解く。下の「始め直してよいか」の判定は、
+        // 止める指示の後や s.recognition を空にした後に早く戻るので、その前に置く
+        if (config.recogFirst) settleRecognitionEndWait(s, recognition)
         // 実験の legacyrecog：PR #26 の前（07f06f0）と同じく、MediaRecorder が recording なら始め直す。
         // 07f06f0 では、止める指示と MediaRecorder の stop() が同じ同期の処理の中にあったので、「recording なら」は
         // 「止める指示が出ていなければ」と同じだった。awaitclose と組み合わせると、その間に close() を待つので、
@@ -447,6 +516,14 @@ export function createAudioSession(
         // 始め直すのは、自分のセッションが有効で、画面が recording で、止める指示が出ていないときだけ
         if (!isActive(s.id) || s.stopRequested || s.recognition !== recognition || !callbacks().isRecordingStatus()) return
         if (s.exp) pushBounded(s.exp.recognition.events, { type: 'start_call', at: perfNow() })
+        if (config.recogOnce) {
+          recordOnce('start_call', s.id)
+          try {
+            recognition.start()
+            onceRecognitionRunning = true
+          } catch { /* 始め直しの失敗は捨てる */ }
+          return
+        }
         try { recognition.start() } catch { /* 始め直しの失敗は捨てる */ }
       }
       // 実験の trace：今の版にない出来事だけ、新しく listener を付ける
@@ -465,7 +542,9 @@ export function createAudioSession(
       } else {
         s.recognition = recognition
         if (s.exp) pushBounded(s.exp.recognition.events, { type: 'start_call', at: perfNow() })
+        if (config.recogOnce) recordOnce('start_call', s.id)
         recognition.start()
+        if (config.recogOnce) onceRecognitionRunning = true
       }
     } catch (e) {
       // 補助の機能の失敗。録音は続け、Backend の文字起こしだけで結果を出す
@@ -496,6 +575,7 @@ export function createAudioSession(
       stopRequested: false,
       recorderStopped: false,
       stopTimer: null,
+      recognitionEndWait: null,
       chunks: [],
       mimeType: '',
       diag: newDiagnostics(id),
@@ -507,6 +587,9 @@ export function createAudioSession(
     if (diagnostics.sessions.length > MAX_DIAGNOSTIC_SESSIONS) diagnostics.sessions.shift()
     if (expDiag && s.exp) addExperimentSession(expDiag, s.exp)
 
+    // 実験の recogearly：音声認識を getUserMedia の前に始める。録音の成立までの失敗や中断では、片付け（release）の
+    // stopRecognition で止める（recogabort があれば abort()）
+    if (config.recogEarly) startRecognition(s, speechCode)
     s.diag.getUserMedia.startedAt = now()
     logEvent('get_user_media_start', id)
     let stream: MediaStream
@@ -626,9 +709,10 @@ export function createAudioSession(
     if (!isActive(id)) return
     // 補助の機能は、録音の成立の後に開始を試みる。失敗しても録音は続ける。
     // 実験の nometer：音量の取得（AudioContext、analyser、requestAnimationFrame）を一切使わない。
-    // 実験の norecog：音声認識を一切作らない（constructor も呼ばない）
+    // 実験の norecog：音声認識を一切作らない（constructor も呼ばない）。
+    // 実験の recogearly：getUserMedia の前に始めているので、ここでは始めない（2回始めない）
     if (!config.noMeter) startLevelMeter(s, stream)
-    if (!config.noRecog) startRecognition(s, speechCode)
+    if (!config.noRecog && !config.recogEarly) startRecognition(s, speechCode)
   }
 
   // 利用者の停止。止める指示を先に記録してから、音声認識と音量の取得を止め、MediaRecorder の onstop を待つ。
@@ -644,6 +728,10 @@ export function createAudioSession(
     s.stopReason = 'user'
     s.diag.stopReason = 'user'
     logEvent('user_stop', s.id)
+    if (config.recogFirst) {
+      stopRecognitionFirst(s)
+      return
+    }
     stopRecognition(s)
     stopLevelMeter(s)
     const levelMeterClosed = releaseLevelMeter(s)
@@ -660,6 +748,107 @@ export function createAudioSession(
       return
     }
     stopRecorder(s, recorder)
+  }
+
+  // 実験の recogfirst の利用者の停止（stop の後半）。音声認識の stop()（recogabort なら abort()）を呼んだ後、
+  // end が届くのを待ってから MediaRecorder の stop() を呼ぶ。音量の取得の片付けは、今と同じく MediaRecorder の stop() の前
+  // （end を待つ前）に始める。awaitclose があれば、end の後に close() の完了も待つ。見張りのタイマーは待つ前に始める
+  const stopRecognitionFirst = (s: Session) => {
+    const recognition = s.recognition
+    const recorder = s.recorder as MediaRecorder
+    startStopWatchdog(s, now())
+    stopRecognition(s)
+    stopLevelMeter(s)
+    const levelMeterClosed = releaseLevelMeter(s)
+    const proceed = () => {
+      // 待っている間にセッションが無効になったとき（中断など）は、片付けで待ちを無効にしているので、ここには来ない。
+      // 念のため確かめ、無効なら stop() を呼ばずに終える（中断の片付けに任せる）
+      if (!isActive(s.id)) return
+      if (config.awaitClose) {
+        void levelMeterClosed.then(() => {
+          if (isActive(s.id)) stopRecorder(s, recorder)
+        })
+      } else {
+        stopRecorder(s, recorder)
+      }
+    }
+    if (!recognition) {
+      // 音声認識がない（作れなかった、start() が失敗したなど）ので、届く end がない。待たずに進む
+      if (s.exp?.recognitionEndWait) s.exp.recognitionEndWait.noRecognition = true
+      proceed()
+      return
+    }
+    // end は stop() の中ではなく、後のタスクで届く（イベントは同期で配られない）ので、同じ同期の処理の中で stop() の後に
+    // 待ちを作っても取りこぼさない
+    waitRecognitionEnd(s, recognition, proceed)
+  }
+
+  const waitRecognitionEnd = (s: Session, recognition: SpeechRecognition, proceed: () => void) => {
+    const wait: RecognitionEndWait = { recognition, sessionId: s.id, state: 'waiting', timer: null, proceed }
+    s.recognitionEndWait = wait
+    if (s.exp?.recognitionEndWait) s.exp.recognitionEndWait.waitStartedAt = perfNow()
+    wait.timer = setTimeout(() => {
+      wait.timer = null
+      // 待ちを解いたときと中断したときはタイマーを取り消しているので、waiting のままのはず（念のため確かめる）
+      if (wait.state === 'waiting') timeOutRecognitionEndWait(s, wait)
+    }, RECOGNITION_END_TIMEOUT_MS)
+  }
+
+  // 1.5 秒で見切る。見切った待ちは無効にする（後から届いた end は記録だけ）
+  const timeOutRecognitionEndWait = (s: Session, wait: RecognitionEndWait) => {
+    wait.state = 'timedout'
+    if (s.exp?.recognitionEndWait) {
+      s.exp.recognitionEndWait.recognitionEndTimedOut = true
+      s.exp.recognitionEndWait.timedOutAt = perfNow()
+    }
+    logEvent('recognition_end_timeout', s.id)
+    wait.proceed()
+  }
+
+  // 音声認識の onend から呼ぶ。自分の部品と、待ちを始めたときのセッションの番号が一致する待ちだけを解く
+  const settleRecognitionEndWait = (s: Session, recognition: SpeechRecognition) => {
+    const wait = s.recognitionEndWait
+    if (!wait || wait.recognition !== recognition || wait.sessionId !== s.id) return
+    if (wait.state === 'timedout') {
+      if (s.exp?.recognitionEndWait && s.exp.recognitionEndWait.lateEndAt === null) s.exp.recognitionEndWait.lateEndAt = perfNow()
+      return
+    }
+    if (wait.state !== 'waiting') return
+    if (wait.timer !== null) {
+      clearTimeout(wait.timer)
+      wait.timer = null
+    }
+    if (s.exp?.recognitionEndWait) s.exp.recognitionEndWait.endAt = perfNow()
+    // 実験の recogdelay：end の後、さらに 500 ミリ秒待つ
+    if (config.recogDelay) {
+      wait.state = 'delaying'
+      wait.timer = setTimeout(() => {
+        wait.timer = null
+        // 中断したときはタイマーを取り消しているので、delaying のままのはず（念のため確かめる）
+        if (wait.state === 'delaying') {
+          wait.state = 'done'
+          if (s.exp?.recognitionEndWait) s.exp.recognitionEndWait.delayEndedAt = perfNow()
+          wait.proceed()
+        }
+      }, RECOGNITION_END_DELAY_MS)
+      return
+    }
+    wait.state = 'done'
+    wait.proceed()
+  }
+
+  // 片付け（release）から呼ぶ。待っている間（waiting、delaying）なら待ちを無効にし、タイマーを取り消す
+  const cancelRecognitionEndWait = (s: Session) => {
+    const wait = s.recognitionEndWait
+    if (!wait) return
+    if (wait.timer !== null) {
+      clearTimeout(wait.timer)
+      wait.timer = null
+    }
+    if (wait.state === 'waiting' || wait.state === 'delaying') {
+      wait.state = 'cancelled'
+      if (s.exp?.recognitionEndWait) s.exp.recognitionEndWait.cancelledAt = perfNow()
+    }
   }
 
   // 利用者の停止で MediaRecorder を止め、onstop を待つ見張りのタイマーを始める（stop の後半）
@@ -700,12 +889,33 @@ export function createAudioSession(
 
   // 中断の片付け。今有効なセッションを先に無効にしてから、資源を片付ける。録音のデータは送らない
   const abort = (reason: AudioSessionAbortReason): Promise<void> => {
+    // 実験の recogonce：画面が外れるときは、セッションを片付けて部品を止めた後に、画面で1つの部品を手放す
+    if (config.recogOnce && reason === 'unmount') {
+      const closed = abortSession(reason)
+      disposeOnceRecognition()
+      return closed
+    }
+    return abortSession(reason)
+  }
+
+  const abortSession = (reason: AudioSessionAbortReason): Promise<void> => {
     const s = current
     current = null
     activeId = null
     if (!s) return Promise.resolve()
     logEvent(`abort:${reason}`, s.id)
     return teardown(s, reason)
+  }
+
+  // 実験の recogonce：画面で1つの部品を手放す。部品を start() するのは有効なセッションの中だけで、セッションの片付け
+  // （release の stopRecognition）が必ず止める（recogabort なら abort()）。画面が外れるときは、abort の中で今のセッションを
+  // 片付けた後にここを呼ぶので、部品はすでに止まっている。ここでは参照を捨てるだけにする（止めた部品をもう一度止めない）。
+  // 前の実行が終わっていないかの変数も、初期の値に戻す
+  const disposeOnceRecognition = () => {
+    if (!onceRecognition) return
+    onceRecognition = null
+    onceRecognitionRunning = false
+    if (expDiag?.recognitionOnce) expDiag.recognitionOnce.disposedAt = perfNow()
   }
 
   return {

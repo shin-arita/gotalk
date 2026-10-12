@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { ExperimentConfig } from '../experiments'
 import type { AudioDiagnostics } from '../hooks/useAudioSession'
+import type { ExperimentRecognitionOnce } from '../hooks/experimentTrace'
 
 // 切り分けの実験の診断の表示（docs/testing.md の「実験のスイッチ」）。URL に exp があるときだけ描画する。
 // 表示は「更新」を押したときだけ、そのときの診断の情報（スナップショット）を読んで変える。
@@ -139,6 +140,20 @@ function SnapshotView({ snapshot }: { snapshot: ExperimentSnapshot }) {
                   <div>
                     音声認識：{trace.recognition.events.map(e => `${e.type}${e.error ? `(${e.error})` : ''}${e.chars !== undefined ? `(${e.chars}字)` : ''}@${ms(e.at, base)}`).join(' ') || '-'}
                   </div>
+                  {trace.recognitionEndWait && (
+                    <div>
+                      {`recogfirst：待ち始め=${trace.recognitionEndWait.noRecognition ? '音声認識なし（待たない）' : ms(trace.recognitionEndWait.waitStartedAt, base)}、`
+                        + `end=${ms(trace.recognitionEndWait.endAt, base)}、`
+                        + `1.5 秒の見切り=${trace.recognitionEndWait.recognitionEndTimedOut ? `した@${ms(trace.recognitionEndWait.timedOutAt, base)}` : 'しない'}、`
+                        + `見切りの後の end=${ms(trace.recognitionEndWait.lateEndAt, base)}、`
+                        + `500ms の待ちの終わり=${ms(trace.recognitionEndWait.delayEndedAt, base)}、`
+                        + `中断=${ms(trace.recognitionEndWait.cancelledAt, base)}、`
+                        + `見張りの見切り=${session.recorder.stopTimedOut ? 'した' : 'しない'}`}
+                    </div>
+                  )}
+                  {trace.recogEarly && (
+                    <div>{`recogearly：録音の成立の前に止めた=${ms(trace.recogEarly.stoppedBeforeRecordingAt, base)}`}</div>
+                  )}
                   {trace.trackEvents.length > 0 && (
                     <div>track の出来事：{trace.trackEvents.map(e => `${e.type}#${e.track}@${ms(e.at, base)}`).join(' ')}</div>
                   )}
@@ -148,11 +163,30 @@ function SnapshotView({ snapshot }: { snapshot: ExperimentSnapshot }) {
           )
         })}
       </ol>
+      {diagnostics.experiment?.recognitionOnce && (
+        <RecognitionOnceView once={diagnostics.experiment.recognitionOnce} />
+      )}
       {diagnostics.experiment && diagnostics.experiment.pageEvents.length > 0 && (
         <p style={{ margin: '4px 0 0' }}>
           ページの出来事：{diagnostics.experiment.pageEvents.map(e => `${e.type}(${e.visibilityState}${e.persisted !== undefined ? `,persisted=${e.persisted}` : ''})`).join(' ')}
         </p>
       )}
     </div>
+  )
+}
+
+// recogonce の記録。部品は画面で1つなので、セッションごとではなく画面の単位で出す。
+// 出来事は「出来事#結び付けたセッション/そのときの有効なセッション」で、2つが一致しないものに印（不一致）を付ける
+function RecognitionOnceView({ once }: { once: ExperimentRecognitionOnce }) {
+  const mismatched = once.events.filter(e => e.boundSessionId !== e.activeSessionId)
+  return (
+    <p style={{ margin: '4px 0 0' }}>
+      {`recogonce：部品を作った回数=${once.createdCount}、手放した=${once.disposedAt === null ? 'まだ' : 'した'}、一致しない出来事=${mismatched.length}件`}
+      <br />
+      {once.events.map(e => `${e.type}#${e.boundSessionId}/${e.activeSessionId ?? '-'}${e.boundSessionId !== e.activeSessionId ? '（不一致）' : ''}`).join(' ') || '-'}
+      <br />
+      {`前の実行の end を待たずに飛ばした録音=${once.skippedPendingEnd.length}件`}
+      {once.skippedPendingEnd.length > 0 && `（${once.skippedPendingEnd.map(k => `セッション ${k.sessionId}@${ms(k.at, 0)}`).join('、')}。時刻は、ほかの行と違い、ページを開いてからの時間。recogonce の判定に使わない）`}
+    </p>
   )
 }
