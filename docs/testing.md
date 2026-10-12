@@ -190,6 +190,7 @@ Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeOb
 - 押した操作の中で（`fireEvent.click` の直後、`await` の前に）`AudioContext` を作って `resume()`（`suspended` のとき）を呼び、`decodeAudioData` はまだ呼ばないこと（II4）
 - `resume()` を待っている間に S6 または `pagehide` で止めた場合と、`arrayBuffer()` を待っている間に S6 で止めた場合に、待った後に `decodeAudioData` と `start()` を呼ばず、「開始の前」と付けて止めたことを1回だけ出すこと。待っている間にもう一度押すと、前の再生を「もう一度再生したため、開始の前」として止め、前の `decodeAudioData` が先に解決しても鳴らさず、新しい再生だけを鳴らすこと。待っている間にコンポーネントが外れると、待った後に `start()` を呼ばず、React の警告と未処理の Promise の拒否が出ないこと（II5）
 - `resume()` を待っている間に S6 で止めて `close()` した後に `resume()` が拒否されると、「resume() 失敗」と「再生しない」を出さず、「AudioContext resume() を中止（止めたため、または閉じたため）name=…」を出すこと。止めていないときに `resume()` が遅れて拒否されると、これまでどおり「resume() 失敗」を出すこと（II6）
+- `decodeAudioData` が Promise を返さず `undefined` を返す（古い実装）場合に、「decodeAudioData 失敗（結果がない。古い実装の可能性）」と track の状態を出し、`start()` を呼ばず、未処理の Promise の拒否が出ないこと。`try` の外の予期しない例外（結果の `duration` を読むと例外になる場合）も、「AudioContext 再生の処理で例外 name=…」と出し、未処理の Promise の拒否にしないこと（II7）
 - `<audio>` の再生と `AudioContext` の再生が、互いに止めないこと
 - 「AudioContext で再生」でも、Backend への `fetch` を呼ばず、`localStorage` に書かないこと
 

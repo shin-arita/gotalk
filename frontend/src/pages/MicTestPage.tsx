@@ -630,7 +630,16 @@ export default function MicTestPage() {
     return { context, resumed }
   }
 
+  // ボタンから呼ぶ。中のどの例外も、未処理の Promise の拒否にしない
   const handleContextPlay = async () => {
+    try {
+      await playWithContext()
+    } catch (e) {
+      addLog(`AudioContext 再生の処理で例外 name=${errorName(e)}`)
+    }
+  }
+
+  const playWithContext = async () => {
     const recording = lastRecordingRef.current
     if (!recording) return
     stopContextPlayback('もう一度再生したため')
@@ -672,7 +681,7 @@ export default function MicTestPage() {
       return
     }
     if (playback.stopReason !== null) return
-    let buffer: AudioBuffer
+    let buffer: AudioBuffer | undefined
     try {
       buffer = await context.decodeAudioData(data)
     } catch (e) {
@@ -681,6 +690,11 @@ export default function MicTestPage() {
       return
     }
     if (playback.stopReason !== null) return
+    // Promise を返さない古い実装（callback 形式だけの webkitAudioContext）では、結果がない
+    if (!buffer || typeof buffer.duration !== 'number') {
+      fail('decodeAudioData 失敗（結果がない。古い実装の可能性）')
+      return
+    }
     addLog(`AudioContext decodeAudioData 成功 長さ=${buffer.duration.toFixed(2)}秒`)
     try {
       const source = context.createBufferSource()

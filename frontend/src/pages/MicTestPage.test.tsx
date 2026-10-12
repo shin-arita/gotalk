@@ -218,6 +218,10 @@ interface AudioContextMockOptions {
   decodeFails?: boolean
   // decodeAudioData を待たせ、テストの中で resolveDecode() を呼んで成功させる
   deferDecode?: boolean
+  // Promise を返さない古い実装の decodeAudioData（callback を渡さないと undefined を返す）
+  decodeReturnsUndefined?: boolean
+  // decodeAudioData が解決する値（既定は { duration: 1.5 }）
+  decodeResult?: unknown
   // baseLatency がないブラウザ
   noBaseLatency?: boolean
   // resume() を待たせ、テストの中で resolveResume() か rejectResume() を呼んで決める
@@ -253,8 +257,9 @@ function setupAudioContextMock(options: AudioContextMockOptions = {}) {
       }),
       close: vi.fn(async () => { setContextState(context, 'closed') }),
       decodeAudioData: vi.fn(() => {
+        if (options.decodeReturnsUndefined) return undefined
         if (options.decodeFails) return Promise.reject(new DOMException('bad data', 'EncodingError'))
-        const buffer = { duration: 1.5 }
+        const buffer = 'decodeResult' in options ? options.decodeResult : { duration: 1.5 }
         if (!options.deferDecode) return Promise.resolve(buffer)
         return new Promise(resolve => { pendingDecodes.push(() => resolve(buffer)) })
       }),
@@ -1616,6 +1621,35 @@ describe('MicTestPage: AudioContext で再生', () => {
     await record()
     await clickContextPlay()
     expect(logText()).toMatch(/AudioContext decodeAudioData 失敗 name=EncodingError type=audio\/mp4（S2 1回目の録音/)
+  })
+
+  it('II7: decodeAudioData が結果を返さない（古い実装）場合は、失敗と出して start() を呼ばず、未処理の拒否にしない', async () => {
+    const rejections = watchUnhandledRejections()
+    setupAudioContextMock({ decodeReturnsUndefined: true })
+    await record()
+    await clickContextPlay()
+    await rejections.settle()
+
+    const text = logText()
+    expect(audioContexts[0].decodeAudioData).toHaveBeenCalledTimes(1)
+    expect(text).toMatch(/AudioContext decodeAudioData 失敗（結果がない。古い実装の可能性）（S2 1回目の録音/)
+    expect(text).toContain('（AudioContext 再生の失敗）')
+    expect(text).not.toContain('AudioContext 再生の処理で例外')
+    expect(sources).toHaveLength(0)
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('II7: try の外の予期しない例外も、ログに出して未処理の拒否にしない', async () => {
+    const rejections = watchUnhandledRejections()
+    // decodeAudioData の結果の duration を読むと例外になる（try の外で読む場所）
+    const broken = Object.defineProperty({}, 'duration', { get: () => { throw new TypeError('broken') } })
+    setupAudioContextMock({ decodeResult: broken })
+    await record()
+    await clickContextPlay()
+    await rejections.settle()
+    expect(logText()).toContain('AudioContext 再生の処理で例外 name=TypeError')
+    expect(sources).toHaveLength(0)
+    expect(rejections.handler).not.toHaveBeenCalled()
   })
 
   it('resume() の失敗を name を付けてログに出し、再生せず、未処理の拒否にしない', async () => {
