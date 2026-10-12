@@ -52,10 +52,33 @@ function countListeners(stream: FakeStream) {
   return counts
 }
 
-function setup(config: ExperimentConfig, options: { recorder?: Parameters<typeof setupMediaRecorder>[0] } = {}) {
+// 音声認識の代わりを、本物に近づける：動いている間（start() の成功から onend まで）に start() を呼ぶと InvalidStateError。
+// onend は、テストが部品の今の handler（recognition.onend）を呼ぶと、動いていない状態にしてから handler に配る
+function makeRecognitionStrict(recognitions: ReturnType<typeof setupSpeechRecognition>) {
+  const original = recognitions.Ctor.getMockImplementation()!
+  recognitions.Ctor.mockImplementation(function () {
+    const r = original()
+    let running = false
+    let handler: (() => void) | null = null
+    r.start.mockImplementation(() => {
+      if (running) throw new DOMException('recognition has already started', 'InvalidStateError')
+      running = true
+    })
+    Object.defineProperty(r, 'onend', {
+      enumerable: true,
+      configurable: true,
+      get: () => (handler ? () => { running = false; handler!() } : null),
+      set: (value: (() => void) | null) => { handler = value },
+    })
+    return r
+  })
+}
+
+function setup(config: ExperimentConfig, options: { recorder?: Parameters<typeof setupMediaRecorder>[0]; strictRecognition?: boolean } = {}) {
   const gum = setupDeferredGetUserMedia()
   const recorders = setupMediaRecorder(options.recorder)
   const recognitions = setupSpeechRecognition()
+  if (options.strictRecognition) makeRecognitionStrict(recognitions)
   const contexts = setupAudioContext()
   const frames = setupAnimationFrame()
   const callbacks = makeCallbacks()
@@ -452,10 +475,14 @@ describe('experiment: recogearly', () => {
 })
 
 describe('experiment: recogonce', () => {
-  async function twoRecordings(exp: string) {
-    const env = setup(readExperimentConfig(exp))
+  const strict = { strictRecognition: true }
+
+  // 1回目を録音して止める。end（部品の今の handler に配る）を届けるかは選ぶ
+  async function twoRecordings(exp: string, options: { end?: boolean } = { end: true }) {
+    const env = setup(readExperimentConfig(exp), strict)
     await record(env, 0)
     env.session.stop()
+    if (options.end) env.recognitions.instances[0].onend?.()
     env.recorders.instances[0].onstop?.()
     await flush()
     return env
@@ -474,11 +501,12 @@ describe('experiment: recogonce', () => {
     expect(recognition.stop).toHaveBeenCalledTimes(2)
     const once = env.session.getDiagnostics().experiment!.recognitionOnce!
     expect(once.createdCount).toBe(1)
-    expect(once.events.map(e => [e.type, e.boundSessionId, e.activeSessionId])).toEqual([['start_call', 1, 1], ['start_call', 2, 2], ['result', 2, 2]])
+    expect(once.events.map(e => [e.type, e.boundSessionId, e.activeSessionId])).toEqual([['start_call', 1, 1], ['end', 1, 1], ['start_call', 2, 2], ['result', 2, 2]])
+    expect(once.skippedPendingEnd).toEqual([])
   })
 
   it('does not let the events of the old session act on the new session', async () => {
-    const env = await twoRecordings('?exp=recogonce')
+    const env = await twoRecordings('?exp=recogonce', { end: false })
     const recognition = env.recognitions.instances[0]
     // 2回目の getUserMedia を待っている間（音声認識を2回目に start() する前）に、1回目の出来事が届く
     const started = env.session.start('ja-JP')
@@ -495,26 +523,116 @@ describe('experiment: recogonce', () => {
     expect(recognition.start).toHaveBeenCalledTimes(2)
   })
 
-  it('does not settle the recogfirst wait of the new session with the end bound to the old session', async () => {
-    const env = setup(readExperimentConfig('?exp=recogonce,recogfirst'))
-    await record(env, 0)
+  it('skips the recognition of the next recording while the end of the previous run is pending', async () => {
+    const env = await twoRecordings('?exp=recogonce', { end: false })
     const recognition = env.recognitions.instances[0]
-    const oldOnEnd = recognition.onend!
+    const firstOnResult = recognition.onresult
+    await record(env, 1)
+    // 2回目は start() も handler の付け替えもしない
+    expect(recognition.start).toHaveBeenCalledTimes(1)
+    expect(recognition.onresult).toBe(firstOnResult)
+    expect(env.callbacks.onRecordingStarted).toHaveBeenCalledTimes(2)
+    // 前の実行の遅れた出来事は、部品の今の handler（1回目のもの）で配られ、2回目には作用しない
+    recognition.onresult?.({ results: [[{ transcript: 'OLD TEXT FROM SESSION 1' }]] })
+    recognition.onerror?.({ error: 'aborted' })
+    recognition.onend?.()
+    expect(env.callbacks.onTranscript).not.toHaveBeenCalled()
+    expect(recognition.start).toHaveBeenCalledTimes(1)
+    const diagnostics = env.session.getDiagnostics()
+    expect(diagnostics.events.map(e => e.type)).toContain('recognition_once_previous_end_pending')
+    expect(diagnostics.events.map(e => e.type)).not.toContain('recognition_error:aborted')
+    expect(diagnostics.sessions[1].recognition).toEqual({ hadResult: false, chars: 0 })
+    const once = diagnostics.experiment!.recognitionOnce!
+    expect(once.skippedPendingEnd).toEqual([{ sessionId: 2, at: expect.any(Number) }])
+    expect(once.events.map(e => [e.type, e.boundSessionId, e.activeSessionId])).toEqual([['start_call', 1, 1], ['result', 1, 2], ['error', 1, 2], ['end', 1, 2]])
+    // 2回目の利用者の停止は、音声認識なしで今と同じ
     env.session.stop()
-    oldOnEnd()
-    env.recorders.instances[0].onstop?.()
+    expect(env.recorders.instances[1].stop).toHaveBeenCalledTimes(1)
+    expect(recognition.stop).toHaveBeenCalledTimes(1)
+    env.recorders.instances[1].onstop?.()
+    // 前の実行の end が届いた後の3回目は、同じ部品の start() で普段どおり動く
+    await record(env, 2)
+    expect(env.recognitions.Ctor).toHaveBeenCalledTimes(1)
+    expect(recognition.start).toHaveBeenCalledTimes(2)
+    recognition.onresult?.({ results: [[{ transcript: 'third' }]] })
+    expect(env.callbacks.onTranscript).toHaveBeenCalledWith('third')
+    expect(env.callbacks.onTranscript).toHaveBeenCalledTimes(1)
+    expect(env.session.getDiagnostics().experiment!.recognitionOnce!.skippedPendingEnd).toHaveLength(1)
+  })
+
+  it('keeps skipping while the end of the previous run never comes', async () => {
+    const env = await twoRecordings('?exp=recogonce', { end: false })
     await record(env, 1)
     env.session.stop()
-    // 1回目のセッションに結び付けた handler に届いた end
-    oldOnEnd()
+    env.recorders.instances[1].onstop?.()
+    await record(env, 2)
+    expect(env.recognitions.instances[0].start).toHaveBeenCalledTimes(1)
+    expect(env.session.getDiagnostics().experiment!.recognitionOnce!.skippedPendingEnd.map(k => k.sessionId)).toEqual([2, 3])
+  })
+
+  it('does not settle the recogfirst wait of the next recording with the end of the previous run', async () => {
+    const env = setup(readExperimentConfig('?exp=recogonce,recogfirst'), strict)
+    await record(env, 0)
+    const recognition = env.recognitions.instances[0]
+    env.session.stop()
+    // 1回目は end を待っている（1.5 秒の見切りの前）間に中断する
+    expect(env.recorders.instances[0].stop).not.toHaveBeenCalled()
+    await env.session.abort('hidden')
+    await record(env, 1)
+    expect(recognition.start).toHaveBeenCalledTimes(1)
+    env.session.stop()
+    // 2回目は音声認識がないので待たない（noRecognition）
+    expect(env.recorders.instances[1].stop).toHaveBeenCalledTimes(1)
+    const wait = env.session.getDiagnostics().experiment!.sessions[1].recognitionEndWait!
+    expect(wait.noRecognition).toBe(true)
+    expect(wait.waitStartedAt).toBeNull()
+    // 前の実行の end（部品の今の handler に配る）は、2回目に作用しない
+    recognition.onend?.()
+    expect(env.recorders.instances[1].stop).toHaveBeenCalledTimes(1)
+    expect(wait.endAt).toBeNull()
+    expect(env.session.getDiagnostics().experiment!.sessions[1].recognitionEndWait!.endAt).toBeNull()
+  })
+
+  it('waits for the end of the next recording with recogfirst after the previous end came', async () => {
+    const env = setup(readExperimentConfig('?exp=recogonce,recogfirst'), strict)
+    await record(env, 0)
+    const recognition = env.recognitions.instances[0]
+    env.session.stop()
+    recognition.onend?.()
+    env.recorders.instances[0].onstop?.()
+    await record(env, 1)
+    expect(recognition.start).toHaveBeenCalledTimes(2)
+    env.session.stop()
     await flush()
     expect(env.recorders.instances[1].stop).not.toHaveBeenCalled()
     recognition.onend?.()
     expect(env.recorders.instances[1].stop).toHaveBeenCalledTimes(1)
   })
 
+  it('restarts during the recording and keeps the run pending until its end', async () => {
+    const env = setup(readExperimentConfig('?exp=recogonce'), strict)
+    await record(env, 0)
+    const recognition = env.recognitions.instances[0]
+    recognition.onend?.()
+    expect(recognition.start).toHaveBeenCalledTimes(2)
+    env.session.stop()
+    env.recorders.instances[0].onstop?.()
+    await record(env, 1)
+    expect(recognition.start).toHaveBeenCalledTimes(2)
+    expect(env.session.getDiagnostics().experiment!.recognitionOnce!.skippedPendingEnd.map(k => k.sessionId)).toEqual([2])
+  })
+
+  it('resets the pending run when the recognition is released on unmount', async () => {
+    const env = await twoRecordings('?exp=recogonce', { end: false })
+    await env.session.abort('unmount')
+    await record(env, 1)
+    expect(env.recognitions.Ctor).toHaveBeenCalledTimes(2)
+    expect(env.recognitions.instances[1].start).toHaveBeenCalledTimes(1)
+    expect(env.session.getDiagnostics().experiment!.recognitionOnce!.skippedPendingEnd).toEqual([])
+  })
+
   it('stops the recognition on unmount while recording, once', async () => {
-    const env = setup(readExperimentConfig('?exp=recogonce'))
+    const env = setup(readExperimentConfig('?exp=recogonce'), strict)
     await record(env, 0)
     await env.session.abort('unmount')
     await env.session.abort('unmount')
@@ -523,7 +641,7 @@ describe('experiment: recogonce', () => {
   })
 
   it('stops the restarted recognition on unmount with abort() (recogabort), once, and releases it', async () => {
-    const env = setup(readExperimentConfig('?exp=recogonce,recogabort'))
+    const env = setup(readExperimentConfig('?exp=recogonce,recogabort'), strict)
     await record(env, 0)
     const recognition = env.recognitions.instances[0]
     // 録音の途中で始め直した後
@@ -544,9 +662,10 @@ describe('experiment: recogonce', () => {
   })
 
   it('keeps the recognition on abort other than unmount', async () => {
-    const env = setup(readExperimentConfig('?exp=recogonce'))
+    const env = setup(readExperimentConfig('?exp=recogonce'), strict)
     await record(env, 0)
     await env.session.abort('hidden')
+    env.recognitions.instances[0].onend?.()
     await record(env, 1)
     expect(env.recognitions.Ctor).toHaveBeenCalledTimes(1)
     expect(env.recognitions.instances[0].start).toHaveBeenCalledTimes(2)
@@ -568,6 +687,17 @@ describe('the new switches without trace', () => {
 describe('the new switches without the diagnostics', () => {
   // URL からは作れない組み合わせ（enabled が false のままスイッチだけが true）。記録がなくても動きが変わらないこと
   const crafted = (overrides: Partial<ExperimentConfig>): ExperimentConfig => ({ ...DEFAULT_EXPERIMENT_CONFIG, ...overrides })
+
+  it('skips the recognition with recogonce while the previous end is pending, without recording anything', async () => {
+    const env = setup(crafted({ recogOnce: true }), { strictRecognition: true })
+    await record(env, 0)
+    env.session.stop()
+    env.recorders.instances[0].onstop?.()
+    await record(env, 1)
+    expect(env.recognitions.instances[0].start).toHaveBeenCalledTimes(1)
+    expect(env.session.getDiagnostics().events.map(e => e.type)).toContain('recognition_once_previous_end_pending')
+    expect(env.session.getDiagnostics().experiment).toBeUndefined()
+  })
 
   it('waits for the end, aborts, and delays without recording anything', async () => {
     vi.useFakeTimers()

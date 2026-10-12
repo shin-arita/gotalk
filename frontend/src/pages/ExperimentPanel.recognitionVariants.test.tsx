@@ -96,6 +96,17 @@ describe('ExperimentPanel: the second experiment', () => {
     })
     expect(view).toHaveTextContent('recogonce：部品を作った回数=1、手放した=まだ、一致しない出来事=2件')
     expect(view).toHaveTextContent('start_call#1/1 end#1/-（不一致） result#1/2（不一致）')
+    expect(view).toHaveTextContent('前の実行の end を待たずに飛ばした録音=0件')
+    expect(view).not.toHaveTextContent('recogonce の判定に使わない')
+  })
+
+  it('shows the recordings skipped because the end of the previous run was pending', async () => {
+    const view = await show('?exp=recogonce', (experiment) => {
+      experiment.recognitionOnce!.createdCount = 1
+      experiment.recognitionOnce!.skippedPendingEnd.push({ sessionId: 2, at: 1234.4 }, { sessionId: 3, at: 5678.6 })
+      return []
+    })
+    expect(view).toHaveTextContent('前の実行の end を待たずに飛ばした録音=2件（セッション 2@1234ms、セッション 3@5679ms。recogonce の判定に使わない）')
   })
 
   it('shows the recogonce record without events after the release', async () => {
