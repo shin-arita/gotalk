@@ -193,6 +193,8 @@ interface MockSource {
 
 interface MockAudioContext {
   state: string
+  sampleRate: number
+  baseLatency?: number
   onstatechange: (() => void) | null
   destination: object
   resume: ReturnType<typeof vi.fn>
@@ -216,6 +218,8 @@ interface AudioContextMockOptions {
   decodeFails?: boolean
   // decodeAudioData を待たせ、テストの中で resolveDecode() を呼んで成功させる
   deferDecode?: boolean
+  // baseLatency がないブラウザ
+  noBaseLatency?: boolean
 }
 
 function setupAudioContextMock(options: AudioContextMockOptions = {}) {
@@ -223,6 +227,8 @@ function setupAudioContextMock(options: AudioContextMockOptions = {}) {
   const Ctor = vi.fn(function () {
     const context: MockAudioContext = {
       state: options.initialState ?? 'running',
+      sampleRate: 48000,
+      ...(options.noBaseLatency ? {} : { baseLatency: 0.005 }),
       onstatechange: null,
       destination: {},
       resume: vi.fn(async () => {
@@ -1499,7 +1505,7 @@ describe('MicTestPage: AudioContext で再生', () => {
     expect(play).not.toHaveBeenCalled()
 
     const text = logText()
-    expect(text).toContain('AudioContext 作成 state=running')
+    expect(text).toContain('AudioContext 作成 state=running sampleRate=48000 baseLatency=0.0050秒')
     expect(text).toContain('AudioContext decodeAudioData 成功 長さ=1.50秒')
     expect(text).toContain('track[0] readyState=live enabled=false muted=false（AudioContext 再生の前）')
     expect(text).toMatch(/AudioContext 再生の開始 state=running（S2 1回目の録音、5バイト、/)
@@ -1565,13 +1571,31 @@ describe('MicTestPage: AudioContext で再生', () => {
     await rejections.settle()
 
     const text = logText()
-    expect(text).toMatch(/AudioContext decodeAudioData 失敗 name=EncodingError（S2 1回目の録音/)
+    expect(text).toMatch(/AudioContext decodeAudioData 失敗 name=EncodingError type=（空）（S2 1回目の録音/)
     expect(text).toContain('（AudioContext 再生の失敗）')
     expect(sources).toHaveLength(0)
     expect(rejections.handler).not.toHaveBeenCalled()
     // 失敗した後に録音を捨てても、「再生を止めた」を出さない
     await click('S6 すべて閉じる')
     expect(logText()).not.toContain('再生を止めた')
+  })
+
+  it('II3: baseLatency がないブラウザでは、作成のログに sampleRate だけを出す', async () => {
+    setupAudioContextMock({ noBaseLatency: true })
+    await record()
+    await clickContextPlay()
+    const text = logText()
+    expect(text).toContain('AudioContext 作成 state=running sampleRate=48000')
+    expect(text).not.toContain('baseLatency')
+  })
+
+  it('II3: decodeAudioData の失敗のログに、録音の Blob の type を出す', async () => {
+    setupMediaRecorderMock()
+    ;(MediaRecorder.isTypeSupported as ReturnType<typeof vi.fn>).mockImplementation((t: string) => t === 'audio/mp4')
+    setupAudioContextMock({ decodeFails: true })
+    await record()
+    await clickContextPlay()
+    expect(logText()).toMatch(/AudioContext decodeAudioData 失敗 name=EncodingError type=audio\/mp4（S2 1回目の録音/)
   })
 
   it('resume() の失敗を name を付けてログに出し、再生せず、未処理の拒否にしない', async () => {

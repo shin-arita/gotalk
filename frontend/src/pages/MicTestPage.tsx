@@ -611,7 +611,9 @@ export default function MicTestPage() {
       const created = context
       created.onstatechange = () => addLog(`AudioContext state=${created.state}（変化）`)
       audioContextRef.current = created
-      addLog(`AudioContext 作成 state=${created.state}`)
+      // baseLatency は対応していないブラウザがあるため、あるときだけ出す
+      const latency = typeof created.baseLatency === 'number' ? ` baseLatency=${created.baseLatency.toFixed(4)}秒` : ''
+      addLog(`AudioContext 作成 state=${created.state} sampleRate=${created.sampleRate}${latency}`)
     }
     // iPhone では、ほかの音声で中断されると interrupted になる
     const state = context.state as string
@@ -671,7 +673,8 @@ export default function MicTestPage() {
     try {
       buffer = await context.decodeAudioData(data)
     } catch (e) {
-      fail(`decodeAudioData 失敗 name=${errorName(e)}`)
+      // 録音の形式（MediaRecorder の mimeType）で変換できないことがあるため、Blob の type を出す
+      fail(`decodeAudioData 失敗 name=${errorName(e)} type=${recording.blob.type || '（空）'}`)
       return
     }
     if (playback.stopReason !== null) return

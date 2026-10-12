@@ -183,7 +183,8 @@ Frontend の TTS テストでは `Audio`、`URL.createObjectURL`、`URL.revokeOb
 - 「AudioContext で再生」のボタンは、録音がないとき、テストが動いている間、開始を待っている間は押せないこと
 - 「AudioContext で再生」を押すと、録音の `Blob` の `ArrayBuffer` で `decodeAudioData` を呼び、`AudioBufferSourceNode` を `destination` につないで `start()` を呼び、`decodeAudioData` の成功（長さの秒数）、再生の前の track の状態、再生の開始をログに出すこと。`<audio>` の `play()` を呼ばないこと。`onended` で、再生の終わりと track の状態をログに出すこと
 - `AudioContext` は2回押しても1つだけ作ること。`suspended` のときは `resume()` を呼び、`interrupted` になった後に押したときも `resume()` を呼ぶこと。`running` のときは `resume()` を呼ばないこと。`state` の変化（`running`、`interrupted`、`closed`）をログに出すこと
-- `decodeAudioData` の失敗（`EncodingError`）と `resume()` の失敗（`NotAllowedError`）を、`name` を付けてログに出し、`resume()` に失敗したときは `decodeAudioData` を呼ばず、未処理の Promise の拒否が出ないこと。`decodeAudioData` に失敗した後に録音を捨てても、「再生を止めた」を出さないこと。`AudioContext` がないブラウザでは、対応していないとログに出すこと
+- `AudioContext` の作成のログに `sampleRate` と `baseLatency` を出し、`baseLatency` がないブラウザでは `sampleRate` だけを出すこと（II3）
+- `decodeAudioData` の失敗（`EncodingError`）と `resume()` の失敗（`NotAllowedError`）を、`name` を付けてログに出し（`decodeAudioData` の失敗には録音の `Blob` の `type` も出し、空なら「（空）」、`audio/mp4` ならそのまま出すこと）、`resume()` に失敗したときは `decodeAudioData` を呼ばず、未処理の Promise の拒否が出ないこと。`decodeAudioData` に失敗した後に録音を捨てても、「再生を止めた」を出さないこと。`AudioContext` がないブラウザでは、対応していないとログに出すこと
 - 再生している間に、次の録音の開始、S6、`pagehide`、もう一度押したとき、コンポーネントが外れたときに、`AudioBufferSourceNode` の `stop()` を呼び、「AudioContext 再生を止めた（理由）」と止めた後の track の状態を1回だけ出すこと（コンポーネントが外れたときは、`stop()` と `close()` を呼ぶことと、React の警告が出ないことを確かめます）。`stop()` の後に届く `onended` で「再生の終わり」を出さないこと。`decodeAudioData` を待っている間に S6 を押すと、「開始の前」と付けて止めたことを出し、待った後に再生しないこと
 - S6、`pagehide`、コンポーネントが外れたときに `AudioContext` の `close()` を呼び、`close()` したことと `closed` への変化をログに出すこと（コンポーネントが外れたときは、画面のログを読めないため、`close()` を呼ぶことだけを確かめます）。次の録音の開始では `close()` を呼ばずに使い回し、S6 の後に押すと新しく作ること。`AudioContext` を作っていなければ、S6 で `AudioContext` のログを出さないこと
 - `<audio>` の再生と `AudioContext` の再生が、互いに止めないこと
