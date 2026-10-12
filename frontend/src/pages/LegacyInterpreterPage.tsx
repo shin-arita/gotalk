@@ -719,7 +719,9 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
 
       {experiment.enabled && <ExperimentPanel
         config={experiment}
-        busy={status === 'recording'}
+        // 録音の確定（onstop と翻訳の結果）の前に押せないよう、processing の間も押せなくする（LL1）。
+        // processing への変化は 07f06f0 にもともとある再描画なので、新しい state や再描画は足さない
+        busy={status === 'recording' || status === 'processing'}
         read={() => ({
           kind: 'legacy',
           takenAt: new Date().toISOString(),

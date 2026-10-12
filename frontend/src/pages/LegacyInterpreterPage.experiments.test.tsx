@@ -128,6 +128,28 @@ describe('LegacyInterpreterPage with exp=legacy', () => {
     expect(screen.getByRole('button', { name: 'コピー' })).toBeDisabled()
   })
 
+  it('disables the buttons until onstop and the translation result arrive after the stop (LL1)', async () => {
+    renderLegacy(readExperimentConfig('?exp=legacy'))
+    const refresh = () => screen.getByRole('button', { name: '更新' })
+    const copy = () => screen.getByRole('button', { name: 'コピー' })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' })) })
+    await act(async () => { await gum.calls[0].resolve() })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' })) })
+    // processing（stop() の後、ondataavailable と onstop の前）は押せない
+    expect(recorders.instances[0].stop).toHaveBeenCalledTimes(1)
+    expect(refresh()).toBeDisabled()
+    expect(copy()).toBeDisabled()
+    await act(async () => {
+      recorders.instances[0].ondataavailable?.({ data: new Blob(['abc']) })
+      recorders.instances[0].onstop?.()
+    })
+    await act(async () => { await Promise.resolve() })
+    // 翻訳の結果が出た後（ready）は押せる
+    expect(document.querySelector('.translation-card__text')).toHaveTextContent('こんにちは')
+    expect(refresh()).toBeEnabled()
+    expect(copy()).toBeEnabled()
+  })
+
   it('does not use useAudioSession', async () => {
     renderLegacy(readExperimentConfig('?exp=legacy'))
     await recordOnce(0, ['ab'])
