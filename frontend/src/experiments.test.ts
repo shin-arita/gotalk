@@ -50,11 +50,16 @@ describe('resolveExperimentConfig', () => {
     ['noendedlistener', 'noEndedListener'],
     ['nolifecycle', 'noLifecycle'],
     ['trace', 'trace'],
+    ['recogfirst', 'recogFirst'],
+    ['recogabort', 'recogAbort'],
+    ['recogearly', 'recogEarly'],
+    ['recogonce', 'recogOnce'],
   ] as const)('turns on %s alone', (name, key) => {
     const config = readExperimentConfig(`?exp=${name}`)
     expect(config.effective).toEqual([name])
     expect(config[key]).toBe(true)
-    const others = (['legacy', 'noRecog', 'legacyRecog', 'noMeter', 'noDisconnect', 'awaitClose', 'noTrackRead', 'noEndedListener', 'noLifecycle', 'trace'] as const)
+    const others = (['legacy', 'noRecog', 'legacyRecog', 'noMeter', 'noDisconnect', 'awaitClose', 'noTrackRead', 'noEndedListener', 'noLifecycle', 'trace',
+      'recogFirst', 'recogAbort', 'recogDelay', 'recogEarly', 'recogOnce'] as const)
       .filter(k => k !== key)
     others.forEach(k => expect(config[k]).toBe(false))
   })
@@ -107,5 +112,67 @@ describe('resolveExperimentConfig', () => {
 
   it('keeps the parsed value as it is when resolving a disabled query', () => {
     expect(resolveExperimentConfig({ enabled: false, raw: null, names: [] })).toBe(DEFAULT_EXPERIMENT_CONFIG)
+  })
+
+  it('makes recogdelay inactive without recogfirst', () => {
+    const config = readExperimentConfig('?exp=recogdelay')
+    expect(config.effective).toEqual([])
+    expect(config.recogDelay).toBe(false)
+    expect(config.inactive).toEqual([{ name: 'recogdelay', reason: 'recogfirst と一緒のときだけ効く' }])
+    expect(readExperimentConfig('?exp=recogdelay,recogabort').inactive).toEqual([{ name: 'recogdelay', reason: 'recogfirst と一緒のときだけ効く' }])
+  })
+
+  it('uses recogdelay with recogfirst', () => {
+    const config = readExperimentConfig('?exp=recogdelay,recogfirst')
+    expect(config.effective).toEqual(['recogdelay', 'recogfirst'])
+    expect(config.recogDelay).toBe(true)
+    expect(config.recogFirst).toBe(true)
+    expect(config.inactive).toEqual([])
+  })
+
+  it('prefers norecog over all the recognition switches', () => {
+    const config = readExperimentConfig('?exp=recogfirst,recogabort,recogdelay,recogearly,recogonce,legacyrecog,norecog,nometer')
+    expect(config.effective).toEqual(['norecog', 'nometer'])
+    ;(['recogFirst', 'recogAbort', 'recogDelay', 'recogEarly', 'recogOnce', 'legacyRecog'] as const).forEach(k => expect(config[k]).toBe(false))
+    expect(config.inactive).toEqual(['recogfirst', 'recogabort', 'recogdelay', 'recogearly', 'recogonce', 'legacyrecog'].map(name => ({ name, reason: 'norecog が優先' })))
+  })
+
+  it('uses recogfirst and recogabort together', () => {
+    const config = readExperimentConfig('?exp=recogfirst,recogabort')
+    expect(config.effective).toEqual(['recogfirst', 'recogabort'])
+    expect(config.recogFirst && config.recogAbort).toBe(true)
+    expect(config.inactive).toEqual([])
+  })
+
+  it('uses recogfirst and awaitclose together, but nometer still turns awaitclose off', () => {
+    const config = readExperimentConfig('?exp=recogfirst,awaitclose')
+    expect(config.effective).toEqual(['recogfirst', 'awaitclose'])
+    expect(config.recogFirst && config.awaitClose).toBe(true)
+    const withMeterOff = readExperimentConfig('?exp=recogfirst,awaitclose,nometer')
+    expect(withMeterOff.effective).toEqual(['recogfirst', 'nometer'])
+    expect(withMeterOff.inactive).toEqual([{ name: 'awaitclose', reason: 'nometer が優先' }])
+  })
+
+  it('uses legacy alone and makes the new switches inactive', () => {
+    const config = readExperimentConfig('?exp=legacy,recogfirst,recogabort,recogdelay,recogearly,recogonce')
+    expect(config.effective).toEqual(['legacy'])
+    ;(['recogFirst', 'recogAbort', 'recogDelay', 'recogEarly', 'recogOnce'] as const).forEach(k => expect(config[k]).toBe(false))
+    expect(config.inactive.map(i => i.name)).toEqual(['recogfirst', 'recogabort', 'recogdelay', 'recogearly', 'recogonce'])
+    expect(config.inactive.every(i => i.reason === 'legacy と組み合わせない')).toBe(true)
+  })
+
+  it('prefers recogfirst, recogabort, recogearly and recogonce over legacyrecog', () => {
+    const config = readExperimentConfig('?exp=legacyrecog,recogonce,recogfirst')
+    expect(config.effective).toEqual(['recogonce', 'recogfirst'])
+    expect(config.legacyRecog).toBe(false)
+    expect(config.inactive).toEqual([{ name: 'legacyrecog', reason: 'recogfirst、recogonce が優先' }])
+    expect(readExperimentConfig('?exp=legacyrecog,recogabort').inactive).toEqual([{ name: 'legacyrecog', reason: 'recogabort が優先' }])
+    expect(readExperimentConfig('?exp=legacyrecog,recogearly').inactive).toEqual([{ name: 'legacyrecog', reason: 'recogearly が優先' }])
+  })
+
+  it('keeps legacyrecog with recogdelay alone (recogdelay is inactive)', () => {
+    const config = readExperimentConfig('?exp=legacyrecog,recogdelay')
+    expect(config.effective).toEqual(['legacyrecog'])
+    expect(config.inactive).toEqual([{ name: 'recogdelay', reason: 'recogfirst と一緒のときだけ効く' }])
   })
 })

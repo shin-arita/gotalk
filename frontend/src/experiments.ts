@@ -14,6 +14,11 @@ export const EXPERIMENT_NAMES = [
   'noendedlistener',
   'nolifecycle',
   'trace',
+  'recogfirst',
+  'recogabort',
+  'recogdelay',
+  'recogearly',
+  'recogonce',
 ] as const
 
 export type ExperimentName = typeof EXPERIMENT_NAMES[number]
@@ -46,6 +51,12 @@ export interface ExperimentConfig {
   noEndedListener: boolean
   noLifecycle: boolean
   trace: boolean
+  // 2回目の実験（音声認識を残したまま、録音を壊さない終わり方と始め方）
+  recogFirst: boolean
+  recogAbort: boolean
+  recogDelay: boolean
+  recogEarly: boolean
+  recogOnce: boolean
 }
 
 // exp がないときの値。すべてのスイッチが false で、今の本番と同じ動き
@@ -66,6 +77,11 @@ export const DEFAULT_EXPERIMENT_CONFIG: ExperimentConfig = Object.freeze({
   noEndedListener: false,
   noLifecycle: false,
   trace: false,
+  recogFirst: false,
+  recogAbort: false,
+  recogDelay: false,
+  recogEarly: false,
+  recogOnce: false,
 }) as ExperimentConfig
 
 export interface ParsedExperimentQuery {
@@ -85,13 +101,21 @@ export function parseExperimentQuery(search: string): ParsedExperimentQuery {
   return { enabled: true, raw, names }
 }
 
+// 音声認識を使うスイッチ（norecog と組み合わせると意味がなくなる）
+const RECOGNITION_SWITCHES: readonly ExperimentName[] = ['legacyrecog', 'recogfirst', 'recogabort', 'recogdelay', 'recogearly', 'recogonce']
+// 今の版の音声認識の扱いを変える2回目の実験のスイッチ（legacyrecog より優先）
+const RECOGNITION_VARIANTS: readonly ExperimentName[] = ['recogfirst', 'recogabort', 'recogearly', 'recogonce']
+
 const isExperimentName = (name: string): name is ExperimentName => (EXPERIMENT_NAMES as readonly string[]).includes(name)
 
 // 名前の一覧から、組み合わせを解いた ExperimentConfig を作る
 // - legacy は単独。ほかの名前（trace も）は inactive
-// - norecog は legacyrecog より優先
 // - nometer は nodisconnect と awaitclose より優先
 // - nodisconnect と awaitclose は組み合わせて使える
+// - norecog は、音声認識を使うスイッチ（legacyrecog、recogfirst、recogabort、recogdelay、recogearly、recogonce）より優先
+// - recogdelay は recogfirst と一緒のときだけ効く
+// - recogfirst、recogabort、recogearly、recogonce は、legacyrecog より優先（今の版の音声認識の扱いを変えて調べるため）
+// - recogfirst と recogabort、recogfirst と awaitclose は組み合わせて使える
 export function resolveExperimentConfig(parsed: ParsedExperimentQuery): ExperimentConfig {
   if (!parsed.enabled) return DEFAULT_EXPERIMENT_CONFIG
   const requested: ExperimentName[] = []
@@ -114,7 +138,15 @@ export function resolveExperimentConfig(parsed: ParsedExperimentQuery): Experime
     }
   } else {
     const off = new Map<ExperimentName, string>()
-    if (has('norecog') && has('legacyrecog')) off.set('legacyrecog', 'norecog が優先')
+    if (has('norecog')) {
+      for (const name of RECOGNITION_SWITCHES) {
+        if (has(name)) off.set(name, 'norecog が優先')
+      }
+    } else {
+      if (has('recogdelay') && !has('recogfirst')) off.set('recogdelay', 'recogfirst と一緒のときだけ効く')
+      const overLegacyRecog = RECOGNITION_VARIANTS.filter(has)
+      if (has('legacyrecog') && overLegacyRecog.length > 0) off.set('legacyrecog', `${overLegacyRecog.join('、')} が優先`)
+    }
     if (has('nometer')) {
       if (has('nodisconnect')) off.set('nodisconnect', 'nometer が優先')
       if (has('awaitclose')) off.set('awaitclose', 'nometer が優先')
@@ -144,6 +176,11 @@ export function resolveExperimentConfig(parsed: ParsedExperimentQuery): Experime
     noEndedListener: on('noendedlistener'),
     noLifecycle: on('nolifecycle'),
     trace: on('trace'),
+    recogFirst: on('recogfirst'),
+    recogAbort: on('recogabort'),
+    recogDelay: on('recogdelay'),
+    recogEarly: on('recogearly'),
+    recogOnce: on('recogonce'),
   }
 }
 
