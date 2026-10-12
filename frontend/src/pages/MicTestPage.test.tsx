@@ -1777,6 +1777,42 @@ describe('MicTestPage: AudioContext で再生', () => {
     })
   }
 
+  it('II6: resume() を待っている間に S6 で止めて close() した後に resume() が拒否されると、「resume() 失敗」ではなく中止と出す', async () => {
+    const rejections = watchUnhandledRejections()
+    const { rejectResume } = setupAudioContextMock({ initialState: 'suspended', deferResume: true })
+    await record()
+    await clickContextPlay()
+    await click('S6 すべて閉じる')
+    expect(audioContexts[0].close).toHaveBeenCalledTimes(1)
+    await rejectResume('InvalidStateError')
+    await flush()
+    await rejections.settle()
+
+    const text = logText()
+    expect(text).toContain('AudioContext resume() を中止（止めたため、または閉じたため）name=InvalidStateError')
+    expect(text).not.toContain('resume() 失敗')
+    expect(text).not.toContain('再生しない')
+    expect(countMatches(text, /AudioContext 再生を止めた（/)).toBe(1)
+    expect(audioContexts[0].decodeAudioData).not.toHaveBeenCalled()
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
+  it('II6: 止めていないときに resume() が遅れて拒否されると、これまでどおり「resume() 失敗」と出す', async () => {
+    const rejections = watchUnhandledRejections()
+    const { rejectResume } = setupAudioContextMock({ initialState: 'suspended', deferResume: true })
+    await record()
+    await clickContextPlay()
+    await rejectResume('NotAllowedError')
+    await flush()
+    await rejections.settle()
+
+    const text = logText()
+    expect(text).toContain('AudioContext resume() 失敗 name=NotAllowedError')
+    expect(text).not.toContain('resume() を中止')
+    expect(text).toMatch(/AudioContext 再生しない（resume\(\) に失敗したため）（S2 1回目の録音/)
+    expect(rejections.handler).not.toHaveBeenCalled()
+  })
+
   it('II5: arrayBuffer() を待っている間に S6 で止めると、待った後に decodeAudioData と start() を呼ばず、止めたことを1回だけ出す', async () => {
     const rejections = watchUnhandledRejections()
     setupAudioContextMock()

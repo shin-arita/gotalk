@@ -594,7 +594,8 @@ export default function MicTestPage() {
 
   // AudioContext を、なければ作り、suspended などのときは resume() する。
   // iPhone では、押した操作の中で作るか resume() しないと鳴らないため、await の前に呼ぶ
-  const prepareAudioContext = (): { context: AudioContext; resumed: Promise<void> } | null => {
+  // resume() の成功と失敗のログは、止めたかどうかで出し分けるため、handleContextPlay で出す
+  const prepareAudioContext = (): { context: AudioContext; resumed: Promise<void> | null } | null => {
     let context = audioContextRef.current
     if (!context) {
       const Ctor = getAudioContextCtor()
@@ -617,20 +618,13 @@ export default function MicTestPage() {
     }
     // iPhone では、ほかの音声で中断されると interrupted になる
     const state = context.state as string
-    if (state !== 'suspended' && state !== 'interrupted') return { context, resumed: Promise.resolve() }
+    if (state !== 'suspended' && state !== 'interrupted') return { context, resumed: null }
     addLog(`AudioContext resume()（state=${state}）`)
-    const ctx = context
     let resumed: Promise<void>
     try {
-      resumed = Promise.resolve(ctx.resume()).then(
-        () => addLog(`AudioContext resume() 成功 state=${ctx.state}`),
-        e => {
-          addLog(`AudioContext resume() 失敗 name=${errorName(e)}`)
-          throw e
-        },
-      )
+      resumed = Promise.resolve(context.resume())
     } catch (e) {
-      addLog(`AudioContext resume() 失敗 name=${errorName(e)}`)
+      // 呼び出し元ですぐに await するので、未処理の拒否にはならない
       resumed = Promise.reject(e)
     }
     return { context, resumed }
@@ -654,12 +648,21 @@ export default function MicTestPage() {
       addLog(`AudioContext ${msg}（${label}）`)
       logTracks('AudioContext 再生の失敗')
     }
-    try {
-      await resumed
-    } catch {
-      // 失敗の name は prepareAudioContext で出している
-      fail('再生しない（resume() に失敗したため）')
-      return
+    if (resumed) {
+      try {
+        await resumed
+        addLog(`AudioContext resume() 成功 state=${context.state}`)
+      } catch (e) {
+        // 待っている間に止めて close() すると、待っていた resume() が拒否されることがある。
+        // 本当の失敗と紛らわしくならないよう、止めた後か閉じた後の拒否は「中止」と出す
+        if (playback.stopReason !== null || audioContextRef.current !== context || context.state === 'closed') {
+          addLog(`AudioContext resume() を中止（止めたため、または閉じたため）name=${errorName(e)}`)
+          return
+        }
+        addLog(`AudioContext resume() 失敗 name=${errorName(e)}`)
+        fail('再生しない（resume() に失敗したため）')
+        return
+      }
     }
     let data: ArrayBuffer
     try {
