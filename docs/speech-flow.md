@@ -88,7 +88,7 @@ Frontend の音声処理は、画面の `frontend/src/pages/InterpreterPage.tsx`
 | --- | --- |
 | `MediaRecorder` の MIME type | `audio/webm;codecs=opus`、`audio/webm`、`audio/mp4`、`audio/ogg;codecs=opus` の順に対応を確認し、最初に対応しているものを使います。 |
 | `ondataavailable` | 自分のセッションが有効な場合だけ、サイズが 0 より大きい録音データを、そのセッションの資源のまとまりに追加します。無効なセッションのデータは捨てます。 |
-| `onstop` | 届いたことを記録します（止める理由によらない）。自分のセッションが有効で、止める理由が `user` の場合だけ、録音データから `Blob` を作成し、track をすべて `stop()` して `AudioContext` を閉じ（マイク OFF）、`onRecordingStopped` で画面に渡します。利用者の停止の前に届いた場合（`MediaRecorder` が自分で止まった場合）は、録音の失敗として片付けます（[6.5](#65-録音の途中で止まったとき)）。中断のときはセッションを先に無効にしているので、何もしません。 |
+| `onstop` | 届いたことを記録します（止める理由によらない）。自分のセッションが有効で、止める理由が `user` の場合だけ、録音データから `Blob` を作成し、track をすべて `stop()` し（マイク OFF。`AudioContext` は `stop()` を呼ぶ前に閉じています）、`onRecordingStopped` で画面に渡します。利用者の停止の前に届いた場合（`MediaRecorder` が自分で止まった場合）は、録音の失敗として片付けます（[6.5](#65-録音の途中で止まったとき)）。中断のときはセッションを先に無効にしているので、何もしません。 |
 | `MediaRecorder` の `onerror` | 自分のセッションが有効な場合だけ、録音の失敗として片付けます（理由 `error`）。録音のデータは送りません。 |
 | `SpeechRecognition` constructor | `window.SpeechRecognition` があれば使用し、なければ `window.webkitSpeechRecognition` を使用します。どちらもなければ `SpeechRecognition` を使わずに録音だけを行います。 |
 | `speechCode` | タップされた国旗の `Language.speechCode` を `recognition.lang` に設定します。 |
@@ -196,12 +196,13 @@ stateDiagram-v2
 利用者の停止の順番は次のとおりです。
 
 1. 状態を `stopping` にし、止める理由を `user` にします
-2. 止める指示を先に記録してから、音声認識を `stop()` し、音量の取得を止めます
-3. `MediaRecorder` を `stop()` し、`onstop` を待ちます（最後の `ondataavailable` を受け取るため。timeslice なしの録音では、最後のデータが録音の全体です）。待ち始めたら、見張りのタイマー（`RECORDER_STOP_TIMEOUT_MS`、10 秒）を始めます
-4. `onstop` で、自分のセッションが有効で、止める理由が `user` であることを確かめてから、見張りのタイマーを止め、録音のデータをまとめます
-5. track をすべて `stop()` し、`AudioContext` を閉じ、参照を捨てます（マイク OFF の成立）
-6. マイク OFF が成立してから、状態を `processing` にし、Backend に送ります
-7. 翻訳の結果が出たら `ready` にします
+2. 止める指示を先に記録してから、音声認識を `stop()` し、音量の取得を止めます（`requestAnimationFrame` を取り消します）
+3. 音量の取得の資源を片付けます（`MediaStreamAudioSourceNode` を `disconnect()` し、`AudioContext` を `close()` します。`close()` の完了は待ちません）。順番の理由は、下の「片付けの順番」を参照してください
+4. `MediaRecorder` を `stop()` し、`onstop` を待ちます（最後の `ondataavailable` を受け取るため。timeslice なしの録音では、最後のデータが録音の全体です）。待ち始めたら、見張りのタイマー（`RECORDER_STOP_TIMEOUT_MS`、10 秒）を始めます
+5. `onstop` で、自分のセッションが有効で、止める理由が `user` であることを確かめてから、見張りのタイマーを止め、録音のデータをまとめます
+6. track をすべて `stop()` し、残りの参照を捨てます（マイク OFF の成立。`AudioContext` は 3 で閉じています）
+7. マイク OFF が成立してから、状態を `processing` にし、Backend に送ります
+8. 翻訳の結果が出たら `ready` にします
 
 利用者の停止の経路ごとの動きは、次のとおりです。
 
@@ -217,7 +218,9 @@ stateDiagram-v2
 
 見張りの時間の 10 秒は、実機で確かめていない仮の値です。`stop()` から `onstop` までは、ふつうは数十から数百ミリ秒ですが、古い端末で、上限に近い長い録音（`audio/mp4` など）を止めた場合は、1 秒を超えることがあり得ます。短すぎると、正常な長い録音を「録音の失敗」として捨ててしまいます。長すぎた場合の損失は、ブラウザの不具合で `onstop` が届かないときに、`stopping` のまま track が長く開いていることだけなので、損失の小さい長めの値にしています。診断の情報には、利用者の停止で `stop()` を呼んでから（`MediaRecorder` がすでに `inactive` のときは、止める指示を記録してから）`onstop` が届くまでの時間（`stopLatencyMs`）と、見張りのタイマーで片付けたか（`stopTimedOut`）と、それまでに待った時間（`stopWaitedMs`）を残します。PR 2 の診断の表示でこの時間を測り、実測の値に余裕を足した値に見直します。
 
-中断の片付けでは、今有効なセッションを先に無効にしてから、`MediaRecorder`、音声認識、音量の取得を止め、track をすべて `stop()` し、`AudioContext` を閉じ、参照を捨てます。
+中断の片付け（失敗の片付けを含みます）では、今有効なセッションを先に無効にしてから、音声認識と音量の取得を止め、`MediaStreamAudioSourceNode` を `disconnect()` して `AudioContext` を閉じ、その後に `MediaRecorder` を止めて track をすべて `stop()` し、参照を捨てます。
+
+片付けの順番：利用者の停止でも中断の片付けでも、音量の取得の資源（`MediaStreamAudioSourceNode` と `AudioContext`）を先に片付け、その後に `MediaRecorder` と track を止めます。iPhone の Chrome（WebKit）では、`AudioContext` に `MediaStreamAudioSourceNode` でつながったままの track を `stop()` すると、音声のセッションが壊れ、次に `getUserMedia` で開いたマイクから音が来なくなる（2回目からの録音が空になる）という仮説によります（実機で確かめていない仮説です）。PR #26 の前（`07f06f0`）は、`AudioContext` を先に閉じてから `MediaRecorder` と track を止めており、同じ端末で2回目以降も録音できていたので、その順番に戻しています。
 
 ### 6.5 録音の途中で止まったとき
 
@@ -315,9 +318,9 @@ stateDiagram-v2
 
 - `status` を `stopping` にする
 - 波紋要素の `transform` と `opacity` を初期化する
-- hook の `stop()` を呼ぶ。hook は、止める指示を記録してから、音声認識と音量の取得を止め、`MediaRecorder` を停止する
+- hook の `stop()` を呼ぶ。hook は、止める指示を記録してから、音声認識と音量の取得を止め、`AudioContext` を閉じてから、`MediaRecorder` を停止する
 
-`MediaRecorder` の `onstop` で、hook は録音データから `Blob` を作成し、track をすべて停止して `AudioContext` を閉じ（マイク OFF）、`onRecordingStopped` で画面に渡します。画面は `recordingFlagIndex` を `null` にし、`callInterpretApi(blob)` で `status` を `processing` にして送信します。中断のときは、セッションを先に無効にしているので、`/api/interpret` は呼ばれません。
+`MediaRecorder` の `onstop` で、hook は録音データから `Blob` を作成し、track をすべて停止し（マイク OFF）、`onRecordingStopped` で画面に渡します。画面は `recordingFlagIndex` を `null` にし、`callInterpretApi(blob)` で `status` を `processing` にして送信します。中断のときは、セッションを先に無効にしているので、`/api/interpret` は呼ばれません。
 
 `callInterpretApi` は `/api/interpret` に次を `multipart/form-data` で送信します。
 

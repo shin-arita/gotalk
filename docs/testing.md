@@ -145,6 +145,7 @@ npm test
 - `getUserMedia` の成功の後に、`MediaRecorder` の作成や `start()` が失敗した場合、audio track がない場合、track が `live` でない場合に、track を `stop()` し、`recording_start_failed` を2つの言語で表示し、`idle` に戻ること。`getUserMedia` の失敗は `microphone_denied` のままであること
 - 音量の取得や音声認識が失敗しても、録音は成立し、利用者の停止で Backend に送ること
 - 利用者の停止で、最後の `ondataavailable` の後に送ること。track の `stop()` が送るより先であること
+- 片付けの順番（[speech-flow.md](speech-flow.md) の 6.4 の「片付けの順番」）。利用者の停止では、`MediaStreamAudioSourceNode` の `disconnect()` と `AudioContext` の `close()` が、`MediaRecorder` の `stop()` より先であること。中断（`hidden`、`pagehide`、戻る、外れる、`error`）と失敗（`MediaRecorder` の `onerror`、`MediaRecorder` が自分で止まった）の片付けでは、track の `stop()` より先であること
 - 録音中や `stopping` の間に `hidden` になったら、Backend に送らず、track を `stop()` し、`idle` に戻ること。後から来た `onstop` が何もしないこと。`visible` に戻っても自動でマイクを開かないこと
 - 音声認識の `onend` で、止める指示の後や、無効なセッションでは始め直さないこと
 - 片付けを2回、3回と続けて呼んでも、例外や二重の `stop()` が出ないこと。`AudioContext` の `close()` の拒否や、音声認識の `stop()` の例外を捨てること
