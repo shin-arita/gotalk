@@ -32,12 +32,20 @@ export interface LegacyKeepStream {
   streamReused: boolean
   // 画面を開いてから getUserMedia を呼んだ回数の合計（この録音の分を含む）
   getUserMediaCalls: number
-  // 使い回すかを決めたときの、持っている stream の track の readyState（持っていないときは空）
-  trackReadyStates: string[]
+  // 使い回すかを決めたときの、持っている stream の track の状態（readyState/enabled/muted。持っていないときは空）。
+  // 判定に使うのは readyState だけ
+  trackStates: string[]
   // 波紋の表示の tick で取った RMS の最大値と、0 でない値を取った回数、tick の回数
   rmsMax: number
   rmsNonZeroSamples: number
   rmsSamples: number
+  // 音量の取得の AudioContext の、作った直後の state、最初の tick での state（tick が回らなかったときは null）、
+  // 作成から analyser までのつなぎで出た例外の name（出なかったときは null）
+  audioContextState: string | null
+  audioContextFirstTickState: string | null
+  audioContextError: string | null
+  // 音声認識の文字を付けて Backend に送ったか（Backend に送らなかった録音は null）
+  transcriptSent: boolean | null
 }
 
 export type ExperimentSnapshot =
@@ -112,8 +120,11 @@ function SnapshotView({ snapshot }: { snapshot: ExperimentSnapshot }) {
                 + `ondataavailable=${r.dataSizes.length}回 [${r.dataSizes.join(', ')}]、Blob=${r.blobSize ?? '-'}（type=${r.blobType || '-'}）`
                 + (r.keepStream
                   ? `、マイク=${r.keepStream.streamReused ? '使い回し' : 'getUserMedia'}（呼んだ回数の合計=${r.keepStream.getUserMediaCalls}、`
-                    + `readyState=${r.keepStream.trackReadyStates.join(', ') || '-'}）、`
-                    + `RMS 最大=${r.keepStream.rmsMax.toFixed(3)}、0 でない回数=${r.keepStream.rmsNonZeroSamples}/${r.keepStream.rmsSamples}`
+                    + `track=${r.keepStream.trackStates.join(', ') || '-'}）、`
+                    + `RMS 最大=${r.keepStream.rmsMax.toFixed(3)}、0 でない回数=${r.keepStream.rmsNonZeroSamples}/${r.keepStream.rmsSamples}、`
+                    + `AudioContext=${r.keepStream.audioContextState ?? '-'}→${r.keepStream.audioContextFirstTickState ?? '-'}`
+                    + `${r.keepStream.audioContextError ? `（例外=${r.keepStream.audioContextError}）` : ''}、`
+                    + `音声認識の文字=${r.keepStream.transcriptSent === null ? '送っていない' : r.keepStream.transcriptSent ? '付けた' : '付けていない'}`
                   : '')}
             </li>
           ))}
