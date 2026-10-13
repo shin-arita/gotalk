@@ -22,6 +22,30 @@ export interface LegacyRecording {
   // onstop で作った Blob の大きさと type（利用者の停止のときだけ）
   blobSize: number | null
   blobType: string | null
+  // legacykeep のときだけ持つ（legacy のときは持たない）
+  keepStream?: LegacyKeepStream
+}
+
+// legacykeep（legacy に、マイクの使い回しだけを加えたもの）の録音ごとの記録
+export interface LegacyKeepStream {
+  // この録音で、持っている stream を使い回したか（false は getUserMedia を呼んだ）
+  streamReused: boolean
+  // 画面を開いてから getUserMedia を呼んだ回数の合計（この録音の分を含む）
+  getUserMediaCalls: number
+  // 使い回すかを決めたときの、持っている stream の track の状態（readyState/enabled/muted。持っていないときは空）。
+  // 判定に使うのは readyState だけ
+  trackStates: string[]
+  // 波紋の表示の tick で取った RMS の最大値と、0 でない値を取った回数、tick の回数
+  rmsMax: number
+  rmsNonZeroSamples: number
+  rmsSamples: number
+  // 音量の取得の AudioContext の、作った直後の state、最初の tick での state（tick が回らなかったときは null）、
+  // 作成から analyser までのつなぎで出た例外の name（出なかったときは null）
+  audioContextState: string | null
+  audioContextFirstTickState: string | null
+  audioContextError: string | null
+  // 音声認識の文字を付けて Backend に送ったか（Backend に送らなかった録音は null）
+  transcriptSent: boolean | null
 }
 
 export type ExperimentSnapshot =
@@ -87,13 +111,21 @@ function SnapshotView({ snapshot }: { snapshot: ExperimentSnapshot }) {
     const recordings = snapshot.recordings.slice(-SHOWN_SESSIONS)
     return (
       <div data-testid="experiment-snapshot">
-        <p style={{ margin: '8px 0 4px' }}>{snapshot.takenAt}（legacy）</p>
+        <p style={{ margin: '8px 0 4px' }}>{snapshot.takenAt}（{snapshot.effective.includes('legacykeep') ? 'legacykeep' : 'legacy'}）</p>
         {recordings.length === 0 && <p>録音の記録はありません</p>}
         <ol style={{ margin: 0, paddingLeft: '20px' }}>
           {recordings.map((r, i) => (
             <li key={i}>
               {`start→stop=${r.startCalledAt !== null && r.stopCalledAt !== null ? `${Math.round(r.stopCalledAt - r.startCalledAt)}ms` : '-'}、`
-                + `ondataavailable=${r.dataSizes.length}回 [${r.dataSizes.join(', ')}]、Blob=${r.blobSize ?? '-'}（type=${r.blobType || '-'}）`}
+                + `ondataavailable=${r.dataSizes.length}回 [${r.dataSizes.join(', ')}]、Blob=${r.blobSize ?? '-'}（type=${r.blobType || '-'}）`
+                + (r.keepStream
+                  ? `、マイク=${r.keepStream.streamReused ? '使い回し' : 'getUserMedia'}（呼んだ回数の合計=${r.keepStream.getUserMediaCalls}、`
+                    + `track=${r.keepStream.trackStates.join(', ') || '-'}）、`
+                    + `RMS 最大=${r.keepStream.rmsMax.toFixed(3)}、0 でない回数=${r.keepStream.rmsNonZeroSamples}/${r.keepStream.rmsSamples}、`
+                    + `AudioContext=${r.keepStream.audioContextState ?? '-'}→${r.keepStream.audioContextFirstTickState ?? '-'}`
+                    + `${r.keepStream.audioContextError ? `（例外=${r.keepStream.audioContextError}）` : ''}、`
+                    + `音声認識の文字=${r.keepStream.transcriptSent === null ? '送っていない' : r.keepStream.transcriptSent ? '付けた' : '付けていない'}`
+                  : '')}
             </li>
           ))}
         </ol>

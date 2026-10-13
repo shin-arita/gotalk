@@ -197,3 +197,52 @@ describe('resolveExperimentConfig: the second experiment', () => {
     expect(config.inactive).toEqual([{ name: 'recogdelay', reason: 'recogfirst と一緒のときだけ効く' }])
   })
 })
+
+// 3回目の実験のスイッチ（legacykeep）の指定と組み合わせ
+describe('resolveExperimentConfig: legacykeep', () => {
+  const ALL_KEYS = ['legacy', 'legacyKeep', 'noRecog', 'legacyRecog', 'noMeter', 'noDisconnect', 'awaitClose', 'noTrackRead', 'noEndedListener', 'noLifecycle', 'trace',
+    'recogFirst', 'recogAbort', 'recogDelay', 'recogEarly', 'recogOnce'] as const
+
+  it('keeps legacykeep off without exp and with an empty exp', () => {
+    expect(DEFAULT_EXPERIMENT_CONFIG.legacyKeep).toBe(false)
+    expect(readExperimentConfig('?exp=').legacyKeep).toBe(false)
+  })
+
+  it('turns on legacykeep alone', () => {
+    const config = readExperimentConfig('?exp=legacykeep')
+    expect(config.effective).toEqual(['legacykeep'])
+    expect(config.inactive).toEqual([])
+    expect(config.legacyKeep).toBe(true)
+    ALL_KEYS.filter(k => k !== 'legacyKeep').forEach(k => expect(config[k]).toBe(false))
+  })
+
+  it('prefers legacykeep over legacy in either order', () => {
+    for (const search of ['?exp=legacy,legacykeep', '?exp=legacykeep,legacy']) {
+      const config = readExperimentConfig(search)
+      expect(config.effective).toEqual(['legacykeep'])
+      expect(config.legacyKeep).toBe(true)
+      expect(config.legacy).toBe(false)
+      expect(config.inactive).toEqual([{ name: 'legacy', reason: 'legacykeep が優先（legacykeep は legacy にマイクの使い回しを加えたもの）' }])
+    }
+  })
+
+  it('uses legacykeep alone and makes the others (trace too) inactive', () => {
+    const config = readExperimentConfig('?exp=norecog,legacykeep,trace,recogonce,legacy,typo')
+    expect(config.effective).toEqual(['legacykeep'])
+    expect(config.ignored).toEqual(['typo'])
+    expect(config.inactive).toEqual([
+      { name: 'norecog', reason: 'legacykeep と組み合わせない' },
+      { name: 'trace', reason: 'legacykeep と組み合わせない' },
+      { name: 'recogonce', reason: 'legacykeep と組み合わせない' },
+      { name: 'legacy', reason: 'legacykeep が優先（legacykeep は legacy にマイクの使い回しを加えたもの）' },
+    ])
+    ALL_KEYS.filter(k => k !== 'legacyKeep').forEach(k => expect(config[k]).toBe(false))
+  })
+
+  it('ignores legacykeep in a different case', () => {
+    const config = readExperimentConfig('?exp=LegacyKeep,legacy')
+    expect(config.ignored).toEqual(['LegacyKeep'])
+    expect(config.effective).toEqual(['legacy'])
+    expect(config.legacyKeep).toBe(false)
+  })
+})

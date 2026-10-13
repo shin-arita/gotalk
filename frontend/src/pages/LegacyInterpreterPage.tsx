@@ -13,9 +13,13 @@ import './InterpreterPage.css'
 // frontend/src/pages/InterpreterPage.tsx を、ほぼそのまま残したもの。URL の exp に legacy があるときだけ、
 // 通訳の画面の代わりに使う。変えたのは、部品の名前、実験の設定の受け取り、実験の記録の行（「実験の記録」の
 // コメントの行）、診断の表示の部品だけ。原因が分かったら、このファイルは外す
+// exp に legacykeep があるときは、録音の後もマイク（stream と track）を閉じずに、次の録音で使い回す
+// （3回目の実験。「legacykeep」のコメントの行）。画面が外れるときは、今までどおり閉じる
 
 // 実験の記録に残す録音の数
 const MAX_LEGACY_RECORDINGS = 10
+// legacykeep：実験の記録に残す録音の数（10 回続けて話すので、legacy より多く残す）
+const MAX_LEGACY_KEEP_RECORDINGS = 20
 // 実験の記録の時刻（録音の開始と停止の処理の中でだけ呼ぶ）
 const perfNow = () => performance.now()
 
@@ -162,6 +166,12 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
   // 実験の記録（URL に exp があるときだけ書く）
   const legacyRecordingsRef = useRef<LegacyRecording[]>([])
   const legacyRecordingRef = useRef<LegacyRecording | null>(null)
+  // legacykeep：画面を開いてから getUserMedia を呼んだ回数
+  const getUserMediaCallsRef = useRef(0)
+  // legacykeep：getUserMedia を待っている間（待つ間の2回目の操作では何もしない）
+  const keepStartingRef = useRef(false)
+  // legacykeep：画面が外れた（getUserMedia が解けた後に、録音を始めずに track を止める）
+  const keepUnmountedRef = useRef(false)
 
   useEffect(() => {
     if (!isEditing || !editRef.current) return
@@ -227,6 +237,10 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
     try {
       // 明らかに大きい録音は送らない（nginx の 413 になるため。MAX_INTERPRET_AUDIO_BYTES を参照）
       if (audioBlob.size > MAX_INTERPRET_AUDIO_BYTES) throw new ApiError('recording_too_long', '/api/interpret', null, 'recording_too_large_before_send')
+
+      // legacykeep：音声認識の文字を付けて送ったか（Backend に送る直前に記録する）
+      const keep = legacyRecordingRef.current?.keepStream
+      if (keep) keep.transcriptSent = formData.has('transcript')
 
       const res = await fetch('/api/interpret', { method: 'POST', body: formData, signal: controller.signal })
 
@@ -332,10 +346,52 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
     }
   }, [])
 
+  // legacykeep：画面が外れたことを残す（getUserMedia を待つ間に外れたときに使う）。
+  // StrictMode の開発中の付け直し（片付けの後にもう一度付ける）で、外れたままにしないよう、付けるときに戻す
+  useEffect(() => {
+    if (!experiment.legacyKeep) return
+    keepUnmountedRef.current = false
+    return () => { keepUnmountedRef.current = true }
+  }, [experiment.legacyKeep])
+
   const startRecording = async (lang: Language, flagIndex: 0 | 1) => {
     const mimeType = getSupportedMimeType()
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // legacykeep：持っている stream に track が1つ以上あり、どれも ended でなければ、getUserMedia を呼ばずに
+      // その stream を使う。持っていないとき、track がないとき、ended の track があるときは、古い track を
+      // すべて stop() してから getUserMedia を呼ぶ。track の状態は legacykeep のときだけ読む
+      // （legacy は track の状態を読まない）。muted と enabled は記録だけで、判定には使わない
+      let keepTrackStates: string[] = []
+      let streamReused = false
+      let stream: MediaStream
+      if (experiment.legacyKeep) {
+        if (keepStartingRef.current) return
+        const held = streamRef.current
+        const heldTracks = held?.getTracks() ?? []
+        const readyStates = heldTracks.map(t => t.readyState)
+        keepTrackStates = heldTracks.map((t, i) => `${readyStates[i]}/${t.enabled ? 'enabled' : 'disabled'}/${t.muted ? 'muted' : 'unmuted'}`)
+        if (held && heldTracks.length > 0 && !readyStates.includes('ended')) {
+          stream = held
+          streamReused = true
+        } else {
+          heldTracks.forEach(t => t.stop())
+          streamRef.current = null
+          keepStartingRef.current = true
+          getUserMediaCallsRef.current++
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          } finally {
+            keepStartingRef.current = false
+          }
+          // 待つ間に画面が外れたときは、録音を始めずに閉じる
+          if (keepUnmountedRef.current) {
+            stream.getTracks().forEach(t => t.stop())
+            return
+          }
+        }
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      }
       streamRef.current = stream
       audioChunksRef.current = []
       userStoppedRef.current = false
@@ -346,15 +402,25 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
       // 実験の記録
       const rec: LegacyRecording | null = experiment.enabled ? { startCalledAt: null, stopCalledAt: null, dataSizes: [], blobSize: null, blobType: null } : null
-      if (rec) { legacyRecordingsRef.current.push(rec); if (legacyRecordingsRef.current.length > MAX_LEGACY_RECORDINGS) legacyRecordingsRef.current.shift() }
+      if (rec && experiment.legacyKeep) {
+        rec.keepStream = {
+          streamReused, getUserMediaCalls: getUserMediaCallsRef.current, trackStates: keepTrackStates, rmsMax: 0, rmsNonZeroSamples: 0, rmsSamples: 0,
+          audioContextState: null, audioContextFirstTickState: null, audioContextError: null, transcriptSent: null,
+        }
+      }
+      const maxRecordings = experiment.legacyKeep ? MAX_LEGACY_KEEP_RECORDINGS : MAX_LEGACY_RECORDINGS
+      if (rec) { legacyRecordingsRef.current.push(rec); if (legacyRecordingsRef.current.length > maxRecordings) legacyRecordingsRef.current.shift() }
       legacyRecordingRef.current = rec
       recorder.ondataavailable = (e) => {
         if (rec) rec.dataSizes.push(e.data.size) // 実験の記録
         if (e.data.size > 0) audioChunksRef.current.push(e.data)
       }
       recorder.onstop = () => {
-        stream.getTracks().forEach(t => t.stop())
-        streamRef.current = null
+        // legacykeep：track を止めず、stream も手放さない（画面が外れるときに止める）
+        if (!experiment.legacyKeep) {
+          stream.getTracks().forEach(t => t.stop())
+          streamRef.current = null
+        }
         if (!userStoppedRef.current) return
         const blob = new Blob(audioChunksRef.current, { type: mimeType || 'audio/webm' })
         if (rec) { rec.blobSize = blob.size; rec.blobType = blob.type } // 実験の記録
@@ -367,8 +433,11 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
       setRecordingFlagIndex(flagIndex)
       setStatus('recording')
 
+      // legacykeep：RMS と AudioContext の状態の記録の先（legacy のときは undefined）
+      const keep = rec?.keepStream
       try {
         const audioCtx = new AudioContext()
+        if (keep) keep.audioContextState = audioCtx.state
         const source = audioCtx.createMediaStreamSource(stream)
         const analyser = audioCtx.createAnalyser()
         analyser.fftSize = 256
@@ -380,16 +449,25 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
         let startTime: number | null = null
         const DURATION = 1500
         const COUNT = 3
+        let keepFirstTick = true
 
         const tick = (now: number) => {
           if (startTime === null) startTime = now
+          if (keep && keepFirstTick) { keepFirstTick = false; keep.audioContextFirstTickState = audioCtx.state }
           analyser.getByteTimeDomainData(timeData)
           let sum = 0
           for (let j = 0; j < timeData.length; j++) {
             const v = (timeData[j] - 128) / 128
             sum += v * v
           }
-          const amplitude = Math.min(1, Math.sqrt(sum / timeData.length) * 8)
+          const rms = Math.sqrt(sum / timeData.length)
+          const amplitude = Math.min(1, rms * 8)
+          // legacykeep：RMS の記録
+          if (keep) {
+            keep.rmsSamples++
+            if (rms > 0) keep.rmsNonZeroSamples++
+            if (rms > keep.rmsMax) keep.rmsMax = rms
+          }
           const elapsed = now - startTime
           rippleRefs.current.forEach((el, ri) => {
             if (!el) return
@@ -400,7 +478,10 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
           rafIdRef.current = requestAnimationFrame(tick)
         }
         rafIdRef.current = requestAnimationFrame(tick)
-      } catch { /* AudioContext 非対応環境では波紋なし */ }
+      } catch (e) {
+        /* AudioContext 非対応環境では波紋なし */
+        if (keep) keep.audioContextError = e instanceof Error || e instanceof DOMException ? e.name : typeof e
+      }
 
       const RecognitionCtor = getSpeechRecognitionCtor()
       if (RecognitionCtor) {
@@ -726,7 +807,9 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
           takenAt: new Date().toISOString(),
           effective: [...experiment.effective],
           config: { raw: experiment.raw, requested: experiment.requested, ignored: experiment.ignored, inactive: experiment.inactive, effective: experiment.effective },
-          recordings: legacyRecordingsRef.current.map(r => ({ ...r, dataSizes: [...r.dataSizes] })),
+          recordings: legacyRecordingsRef.current.map(r => (r.keepStream
+            ? { ...r, dataSizes: [...r.dataSizes], keepStream: { ...r.keepStream, trackStates: [...r.keepStream.trackStates] } }
+            : { ...r, dataSizes: [...r.dataSizes] })),
         })}
       />}
 

@@ -5,6 +5,7 @@
 
 export const EXPERIMENT_NAMES = [
   'legacy',
+  'legacykeep',
   'norecog',
   'legacyrecog',
   'nometer',
@@ -42,6 +43,8 @@ export interface ExperimentConfig {
   // 実際に効いている名前
   effective: ExperimentName[]
   legacy: boolean
+  // 3回目の実験（legacy に、マイクの使い回しだけを加えたもの）
+  legacyKeep: boolean
   noRecog: boolean
   legacyRecog: boolean
   noMeter: boolean
@@ -68,6 +71,7 @@ export const DEFAULT_EXPERIMENT_CONFIG: ExperimentConfig = Object.freeze({
   inactive: [],
   effective: [],
   legacy: false,
+  legacyKeep: false,
   noRecog: false,
   legacyRecog: false,
   noMeter: false,
@@ -110,6 +114,8 @@ const isExperimentName = (name: string): name is ExperimentName => (EXPERIMENT_N
 
 // 名前の一覧から、組み合わせを解いた ExperimentConfig を作る
 // - legacy は単独。ほかの名前（trace も）は inactive
+// - legacykeep も単独。ほかの名前（legacy と trace も）は inactive。legacy と一緒のときは legacykeep を使う
+//   （legacykeep は legacy にマイクの使い回しを加えたもの）
 // - nometer は nodisconnect と awaitclose より優先
 // - nodisconnect と awaitclose は組み合わせて使える
 // - norecog は、音声認識を使うスイッチ（legacyrecog、recogfirst、recogabort、recogdelay、recogearly、recogonce）より優先
@@ -131,7 +137,13 @@ export function resolveExperimentConfig(parsed: ParsedExperimentQuery): Experime
   const inactive: InactiveExperiment[] = []
   const has = (name: ExperimentName) => requested.includes(name)
   let effective: ExperimentName[]
-  if (has('legacy')) {
+  if (has('legacykeep')) {
+    effective = ['legacykeep']
+    for (const name of requested) {
+      if (name === 'legacy') inactive.push({ name, reason: 'legacykeep が優先（legacykeep は legacy にマイクの使い回しを加えたもの）' })
+      else if (name !== 'legacykeep') inactive.push({ name, reason: 'legacykeep と組み合わせない' })
+    }
+  } else if (has('legacy')) {
     effective = ['legacy']
     for (const name of requested) {
       if (name !== 'legacy') inactive.push({ name, reason: 'legacy と組み合わせない' })
@@ -167,6 +179,7 @@ export function resolveExperimentConfig(parsed: ParsedExperimentQuery): Experime
     inactive,
     effective,
     legacy: on('legacy'),
+    legacyKeep: on('legacykeep'),
     noRecog: on('norecog'),
     legacyRecog: on('legacyrecog'),
     noMeter: on('nometer'),
