@@ -9,6 +9,8 @@ import type { ExperimentRecognitionOnce } from '../hooks/experimentTrace'
 // 開発用の表示なので、文言は日本語だけにしている。原因が分かったら、このファイルは外す
 
 const SHOWN_SESSIONS = 5
+// legacymute：表示する読み上げの記録の数
+const SHOWN_TTS_PLAYS = 5
 
 // legacy（PR #26 の前の通訳の画面）の最小限の記録。録音ごとに1つ。
 // 07f06f0 にもともとある ondataavailable と onstop の中の値と、start() と stop() を呼んだ時刻だけ
@@ -46,11 +48,33 @@ export interface LegacyKeepStream {
   audioContextError: string | null
   // 音声認識の文字を付けて Backend に送ったか（Backend に送らなかった録音は null）
   transcriptSent: boolean | null
+  // legacymute のときだけ持つ（legacykeep のときは持たない）
+  // 画面を開いてから何回目の録音か（1から。録音の記録が成立したときに数える）
+  recordingNo?: number
+  // 録音の開始で track を有効に戻した直後の状態（getUserMedia を呼んだときは、新しい track の状態）
+  trackStatesAfterEnable?: string[]
+  // onstop で track を無効にした直後の状態（onstop が来るまでは空）
+  trackStatesAfterDisable?: string[]
+}
+
+// legacymute の読み上げの記録。play() を呼んだ回ごとに1つ（画面ごとに直近の 10 件）
+export interface LegacyTtsPlay {
+  // 直前の録音の recordingNo（録音がまだないときは null）
+  afterRecordingNo: number | null
+  // play() を呼ぶ直前の track の状態（readyState/enabled/muted。持っていないときは空）
+  trackStatesBeforePlay: string[]
+  // performance.now()
+  playCalledAt: number
+  // play() が解決したら 'resolved'、例外なら例外の name。結果が出るまでは null
+  playResult: string | null
+  // onended と onerror が来たか
+  ended: boolean
+  error: boolean
 }
 
 export type ExperimentSnapshot =
   | { kind: 'audioSession'; takenAt: string; effective: string[]; diagnostics: AudioDiagnostics }
-  | { kind: 'legacy'; takenAt: string; effective: string[]; config: Pick<ExperimentConfig, 'raw' | 'requested' | 'ignored' | 'inactive' | 'effective'>; recordings: LegacyRecording[] }
+  | { kind: 'legacy'; takenAt: string; effective: string[]; config: Pick<ExperimentConfig, 'raw' | 'requested' | 'ignored' | 'inactive' | 'effective'>; recordings: LegacyRecording[]; ttsPlays?: LegacyTtsPlay[] }
 
 interface ExperimentPanelProps {
   config: ExperimentConfig
@@ -109,9 +133,10 @@ export default function ExperimentPanel({ config, busy, read }: ExperimentPanelP
 function SnapshotView({ snapshot }: { snapshot: ExperimentSnapshot }) {
   if (snapshot.kind === 'legacy') {
     const recordings = snapshot.recordings.slice(-SHOWN_SESSIONS)
+    const mute = snapshot.effective.includes('legacymute')
     return (
       <div data-testid="experiment-snapshot">
-        <p style={{ margin: '8px 0 4px' }}>{snapshot.takenAt}（{snapshot.effective.includes('legacykeep') ? 'legacykeep' : 'legacy'}）</p>
+        <p style={{ margin: '8px 0 4px' }}>{snapshot.takenAt}（{mute ? 'legacymute' : snapshot.effective.includes('legacykeep') ? 'legacykeep' : 'legacy'}）</p>
         {recordings.length === 0 && <p>録音の記録はありません</p>}
         <ol style={{ margin: 0, paddingLeft: '20px' }}>
           {recordings.map((r, i) => (
@@ -125,10 +150,15 @@ function SnapshotView({ snapshot }: { snapshot: ExperimentSnapshot }) {
                     + `AudioContext=${r.keepStream.audioContextState ?? '-'}→${r.keepStream.audioContextFirstTickState ?? '-'}`
                     + `${r.keepStream.audioContextError ? `（例外=${r.keepStream.audioContextError}）` : ''}、`
                     + `音声認識の文字=${r.keepStream.transcriptSent === null ? '送っていない' : r.keepStream.transcriptSent ? '付けた' : '付けていない'}`
+                    + (mute
+                      ? `、録音の番号=${r.keepStream.recordingNo ?? '-'}、有効に戻した後の track=${r.keepStream.trackStatesAfterEnable?.join(', ') || '-'}、`
+                        + `無効にした後の track=${r.keepStream.trackStatesAfterDisable?.join(', ') || '-'}`
+                      : '')
                   : '')}
             </li>
           ))}
         </ol>
+        {mute && <TtsPlaysView plays={snapshot.ttsPlays ?? []} />}
       </div>
     )
   }
@@ -203,6 +233,25 @@ function SnapshotView({ snapshot }: { snapshot: ExperimentSnapshot }) {
           ページの出来事：{diagnostics.experiment.pageEvents.map(e => `${e.type}(${e.visibilityState}${e.persisted !== undefined ? `,persisted=${e.persisted}` : ''})`).join(' ')}
         </p>
       )}
+    </div>
+  )
+}
+
+// legacymute の読み上げの記録（直近の 5 件）
+function TtsPlaysView({ plays }: { plays: LegacyTtsPlay[] }) {
+  const shown = plays.slice(-SHOWN_TTS_PLAYS)
+  return (
+    <div data-testid="experiment-tts-plays">
+      <p style={{ margin: '8px 0 4px' }}>読み上げ</p>
+      {shown.length === 0 && <p>読み上げの記録はありません</p>}
+      <ol style={{ margin: 0, paddingLeft: '20px' }}>
+        {shown.map((p, i) => (
+          <li key={i}>
+            {`直前の録音の番号=${p.afterRecordingNo ?? '-'}、再生の前の track=${p.trackStatesBeforePlay.join(', ') || '-'}、`
+              + `play()=${p.playResult ?? '結果なし'}、onended=${p.ended ? '来た' : '来ていない'}、onerror=${p.error ? '来た' : '来ていない'}`}
+          </li>
+        ))}
+      </ol>
     </div>
   )
 }

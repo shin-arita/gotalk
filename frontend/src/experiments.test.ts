@@ -246,3 +246,60 @@ describe('resolveExperimentConfig: legacykeep', () => {
     expect(config.legacyKeep).toBe(false)
   })
 })
+
+// 4回目の実験のスイッチ（legacymute）の指定と組み合わせ
+describe('resolveExperimentConfig: legacymute', () => {
+  const ALL_KEYS = ['legacy', 'legacyKeep', 'legacyMute', 'noRecog', 'legacyRecog', 'noMeter', 'noDisconnect', 'awaitClose', 'noTrackRead', 'noEndedListener', 'noLifecycle', 'trace',
+    'recogFirst', 'recogAbort', 'recogDelay', 'recogEarly', 'recogOnce'] as const
+  const OVER_LEGACY = 'legacymute が優先（legacymute は legacykeep に track の無効と有効を加えたもの）'
+
+  it('keeps legacymute off without exp, with an empty exp and with legacykeep', () => {
+    expect(DEFAULT_EXPERIMENT_CONFIG.legacyMute).toBe(false)
+    expect(readExperimentConfig('?exp=').legacyMute).toBe(false)
+    expect(readExperimentConfig('?exp=legacykeep').legacyMute).toBe(false)
+    expect(readExperimentConfig('?exp=legacy').legacyMute).toBe(false)
+  })
+
+  it('turns on legacymute alone with legacyKeep', () => {
+    const config = readExperimentConfig('?exp=legacymute')
+    expect(config.effective).toEqual(['legacymute'])
+    expect(config.inactive).toEqual([])
+    expect(config.legacyMute).toBe(true)
+    expect(config.legacyKeep).toBe(true)
+    expect(config.legacy).toBe(false)
+    ALL_KEYS.filter(k => k !== 'legacyMute' && k !== 'legacyKeep').forEach(k => expect(config[k]).toBe(false))
+  })
+
+  it('prefers legacymute over legacy and legacykeep in any order', () => {
+    for (const search of ['?exp=legacy,legacykeep,legacymute', '?exp=legacymute,legacykeep,legacy', '?exp=legacykeep,legacymute,legacy']) {
+      const config = readExperimentConfig(search)
+      expect(config.effective).toEqual(['legacymute'])
+      expect(config.legacyMute).toBe(true)
+      expect(config.legacyKeep).toBe(true)
+      expect(config.legacy).toBe(false)
+      expect(config.inactive).toEqual(config.requested.filter(n => n !== 'legacymute').map(name => ({ name, reason: OVER_LEGACY })))
+    }
+  })
+
+  it('uses legacymute alone and makes the others (trace too) inactive', () => {
+    const config = readExperimentConfig('?exp=norecog,legacymute,trace,recogonce,legacykeep,typo,legacy')
+    expect(config.effective).toEqual(['legacymute'])
+    expect(config.ignored).toEqual(['typo'])
+    expect(config.inactive).toEqual([
+      { name: 'norecog', reason: 'legacymute と組み合わせない' },
+      { name: 'trace', reason: 'legacymute と組み合わせない' },
+      { name: 'recogonce', reason: 'legacymute と組み合わせない' },
+      { name: 'legacykeep', reason: OVER_LEGACY },
+      { name: 'legacy', reason: OVER_LEGACY },
+    ])
+    ALL_KEYS.filter(k => k !== 'legacyMute' && k !== 'legacyKeep').forEach(k => expect(config[k]).toBe(false))
+  })
+
+  it('ignores legacymute in a different case', () => {
+    const config = readExperimentConfig('?exp=LegacyMute,legacykeep')
+    expect(config.ignored).toEqual(['LegacyMute'])
+    expect(config.effective).toEqual(['legacykeep'])
+    expect(config.legacyMute).toBe(false)
+    expect(config.legacyKeep).toBe(true)
+  })
+})

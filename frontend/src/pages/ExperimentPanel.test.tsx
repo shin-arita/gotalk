@@ -130,3 +130,32 @@ describe('ExperimentPanel', () => {
     expect(select).toHaveBeenCalled()
   })
 })
+
+// 4回目の実験の legacymute の表示（値がないときの表示）
+describe('ExperimentPanel with legacymute', () => {
+  const keepStream = {
+    streamReused: false, getUserMediaCalls: 1, trackStates: [], rmsMax: 0, rmsNonZeroSamples: 0, rmsSamples: 0,
+    audioContextState: null, audioContextFirstTickState: null, audioContextError: null, transcriptSent: null,
+  }
+
+  it('shows - for missing values and the readings', async () => {
+    const config = readExperimentConfig('?exp=legacymute')
+    const snapshot: ExperimentSnapshot = {
+      kind: 'legacy', takenAt: 't', effective: ['legacymute'], config,
+      recordings: [{ startCalledAt: null, stopCalledAt: null, dataSizes: [], blobSize: null, blobType: null, keepStream }],
+      ttsPlays: [{ afterRecordingNo: null, trackStatesBeforePlay: [], playCalledAt: 0, playResult: null, ended: false, error: true }],
+    }
+    render(<ExperimentPanel config={config} busy={false} read={() => snapshot} />)
+    const view = await refresh()
+    expect(view).toHaveTextContent('（legacymute）')
+    expect(view).toHaveTextContent('録音の番号=-、有効に戻した後の track=-、無効にした後の track=-')
+    expect(screen.getByTestId('experiment-tts-plays')).toHaveTextContent('直前の録音の番号=-、再生の前の track=-、play()=結果なし、onended=来ていない、onerror=来た')
+  })
+
+  it('shows no readings when the snapshot has no ttsPlays', async () => {
+    const config = readExperimentConfig('?exp=legacymute')
+    render(<ExperimentPanel config={config} busy={false} read={() => ({ kind: 'legacy', takenAt: 't', effective: ['legacymute'], config, recordings: [] })} />)
+    await refresh()
+    expect(screen.getByTestId('experiment-tts-plays')).toHaveTextContent('読み上げの記録はありません')
+  })
+})
