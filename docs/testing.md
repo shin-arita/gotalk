@@ -101,7 +101,7 @@ Frontend のテストファイルは次のとおりです。
 | `frontend/src/pages/LegacyInterpreterPage.test.tsx` | `legacy` の部品。`07f06f0` の `InterpreterPage.test.tsx` を、import だけを変えて残したもの |
 | `frontend/src/pages/LegacyInterpreterPage.experiments.test.tsx` | `legacy` の部品の実験の記録と、足していないもの（`useAudioSession`、track の読み取り、listener） |
 | `frontend/src/pages/LegacyInterpreterPage.keepStream.test.tsx` | `legacykeep`（3回目の実験）のマイクの使い回しと記録、`getUserMedia` を待つ間の2回目の操作と画面の外れの守り。`legacy` とスイッチがないときに、今までどおり録音ごとに `getUserMedia` を呼び、track を止めること |
-| `frontend/src/pages/LegacyInterpreterPage.legacyMute.test.tsx` | `legacymute`（4回目の実験）の track の無効（`onstop` の後）と有効（次の録音の開始で、`MediaRecorder` を作る前）、開始の途中の失敗で無効に戻すこと、録音ごとの `recordingNo` と track の状態の記録、読み上げの記録と表示。`legacykeep`、`legacy`、スイッチがないときに、`enabled` を書き換えず、読み上げの記録を作らないこと |
+| `frontend/src/pages/LegacyInterpreterPage.legacyMute.test.tsx` | `legacymute`（4回目の実験）の track の無効（`onstop` の後）と有効（次の録音の開始で、`MediaRecorder` を作る前）、開始の途中の失敗で無効に戻すこと（音声認識の constructor の例外では `MediaRecorder` が録音中のまま残ること）、録音ごとの `recordingNo` と track の状態の記録、読み上げの記録と表示。`legacykeep`、`legacy`、スイッチがないときに、`enabled` を書き換えず、読み上げの記録を作らないこと |
 | `frontend/src/App.test.tsx` | `exp` に `legacy`、`legacykeep`、`legacymute` のどれかがあるときだけ `LegacyInterpreterPage` を使うこと |
 
 実行コマンド:
@@ -372,6 +372,7 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
 - `legacymute` のとき：`legacykeep` の記録（記録の上限の 20 件も同じ）に加えて、次を記録します。`legacykeep` のときは、これらの項目を持ちません
   - 録音ごとの `keepStream` に、画面を開いてから何回目の録音か（`recordingNo`。1から。録音の記録が成立したとき（`MediaRecorder` を作れたとき）に数える）、録音の開始で track を有効に戻した直後の状態（`trackStatesAfterEnable`。`getUserMedia` を呼んだときは、新しい track の状態）、`onstop` で track を無効にした直後の状態（`trackStatesAfterDisable`。`onstop` が来るまでは空の配列）。書き方は `trackStates` と同じ `readyState/enabled/muted` です。2回目からの `trackStates`（使い回すかを決めたときの状態）は、前の録音の後に無効にしたので `live/disabled/...` になります
   - 読み上げの記録（`ttsPlays`。画面ごとに直近の 10 件）：`handleSpeak` で `audio.play()` を呼ぶ直前に1件作ります。直前の録音の `recordingNo`（`afterRecordingNo`。録音がまだないときは `null`）、`play()` を呼ぶ直前の track の状態（`trackStatesBeforePlay`。持っていないときは空）、`play()` を呼んだ時刻（`playCalledAt`。`performance.now()`）、`play()` の結果（`playResult`。解決したら `'resolved'`、例外なら例外の `name`。結果が出るまでは `null`）、`onended` が来たか（`ended`）、`onerror` が来たか（`error`）。`fetch` の失敗などで `play()` を呼ばなかったときは記録しません
+  - 音声認識の constructor が例外になったとき：`startRecording` の `catch` で track は無効になりますが、`legacy` と同じく `MediaRecorder` は録音中のまま残ります（画面は `idle` に戻り、`microphone_denied` が出ます）。その録音の記録は、`trackStatesAfterDisable` が空のまま残ります。次に国旗を押すと、残った `MediaRecorder` は止める手段がないまま録音を続けます。その `onstop` は画面が外れるまで来ないので、次の録音のデータと track には影響しません。`microphone_denied` が出た後に成功の条件5（オレンジ色が消える）が失敗した場合は、この経路を疑います
   - 表示：見出しは `（legacymute）` です。録音ごとの行に、録音の番号、有効に戻した後の track、無効にした後の track を足し、読み上げの記録を別の欄（「読み上げ」。直近の5件）に出します。「コピー」の JSON には、読み上げの記録をすべて（10 件まで）入れます
 - 表示：`exp` があるときだけ、通訳の画面の下に、診断の表示と「更新」「コピー」のボタンを出します。表示は「更新」を押したときだけ変わります（直近の5回分）。「コピー」は、押したときに最新の診断の情報を JSON でクリップボードに写します（写せないときは、選んで写せる欄に出します）。録音中（今の通訳の画面は `starting`、`recording`、`stopping`。`legacy` は `recording` と、録音の確定（`onstop` と翻訳の結果）を待つ `processing`）は押せません。`legacy` は `getUserMedia` を待つ間も `idle` のままなので、その間は押せてしまいます（新しい state を足さないため）。定期的な読み取り、新しい timer、出来事ごとの再描画はしません
 
@@ -428,6 +429,7 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
 1. Safari を終了し、`https://gotalk.chiemaru.com/?exp=legacymute` を開く
 2. 10 回話す。毎回「わたしのなまえはありたしんです」。毎回、録音を止めた後にオレンジ色が消えるかを見る
 3. 3回目と7回目の後に、読み上げを押す。音が出るか、どこから出るか（スピーカーか受話口か）を聞き、最後まで鳴り終わるのを待ってから次の録音をする
+   - しばらく（30 秒ほど）待っても読み上げのボタンが戻らず、国旗を押せないときは、そのことを書き留め、画面を離れる前に「更新」と「コピー」で記録を取ります（`ttsPlays` の `playResult`、`ended`、`error` を見ます）。この場合、成功の条件6は失敗、条件7は判断できないとします
 4. 10 回の間は Safari から離れない
 5. 診断の「コピー」の JSON を取る
 
@@ -440,9 +442,12 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
    - 1回目から10回目のすべてで、止めた後の `trackStatesAfterDisable` が `live/disabled/...`
    - 2回目から10回目では、開始のときの `trackStates` が `live/disabled/...`、`streamReused=true` で、有効に戻した後の `trackStatesAfterEnable` が `live/enabled/...`
    - 1回目の `trackStatesAfterEnable`（新しく取った track）も `live/enabled/...`
+   - 同じ track であることは、2回目からの `streamReused=true` と、`getUserMediaCalls` が 1 のままであることで確かめます
 5. すべての録音で、止めた後にオレンジ色が消える
 6. 3回目と7回目の後の読み上げでは、再生の前の track が `live/disabled/...` で、スピーカーから通常の音量で最後まで鳴る。記録では `play()` が解決し、`onended` が来て、`onerror` が来ない
 7. 読み上げの直後の4回目と8回目も、通常の大きさ、RMS が 0 でない、`transcriptSent=true` で成功する
+
+条件6と7での読み上げと次の録音の対応は、`ttsPlays` の `afterRecordingNo` と、その次の `recordingNo` の録音で見ます。開始の途中で失敗した録音も番号を使うので、利用者の数える回数とずれることがあります
 
 判断の仕方：
 
