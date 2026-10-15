@@ -234,6 +234,30 @@ describe('LegacyInterpreterPage with exp=legacymute: track', () => {
     expect(screen.getByRole('alert')).toBeInTheDocument()
   })
 
+  it('disables the track and leaves the MediaRecorder recording when the recognition constructor throws (OO1)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    renderLegacy(muteConfig())
+    const stream = makeFakeStream()
+    await recordOnce(0, ['a'], { stream })
+    ;(recognitions.Ctor as unknown as { mockImplementationOnce: (f: () => never) => void }).mockImplementationOnce(function () { throw new Error('unavailable') })
+    await act(async () => { fireEvent.click(flag()) })
+    expect(warn).toHaveBeenCalled()
+    // track は無効になる
+    expect(stream.tracks[0].enabled).toBe(false)
+    expect(stream.tracks[0].stop).not.toHaveBeenCalled()
+    // 画面は idle に戻り、国旗を押せる
+    expect(flag()).toBeEnabled()
+    // 選んだ2つの言語（日本語と英語）の microphone_denied の文
+    expect(screen.getByRole('alert').textContent).toBe(getLocalizedMessage('microphone_denied', 'ja', 'en'))
+    // MediaRecorder は録音中のまま残る（legacy からある動き）
+    expect(recorders.instances[1].start).toHaveBeenCalledTimes(1)
+    expect(recorders.instances[1].stop).not.toHaveBeenCalled()
+    expect(recorders.instances[1].state).toBe('recording')
+    // その録音の記録は trackStatesAfterDisable が空のまま
+    const json = await copyJson()
+    expect(json.recordings[1].keepStream).toMatchObject({ recordingNo: 2, trackStatesAfterEnable: ['live/enabled/unmuted'], trackStatesAfterDisable: [] })
+  })
+
   it('stops the track when the screen goes away', async () => {
     const { unmount } = renderLegacy(muteConfig())
     const stream = makeFakeStream()
