@@ -372,7 +372,7 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
 - `legacymute` のとき：`legacykeep` の記録（記録の上限の 20 件も同じ）に加えて、次を記録します。`legacykeep` のときは、これらの項目を持ちません
   - 録音ごとの `keepStream` に、画面を開いてから何回目の録音か（`recordingNo`。1から。録音の記録が成立したとき（`MediaRecorder` を作れたとき）に数える）、録音の開始で track を有効に戻した直後の状態（`trackStatesAfterEnable`。`getUserMedia` を呼んだときは、新しい track の状態）、`onstop` で track を無効にした直後の状態（`trackStatesAfterDisable`。`onstop` が来るまでは空の配列）。書き方は `trackStates` と同じ `readyState/enabled/muted` です。2回目からの `trackStates`（使い回すかを決めたときの状態）は、前の録音の後に無効にしたので `live/disabled/...` になります
   - 読み上げの記録（`ttsPlays`。画面ごとに直近の 10 件）：`handleSpeak` で `audio.play()` を呼ぶ直前に1件作ります。直前の録音の `recordingNo`（`afterRecordingNo`。録音がまだないときは `null`）、`play()` を呼ぶ直前の track の状態（`trackStatesBeforePlay`。持っていないときは空）、`play()` を呼んだ時刻（`playCalledAt`。`performance.now()`）、`play()` の結果（`playResult`。解決したら `'resolved'`、例外なら例外の `name`。結果が出るまでは `null`）、`onended` が来たか（`ended`）、`onerror` が来たか（`error`）。`fetch` の失敗などで `play()` を呼ばなかったときは記録しません
-  - 音声認識の constructor が例外になったとき：`startRecording` の `catch` で track は無効になりますが、`legacy` と同じく `MediaRecorder` は録音中のまま残ります（画面は `idle` に戻り、`microphone_denied` が出ます）。その録音の記録は、`trackStatesAfterDisable` が空のまま残ります。次に国旗を押すと、残った `MediaRecorder` は止める手段がないまま録音を続けます。その `onstop` は画面が外れるまで来ないので、次の録音のデータと track には影響しません。`microphone_denied` が出た後に成功の条件5（オレンジ色が消える）が失敗した場合は、この経路を疑います
+  - 音声認識の constructor が例外になったとき：`startRecording` の `catch` で track は無効になりますが、`legacy` と同じく `MediaRecorder` は録音中のまま残ります（画面は `idle` に戻り、`microphone_denied` が出ます）。その録音の記録は、`trackStatesAfterDisable` が空のまま残ります。次に国旗を押すと、残った `MediaRecorder` は止める手段がないまま録音を続けます。その `onstop` は、画面が外れるか、track が `ended` になるまで来ません。どちらのときも次の録音も止まるので、次の録音のデータと track には影響しません。`microphone_denied` が出た後に成功の条件5（オレンジ色が消える）が失敗した場合は、この経路を疑います
   - 表示：見出しは `（legacymute）` です。録音ごとの行に、録音の番号、有効に戻した後の track、無効にした後の track を足し、読み上げの記録を別の欄（「読み上げ」。直近の5件）に出します。「コピー」の JSON には、読み上げの記録をすべて（10 件まで）入れます
 - 表示：`exp` があるときだけ、通訳の画面の下に、診断の表示と「更新」「コピー」のボタンを出します。表示は「更新」を押したときだけ変わります（直近の5回分）。「コピー」は、押したときに最新の診断の情報を JSON でクリップボードに写します（写せないときは、選んで写せる欄に出します）。録音中（今の通訳の画面は `starting`、`recording`、`stopping`。`legacy` は `recording` と、録音の確定（`onstop` と翻訳の結果）を待つ `processing`）は押せません。`legacy` は `getUserMedia` を待つ間も `idle` のままなので、その間は押せてしまいます（新しい state を足さないため）。定期的な読み取り、新しい timer、出来事ごとの再描画はしません
 
@@ -447,7 +447,7 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
 6. 3回目と7回目の後の読み上げでは、再生の前の track が `live/disabled/...` で、スピーカーから通常の音量で最後まで鳴る。記録では `play()` が解決し、`onended` が来て、`onerror` が来ない
 7. 読み上げの直後の4回目と8回目も、通常の大きさ、RMS が 0 でない、`transcriptSent=true` で成功する
 
-条件6と7での読み上げと次の録音の対応は、`ttsPlays` の `afterRecordingNo` と、その次の `recordingNo` の録音で見ます。開始の途中で失敗した録音も番号を使うので、利用者の数える回数とずれることがあります
+条件6と7での読み上げと次の録音の対応は、`ttsPlays` の `afterRecordingNo` と、その次の `recordingNo` の録音で見ます。`MediaRecorder` を作れた後に開始の途中で失敗した録音（`MediaRecorder.start()` の例外、音声認識の constructor の例外）も番号を使うので、利用者の数える回数とずれることがあります（`getUserMedia` の失敗と `MediaRecorder` の作成の失敗では番号を使いません）
 
 判断の仕方：
 
