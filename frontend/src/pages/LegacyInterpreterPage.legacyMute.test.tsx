@@ -9,7 +9,7 @@ import {
   AUDIO_GLOBALS, makeFakeStream, saveGlobals, setupAnimationFrame, setupAudioContext, setupDeferredGetUserMedia, setupMediaRecorder,
   setupSpeechRecognition,
 } from '../test/audioMocks'
-import type { FakeStream, FakeTrack } from '../test/audioMocks'
+import type { FakeAudioContext, FakeStream, FakeTrack } from '../test/audioMocks'
 
 // 4回目の実験の legacymute（legacykeep に、録音の後の track の無効と、次の録音の開始での有効を加えたもの。
 // docs/testing.md の「実験のスイッチ」）
@@ -254,7 +254,7 @@ describe('LegacyInterpreterPage with exp=legacymute: track', () => {
     expect(orphan.start).toHaveBeenCalledTimes(1)
     expect(orphan.stop).toHaveBeenCalledTimes(1)
     expect(orphan.state).toBe('inactive')
-    // 波紋と AudioContext を片付ける
+    // 波紋と AudioContext を片付ける（close() は1回だけで、二重に閉じない）
     expect(contexts.instances[1].close).toHaveBeenCalledTimes(1)
     // track は無効になり、止めない
     expect(stream.tracks[0].enabled).toBe(false)
@@ -273,6 +273,32 @@ describe('LegacyInterpreterPage with exp=legacymute: track', () => {
     // 止めた録音の記録には、onstop で無効にした track の状態が残る
     const json = await copyJson()
     expect(json.recordings[1].keepStream).toMatchObject({ recordingNo: 2, trackStatesAfterEnable: ['live/enabled/unmuted'], trackStatesAfterDisable: ['live/disabled/unmuted'] })
+  })
+
+  it('closes the AudioContext of this start when createMediaStreamSource and then the recognition constructor throw (OO10)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    renderLegacy(muteConfig())
+    const stream = makeFakeStream()
+    await recordOnce(0, ['a'], { stream })
+    // 2回目の AudioContext だけ、createMediaStreamSource を例外にする（audioContextRef に入れる前の例外）
+    const ctor = contexts.Ctor as unknown as { getMockImplementation: () => (...args: unknown[]) => unknown; mockImplementationOnce: (f: (...args: unknown[]) => unknown) => void }
+    const impl = ctor.getMockImplementation()
+    ctor.mockImplementationOnce(function (this: unknown, ...args: unknown[]) {
+      const ctx = impl.apply(this, args) as FakeAudioContext
+      ctx.createMediaStreamSource.mockImplementation(() => { throw new DOMException('no source', 'InvalidStateError') })
+      return ctx
+    })
+    const orphan = await failByRecognition()
+    expect(orphan.stop).toHaveBeenCalledTimes(1)
+    expect(contexts.instances).toHaveLength(2)
+    expect(contexts.instances[1].createMediaStreamSource).toHaveBeenCalledTimes(1)
+    // この呼び出しで作った AudioContext を1回だけ閉じる
+    expect(contexts.instances[1].close).toHaveBeenCalledTimes(1)
+    // 1回目の録音の AudioContext は、その停止で閉じた1回のまま
+    expect(contexts.instances[0].close).toHaveBeenCalledTimes(1)
+    expect(stream.tracks[0].enabled).toBe(false)
+    const json = await copyJson()
+    expect(json.recordings[1].keepStream).toMatchObject({ audioContextState: 'running', audioContextError: 'InvalidStateError' })
   })
 
   it('does not mix the stopped recorder data into the next recording (OO9)', async () => {

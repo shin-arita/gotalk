@@ -563,10 +563,11 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
             cancelAnimationFrame(rafIdRef.current)
             rafIdRef.current = null
           }
-          muteAudioCtx.close()
           audioContextRef.current = null
           analyserRef.current = null
         }
+        // この呼び出しで作った AudioContext は、audioContextRef に入れる前の例外（内側の catch で受けたもの）でも閉じる
+        if (muteAudioCtx && muteAudioCtx.state !== 'closed') muteAudioCtx.close()
         rippleRefs.current.forEach(el => {
           if (el) { el.style.transform = 'scale(0)'; el.style.opacity = '0' }
         })
