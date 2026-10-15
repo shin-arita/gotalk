@@ -6,6 +6,7 @@
 export const EXPERIMENT_NAMES = [
   'legacy',
   'legacykeep',
+  'legacymute',
   'norecog',
   'legacyrecog',
   'nometer',
@@ -45,6 +46,9 @@ export interface ExperimentConfig {
   legacy: boolean
   // 3回目の実験（legacy に、マイクの使い回しだけを加えたもの）
   legacyKeep: boolean
+  // 4回目の実験（legacykeep に、録音の後の track の無効と、次の録音の開始での有効を加えたもの）。
+  // true のときは legacyKeep も true にする（legacykeep のすべての動きを使うため）
+  legacyMute: boolean
   noRecog: boolean
   legacyRecog: boolean
   noMeter: boolean
@@ -72,6 +76,7 @@ export const DEFAULT_EXPERIMENT_CONFIG: ExperimentConfig = Object.freeze({
   effective: [],
   legacy: false,
   legacyKeep: false,
+  legacyMute: false,
   noRecog: false,
   legacyRecog: false,
   noMeter: false,
@@ -114,6 +119,8 @@ const isExperimentName = (name: string): name is ExperimentName => (EXPERIMENT_N
 
 // 名前の一覧から、組み合わせを解いた ExperimentConfig を作る
 // - legacy は単独。ほかの名前（trace も）は inactive
+// - legacymute も単独。ほかの名前（legacy と legacykeep も）は inactive。legacy と legacykeep より優先
+//   （legacymute は legacykeep に track の無効と有効を加えたもの）。legacyMute と legacyKeep の両方を true にする
 // - legacykeep も単独。ほかの名前（legacy と trace も）は inactive。legacy と一緒のときは legacykeep を使う
 //   （legacykeep は legacy にマイクの使い回しを加えたもの）
 // - nometer は nodisconnect と awaitclose より優先
@@ -137,7 +144,13 @@ export function resolveExperimentConfig(parsed: ParsedExperimentQuery): Experime
   const inactive: InactiveExperiment[] = []
   const has = (name: ExperimentName) => requested.includes(name)
   let effective: ExperimentName[]
-  if (has('legacykeep')) {
+  if (has('legacymute')) {
+    effective = ['legacymute']
+    for (const name of requested) {
+      if (name === 'legacy' || name === 'legacykeep') inactive.push({ name, reason: 'legacymute が優先（legacymute は legacykeep に track の無効と有効を加えたもの）' })
+      else if (name !== 'legacymute') inactive.push({ name, reason: 'legacymute と組み合わせない' })
+    }
+  } else if (has('legacykeep')) {
     effective = ['legacykeep']
     for (const name of requested) {
       if (name === 'legacy') inactive.push({ name, reason: 'legacykeep が優先（legacykeep は legacy にマイクの使い回しを加えたもの）' })
@@ -179,7 +192,9 @@ export function resolveExperimentConfig(parsed: ParsedExperimentQuery): Experime
     inactive,
     effective,
     legacy: on('legacy'),
-    legacyKeep: on('legacykeep'),
+    // legacymute は legacykeep のすべての動きを使う
+    legacyKeep: on('legacykeep') || on('legacymute'),
+    legacyMute: on('legacymute'),
     noRecog: on('norecog'),
     legacyRecog: on('legacyrecog'),
     noMeter: on('nometer'),
