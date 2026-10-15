@@ -101,7 +101,8 @@ Frontend のテストファイルは次のとおりです。
 | `frontend/src/pages/LegacyInterpreterPage.test.tsx` | `legacy` の部品。`07f06f0` の `InterpreterPage.test.tsx` を、import だけを変えて残したもの |
 | `frontend/src/pages/LegacyInterpreterPage.experiments.test.tsx` | `legacy` の部品の実験の記録と、足していないもの（`useAudioSession`、track の読み取り、listener） |
 | `frontend/src/pages/LegacyInterpreterPage.keepStream.test.tsx` | `legacykeep`（3回目の実験）のマイクの使い回しと記録、`getUserMedia` を待つ間の2回目の操作と画面の外れの守り。`legacy` とスイッチがないときに、今までどおり録音ごとに `getUserMedia` を呼び、track を止めること |
-| `frontend/src/App.test.tsx` | `exp` に `legacy` か `legacykeep` があるときだけ `LegacyInterpreterPage` を使うこと |
+| `frontend/src/pages/LegacyInterpreterPage.legacyMute.test.tsx` | `legacymute`（4回目の実験）の track の無効（`onstop` の後）と有効（次の録音の開始で、`MediaRecorder` を作る前）、開始の途中の失敗で無効に戻すこと、録音ごとの `recordingNo` と track の状態の記録、読み上げの記録と表示。`legacykeep`、`legacy`、スイッチがないときに、`enabled` を書き換えず、読み上げの記録を作らないこと |
+| `frontend/src/App.test.tsx` | `exp` に `legacy`、`legacykeep`、`legacymute` のどれかがあるときだけ `LegacyInterpreterPage` を使うこと |
 
 実行コマンド:
 
@@ -260,6 +261,16 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
 - 3回目の実験は、`07f06f0` の通訳の画面（`LegacyInterpreterPage.tsx`）に、マイクの使い回しだけを加えたもの（`legacykeep`）です。今の `useAudioSession` には加えません（変える部分が多く、効果を切り分けにくいため）
 - `legacykeep` の2回目からは `getUserMedia` の待ちがないので、`MediaRecorder` の `start()`、`AudioContext` の作成、音声認識の `start()` が、国旗を押した操作の中で同期的に行われます。`legacy` との違いは「マイクを開き直さない」ことと「開始が操作の中で行われる」ことの2つで、この実験ではどちらが効いたかを切り分けられません。成功の後に `useAudioSession` に移すとき（`await` を挟む形になるとき）は、この違いに注意します
 
+4回目の実験（スイッチ `legacymute`）の方針：
+
+- `legacykeep` は iPhone の Safari で 10 回とも成功しました（2回目からお知らせが出ない、録音と音声認識も正常）。ただし、気づいた点が2つありました
+  1. 録音を止めても、オレンジ色の表示が消えない（track を止めないので、画面を離れるまで capture が続く）
+  2. 読み上げを押しても音が出ない（capture が続いている間に `<audio>` で再生しているため）
+- 録音のたびにマイクを閉じると、`legacy` と同じく2回目から録音できなくなります。そこで、閉じずに無効にする形（`enabled = false`）を試します
+- 4回目の実験は、`legacykeep` に、録音が止まったら（`onstop` の中で）track を無効にし、次の録音の開始で（`MediaRecorder` を作る前に）有効に戻す動きを加えたもの（`legacymute`）です
+- 今後の操作は「国旗をタップでマイク入力モード開始、画面のタップで終了」に変わる予定ですが、**この実験では UI は作りません**（マイクの扱いだけを確かめます）。停止は今までどおり「同じ国旗をもう一度押す」です
+- 音量の取得の `AudioContext` の状態は、`running` を前提にしません（無効にした track を有効に戻した後の `AudioContext` の状態は、記録の `audioContextState` と `audioContextFirstTickState` で確かめます）
+
 #### 外すもの（原因が分かった後に、外す PR で扱う）
 
 - 消すファイル
@@ -278,6 +289,7 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
   - `frontend/src/pages/LegacyInterpreterPage.test.tsx`
   - `frontend/src/pages/LegacyInterpreterPage.experiments.test.tsx`
   - `frontend/src/pages/LegacyInterpreterPage.keepStream.test.tsx`（3回目の実験）
+  - `frontend/src/pages/LegacyInterpreterPage.legacyMute.test.tsx`（4回目の実験）
   - `frontend/src/App.test.tsx`（`exp` に関わるテストを消した後に残すものがあるかを、外す PR で判断します）
 - 戻すもの
   - `frontend/src/hooks/useAudioSession.ts`：`createAudioSession` と `useAudioSession` の `config` の引数、スイッチの分岐（`norecog`、`legacyrecog`、`nometer`、`nodisconnect`、`awaitclose`、`notrackread`、`noendedlistener`、`trace`、2回目の実験の `recogfirst`、`recogabort`、`recogdelay`、`recogearly`、`recogonce`）、2回目の実験のために足したもの（`RECOGNITION_END_TIMEOUT_MS`、`RECOGNITION_END_DELAY_MS`、`RecognitionEndWait`、`Session.recognitionEndWait`、`stopRecognitionFirst`、`waitRecognitionEnd`、`timeOutRecognitionEndWait`、`settleRecognitionEndWait`、`cancelRecognitionEndWait`、`onceRecognition`、`onceRecognitionRunning`、`recordOnce`、`disposeOnceRecognition`、`abort` を分けた `abortSession`、`SpeechRecognition` の型の `abort()`）、`exp` の記録（`Session.exp`、`expDiag`、`perfNow` と、`if (s.exp)` の行のすべて）、`recordPageEvent`、`markTraceListenerOnly`、`AudioDiagnostics.experiment`、`trace` のための型（`SpeechRecognition` の `onstart`、`onaudiostart`、`onaudioend`）、`experiments` と `experimentTrace` の import。`stop` の後半を分けた `stopRecorder` と `startStopWatchdog` を残すか戻すかは、外す PR で判断します
@@ -291,8 +303,15 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
     - `ExperimentPanel.tsx`：`LegacyRecording.keepStream`、`LegacyKeepStream`（`trackStates`、RMS、`AudioContext` の状態、`transcriptSent` の項目）、`legacy` の表示の見出し（`legacykeep`）と、マイク、track、RMS、`AudioContext`、音声認識の文字の表示
     - `App.test.tsx`：足した2件（`exp=legacykeep`、`exp=legacy,legacykeep`）
     - `experiments.test.ts`：`describe('resolveExperimentConfig: legacykeep')`
+  - 4回目の実験の `legacymute` で足したもの（上の「消すファイル」と「消すテストのファイル」に含まれるものも、漏れの確かめのために並べます）
+    - `experiments.ts`：`EXPERIMENT_NAMES` の `legacymute`、`ExperimentConfig.legacyMute` とそのコメント、`DEFAULT_EXPERIMENT_CONFIG.legacyMute`、`resolveExperimentConfig` の `legacymute` の分岐とコメント、`legacyKeep: on('legacykeep') || on('legacymute')` の `legacymute` の部分とコメント、`legacyMute: on('legacymute')`
+    - `LegacyInterpreterPage.tsx`：冒頭のコメントの2行（`legacymute` の説明）、`MAX_LEGACY_MUTE_TTS_PLAYS`、`describeTrack`、`muteRecordingCountRef`、`muteTtsPlaysRef`、`startRecording` の `muteTrackStatesAfterEnable` と、使い回すときに track を有効に戻す分岐、`getUserMedia` の後の記録、`keepStream` の `recordingNo`、`trackStatesAfterEnable`、`trackStatesAfterDisable` の記録、`onstop` の track を無効にする分岐、`startRecording` の `catch` の track を無効に戻す行、`handleSpeak` の `legacymute` の分岐（読み上げの記録と、`onended`、`onerror`、`play()` の結果の記録。`else` の `await audio.play()` は元の1行に戻す）、`read` の `trackStatesAfterEnable`、`trackStatesAfterDisable`、`ttsPlays` の写し
+    - `ExperimentPanel.tsx`：`LegacyKeepStream` の `recordingNo`、`trackStatesAfterEnable`、`trackStatesAfterDisable`、`LegacyTtsPlay`、`ExperimentSnapshot` の `ttsPlays`、`SHOWN_TTS_PLAYS`、`legacy` の表示の見出し（`legacymute`）と、録音の番号と track の有効と無効の表示、`TtsPlaysView`
+    - `App.test.tsx`：足した2件（`exp=legacymute`、`exp=legacy,legacykeep,legacymute`）
+    - `experiments.test.ts`：`describe('resolveExperimentConfig: legacymute')`
+    - `ExperimentPanel.test.tsx`：`describe('ExperimentPanel with legacymute')`
 - ドキュメント
-  - `docs/testing.md`：「3. Frontend テスト」のテストファイルの表の、実験の PR で加えた行（上の「消すテストのファイル」の 11 ファイルの行。表では 11 行）と、この節（「切り分けの実験のスイッチ」）そのもの
+  - `docs/testing.md`：「3. Frontend テスト」のテストファイルの表の、実験の PR で加えた行（上の「消すテストのファイル」の 12 ファイルの行。表では 12 行）と、この節（「切り分けの実験のスイッチ」）そのもの
   - `docs/speech-flow.md`：6.9（診断の情報）の終わりの、実験のスイッチの段落
 
 #### スイッチと診断
@@ -305,6 +324,7 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
 | （空。`?exp=`） | 今の本番と同じ動き。passive の診断を出す |
 | `legacy` | PR #26 の前（`07f06f0`）の通訳の画面を、別の部品（`LegacyInterpreterPage`）としてそのまま使う。`useAudioSession` は使わない |
 | `legacykeep` | （3回目の実験）`legacy` と同じ部品（`LegacyInterpreterPage`）で、マイク（`MediaStream` と track）だけを閉じずに使い回す。録音の開始で、持っている stream に track が1つ以上あり、どれも `ended` でなければ、`getUserMedia` を呼ばずにその stream を使う。持っていないとき、track がないとき、`ended` の track があるときは、古い track をすべて `stop()` してから `getUserMedia` を呼ぶ（判定に使うのは `readyState` だけで、`muted` と `enabled` は記録だけ）。`getUserMedia` を待つ間の2回目の操作では何もしない。待つ間に画面が外れたときは、解けた stream の track をすべて止め、録音を始めない。録音の停止の後（`onstop`）は、track の `stop()` を呼ばず、stream も手放さない。画面が外れるとき（言語の選択の画面に戻るときなど）は、今までどおり track を止める。**画面が隠れても（ほかのアプリやタブに切り替えても）、画面が外れるまでマイクを持ち続ける**（ページの出来事の扱いは `legacy` と同じで、見直しは成功の後に行う）。`MediaRecorder`、音声認識、音量の取得の `AudioContext` は、今までどおり録音ごとに作って止める（`AudioContext` は使い回す stream から作る）。翻訳、固有名詞の保護、読み上げ（`<audio>`）、ページの出来事の扱いは `legacy` と同じ |
+| `legacymute` | （4回目の実験）`legacykeep` に、`onstop` での track の無効と、録音の開始のときの有効を加えたもの（`legacyKeep` も true になり、`legacykeep` のすべての動きを使う）。`MediaRecorder` が最後のデータを出し終わった後（`onstop` の中。利用者の停止でない `onstop` でも）に、持っている stream の track をすべて `enabled = false` にする（`stop()` はせず、stream も手放さない。`MediaRecorder.stop()` の前には無効にしない）。次の録音の開始で使い回すと決めた直後、`MediaRecorder` を作る前に、track をすべて `enabled = true` に戻す（`await` は挟まない）。`getUserMedia` を呼んだときは、新しい track は有効のまま。使い回すかの判定は `legacykeep` と同じく `readyState` だけで、`enabled` が false であることを理由に `getUserMedia` をやり直さない。有効に戻した後に開始の途中で失敗した（`startRecording` の `catch` に入った）ときは、track を無効に戻す。画面が外れるときは、今までどおり track を `stop()` する。読み上げ（`<audio>`）の再生の仕方は変えず、記録だけを足す |
 | `norecog` | 音声認識を一切作らない（constructor も呼ばない） |
 | `legacyrecog` | 音声認識の部分だけ、PR #26 の前の方式にする：`start()` が成功した後に ref に入れ、`onend` では `MediaRecorder` が `recording` なら始め直す（画面の状態は見ない）。`07f06f0` との違いは次のとおりです：`onend` の始め直しは止める指示の前だけ、見る `MediaRecorder` はそのセッションのもの（片付けの後は空）、`start()` の例外は今の版と同じく `recognition_failed` として記録する、`onresult` は今の版のまま。理由は、止めた後に音声認識が残ると実験の結果を汚すため（`awaitclose` と組み合わせると、`close()` を待つ間も `recording` のままになる）で、`07f06f0` では止める指示と `MediaRecorder.stop()` が同じ同期の処理の中にあったので、意味は同じです |
 | `nometer` | 音量の取得（`AudioContext`、`createMediaStreamSource`、analyser、`requestAnimationFrame`）を一切使わない。波紋は動かない |
@@ -324,6 +344,7 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
 
 - `legacy` は単独です。ほかの名前（`trace` も）と一緒に指定したときは `legacy` だけを使い、ほかは効きません
 - `legacykeep` も単独です。ほかの名前（`trace` も）と一緒に指定したときは `legacykeep` だけを使い、ほかは効きません。`legacy` と一緒に指定したときは `legacykeep` を使い、`legacy` は効きません（`legacykeep` は `legacy` にマイクの使い回しを加えたものなので）
+- `legacymute` も単独です。ほかの名前（`trace` も）と一緒に指定したときは `legacymute` だけを使い、ほかは効きません。`legacy` や `legacykeep` と一緒に指定したときは `legacymute` を使い、`legacy` と `legacykeep` は効きません（`legacymute` は `legacykeep` に track の無効と有効を加えたものなので）
 - `norecog` は、音声認識を使うスイッチ（`legacyrecog`、`recogfirst`、`recogabort`、`recogdelay`、`recogearly`、`recogonce`）より優先します
 - `nometer` は `nodisconnect` と `awaitclose` より優先します
 - `nodisconnect` と `awaitclose` は組み合わせて使えます
@@ -348,11 +369,15 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
 - `trace` のときは、ページの出来事（`visibilitychange`、`pagehide`、`pageshow`）の handler の中で `document.visibilityState` を読みます（`trace` を付けないときは、`pagehide` と `pageshow` の handler では読みません。`visibilitychange` の handler は、もともと読んでいます）
 - `legacy` のとき：PR #26 の前のコードにもともとある `ondataavailable` と `onstop` の中での値と、`start()` と `stop()` を呼んだ箇所の時刻だけを記録します（`ondataavailable` の回数と大きさ、`onstop` で作る最終の `Blob` の大きさと `type`（`blobType`）、`start()` と `stop()` の時刻）。`MediaRecorder` の property（`mimeType` など）、track の読み取り、track の listener、`AudioContext` の診断、ページの出来事の listener は足していません
 - `legacykeep` のとき：`legacy` の記録に加えて、録音ごとの `keepStream` に、その録音で stream を使い回したか（`streamReused`。`false` は `getUserMedia` を呼んだ）、画面を開いてから `getUserMedia` を呼んだ回数の合計（`getUserMediaCalls`）、使い回すかを決めたときの track の状態（`trackStates`。`readyState/enabled/muted` の形で、今の通訳の画面の診断の表示と同じ。例：`live/enabled/unmuted`。持っていないときは空）、波紋の表示の tick（もともとある `requestAnimationFrame`）の中で取った RMS の最大値（`rmsMax`）と、0 でない値を取った回数（`rmsNonZeroSamples`）、tick の回数（`rmsSamples`）、音量の取得の `AudioContext` の作った直後の `state`（`audioContextState`）と最初の tick での `state`（`audioContextFirstTickState`。tick が回らなかったときは `null`）、作成から analyser までのつなぎで出た例外の `name`（`audioContextError`。出なかったときは `null`。`audioContextError` があり、`audioContextState` が `null` なら、`AudioContext` の作成の例外です。`audioContextState` に値があれば、作成の後（`createMediaStreamSource`、analyser、つなぎ）の例外です。作成の後の例外のときは、その録音の `AudioContext` は閉じられません（`legacy` からある動きで、この実験では変えていません）。`legacykeep` では録音のたびに同じ例外が起き得るので、閉じられない `AudioContext` が増え、後の録音の `audioContextError` の内容が変わることがあります。`audioContextError` が続く場合は、最初の録音の例外を見て判断します）、音声認識の文字を付けて Backend に送ったか（`transcriptSent`。付けなかったときは `false`、Backend に送らなかった録音は `null`）を記録します。新しい timer や listener は足していません。track の状態（`readyState`、`enabled`、`muted`）は `legacykeep` のときだけ読みます（`legacy` のときは読みません）。記録は、`legacy` は直近の 10 件、`legacykeep` は直近の 20 件を残します（表示は直近の5回分で、「コピー」の JSON にはすべて入ります）
+- `legacymute` のとき：`legacykeep` の記録（記録の上限の 20 件も同じ）に加えて、次を記録します。`legacykeep` のときは、これらの項目を持ちません
+  - 録音ごとの `keepStream` に、画面を開いてから何回目の録音か（`recordingNo`。1から。録音の記録が成立したとき（`MediaRecorder` を作れたとき）に数える）、録音の開始で track を有効に戻した直後の状態（`trackStatesAfterEnable`。`getUserMedia` を呼んだときは、新しい track の状態）、`onstop` で track を無効にした直後の状態（`trackStatesAfterDisable`。`onstop` が来るまでは空の配列）。書き方は `trackStates` と同じ `readyState/enabled/muted` です。2回目からの `trackStates`（使い回すかを決めたときの状態）は、前の録音の後に無効にしたので `live/disabled/...` になります
+  - 読み上げの記録（`ttsPlays`。画面ごとに直近の 10 件）：`handleSpeak` で `audio.play()` を呼ぶ直前に1件作ります。直前の録音の `recordingNo`（`afterRecordingNo`。録音がまだないときは `null`）、`play()` を呼ぶ直前の track の状態（`trackStatesBeforePlay`。持っていないときは空）、`play()` を呼んだ時刻（`playCalledAt`。`performance.now()`）、`play()` の結果（`playResult`。解決したら `'resolved'`、例外なら例外の `name`。結果が出るまでは `null`）、`onended` が来たか（`ended`）、`onerror` が来たか（`error`）。`fetch` の失敗などで `play()` を呼ばなかったときは記録しません
+  - 表示：見出しは `（legacymute）` です。録音ごとの行に、録音の番号、有効に戻した後の track、無効にした後の track を足し、読み上げの記録を別の欄（「読み上げ」。直近の5件）に出します。「コピー」の JSON には、読み上げの記録をすべて（10 件まで）入れます
 - 表示：`exp` があるときだけ、通訳の画面の下に、診断の表示と「更新」「コピー」のボタンを出します。表示は「更新」を押したときだけ変わります（直近の5回分）。「コピー」は、押したときに最新の診断の情報を JSON でクリップボードに写します（写せないときは、選んで写せる欄に出します）。録音中（今の通訳の画面は `starting`、`recording`、`stopping`。`legacy` は `recording` と、録音の確定（`onstop` と翻訳の結果）を待つ `processing`）は押せません。`legacy` は `getUserMedia` を待つ間も `idle` のままなので、その間は押せてしまいます（新しい state を足さないため）。定期的な読み取り、新しい timer、出来事ごとの再描画はしません
 
 #### 実機で試す手順
 
-（1回目の実験の手順は PR #28 を見てください。ここには2回目の実験の手順と、その後に3回目の実験の手順を書きます）
+（1回目の実験の手順は PR #28 を見てください。ここには2回目の実験の手順と、その後に3回目と4回目の実験の手順を書きます）
 
 1. 端末は iPhone の Safari です。スイッチを変えるたびに、Safari のアプリを終了して（アプリの切り替え画面で上にスワイプして）開き直します。タブを閉じるだけでは足りないものとします
 2. 1つのスイッチで3回、毎回同じ文（「わたしのなまえはありたしんです」）を話します。毎回、次を書き留めます
@@ -397,6 +422,33 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
    3. 「Shin」が別の名前にならない
    4. 2回目から、マイクの使用のお知らせが出ない（あわせて、2回目からの `keepStream.streamReused` が `true` で、`getUserMediaCalls` が 1 のままであることを確かめます）
 5. 試した後、録音していないときに「コピー」を押し、JSON を Claude.ai に渡します。`legacykeep` の記録は直近の 20 件まで残るので、10 回分はすべて JSON に入ります（`legacy` は直近の 10 件）。Backend のログもあわせて見ます
+
+4回目の実験（`legacymute`）の手順（iPhone の Safari）：
+
+1. Safari を終了し、`https://gotalk.chiemaru.com/?exp=legacymute` を開く
+2. 10 回話す。毎回「わたしのなまえはありたしんです」。毎回、録音を止めた後にオレンジ色が消えるかを見る
+3. 3回目と7回目の後に、読み上げを押す。音が出るか、どこから出るか（スピーカーか受話口か）を聞き、最後まで鳴り終わるのを待ってから次の録音をする
+4. 10 回の間は Safari から離れない
+5. 診断の「コピー」の JSON を取る
+
+成功の条件（すべて）：
+
+1. 10 回とも、録音が通常の大きさで、RMS が動く
+2. 10 回とも `transcriptSent=true` で、話した内容が翻訳より前に最後まで出て、「Shin」が別の名前にならない
+3. `getUserMediaCalls` が最後まで 1 で、2回目からマイクの使用のお知らせが出ない
+4. 同じ track が無効と有効の間を行き来している
+   - 1回目から10回目のすべてで、止めた後の `trackStatesAfterDisable` が `live/disabled/...`
+   - 2回目から10回目では、開始のときの `trackStates` が `live/disabled/...`、`streamReused=true` で、有効に戻した後の `trackStatesAfterEnable` が `live/enabled/...`
+   - 1回目の `trackStatesAfterEnable`（新しく取った track）も `live/enabled/...`
+5. すべての録音で、止めた後にオレンジ色が消える
+6. 3回目と7回目の後の読み上げでは、再生の前の track が `live/disabled/...` で、スピーカーから通常の音量で最後まで鳴る。記録では `play()` が解決し、`onended` が来て、`onerror` が来ない
+7. 読み上げの直後の4回目と8回目も、通常の大きさ、RMS が 0 でない、`transcriptSent=true` で成功する
+
+判断の仕方：
+
+- 1から4と7が成功：マイクの扱いとして使える。5か6が失敗した場合は、オレンジ色や読み上げの扱いを Shin が決める（6が失敗なら `AudioContext` での再生を考える）
+- 4が失敗：1から3が成功していても、`legacymute` 方式が成功したとは言わない
+- 1から3か7が失敗：この手は使えない
 
 ## 4. テスト対象
 
