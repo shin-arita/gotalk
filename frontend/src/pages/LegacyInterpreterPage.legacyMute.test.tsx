@@ -136,6 +136,15 @@ function logRecorderCreation(track: FakeTrack, log: string[]) {
   })
 }
 
+const interpretCalls = () => (globalThis.fetch as unknown as { mock: { calls: [unknown, { body: FormData }][] } }).mock.calls.filter(c => c[0] === '/api/interpret')
+
+// 次の録音を、音声認識の constructor の例外で失敗させる。始めた MediaRecorder を返す
+async function failByRecognition() {
+  ;(recognitions.Ctor as unknown as { mockImplementationOnce: (f: () => never) => void }).mockImplementationOnce(function () { throw new Error('unavailable') })
+  await act(async () => { fireEvent.click(flag()) })
+  return recorders.instances[recorders.instances.length - 1]
+}
+
 describe('LegacyInterpreterPage with exp=legacymute: track', () => {
   it('calls getUserMedia once and disables the track after onstop without stopping it', async () => {
     renderLegacy(muteConfig())
@@ -234,28 +243,109 @@ describe('LegacyInterpreterPage with exp=legacymute: track', () => {
     expect(screen.getByRole('alert')).toBeInTheDocument()
   })
 
-  it('disables the track and leaves the MediaRecorder recording when the recognition constructor throws (OO1)', async () => {
+  it('stops the started MediaRecorder and cleans up when the recognition constructor throws (OO1, OO9)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     renderLegacy(muteConfig())
     const stream = makeFakeStream()
     await recordOnce(0, ['a'], { stream })
-    ;(recognitions.Ctor as unknown as { mockImplementationOnce: (f: () => never) => void }).mockImplementationOnce(function () { throw new Error('unavailable') })
-    await act(async () => { fireEvent.click(flag()) })
+    const orphan = await failByRecognition()
     expect(warn).toHaveBeenCalled()
-    // track は無効になる
+    // 始めた MediaRecorder を止める
+    expect(orphan.start).toHaveBeenCalledTimes(1)
+    expect(orphan.stop).toHaveBeenCalledTimes(1)
+    expect(orphan.state).toBe('inactive')
+    // 波紋と AudioContext を片付ける
+    expect(contexts.instances[1].close).toHaveBeenCalledTimes(1)
+    // track は無効になり、止めない
     expect(stream.tracks[0].enabled).toBe(false)
     expect(stream.tracks[0].stop).not.toHaveBeenCalled()
     // 画面は idle に戻り、国旗を押せる
     expect(flag()).toBeEnabled()
     // 選んだ2つの言語（日本語と英語）の microphone_denied の文
     expect(screen.getByRole('alert').textContent).toBe(getLocalizedMessage('microphone_denied', 'ja', 'en'))
-    // MediaRecorder は録音中のまま残る（legacy からある動き）
-    expect(recorders.instances[1].start).toHaveBeenCalledTimes(1)
-    expect(recorders.instances[1].stop).not.toHaveBeenCalled()
-    expect(recorders.instances[1].state).toBe('recording')
-    // その録音の記録は trackStatesAfterDisable が空のまま
+    // 止めた MediaRecorder の最後のデータと onstop が来ても、翻訳には送らない
+    await act(async () => {
+      orphan.ondataavailable?.({ data: new Blob(['old']) })
+      orphan.onstop?.()
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(interpretCalls()).toHaveLength(1)
+    // 止めた録音の記録には、onstop で無効にした track の状態が残る
     const json = await copyJson()
-    expect(json.recordings[1].keepStream).toMatchObject({ recordingNo: 2, trackStatesAfterEnable: ['live/enabled/unmuted'], trackStatesAfterDisable: [] })
+    expect(json.recordings[1].keepStream).toMatchObject({ recordingNo: 2, trackStatesAfterEnable: ['live/enabled/unmuted'], trackStatesAfterDisable: ['live/disabled/unmuted'] })
+  })
+
+  it('does not mix the stopped recorder data into the next recording (OO9)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    renderLegacy(muteConfig())
+    const stream = makeFakeStream()
+    await recordOnce(0, ['a'], { stream })
+    const orphan = await failByRecognition()
+    // 次の録音を始めた後に、止めた MediaRecorder の最後のデータと onstop が遅れて来る
+    await act(async () => { fireEvent.click(flag()) })
+    expect(stream.tracks[0].enabled).toBe(true)
+    await act(async () => {
+      orphan.ondataavailable?.({ data: new Blob(['OLD']) })
+      orphan.onstop?.()
+    })
+    // 次の録音の track は無効にしない
+    expect(stream.tracks[0].enabled).toBe(true)
+    const next = recorders.instances[2]
+    await act(async () => { fireEvent.click(stopFlag()) })
+    await act(async () => {
+      next.ondataavailable?.({ data: new Blob(['new']) })
+      next.onstop?.()
+    })
+    await act(async () => { await Promise.resolve() })
+    const calls = interpretCalls()
+    expect(calls).toHaveLength(2)
+    const audio = calls[1][1].body.get('audio') as File
+    expect(await audio.text()).toBe('new')
+    expect(stream.tracks[0].enabled).toBe(false)
+  })
+
+  it('does not interpret the stopped recorder when the screen goes away (OO9)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { unmount } = renderLegacy(muteConfig())
+    await recordOnce(0, ['a'], { stream: makeFakeStream() })
+    const orphan = await failByRecognition()
+    unmount()
+    await act(async () => {
+      orphan.ondataavailable?.({ data: new Blob(['old']) })
+      orphan.onstop?.()
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(interpretCalls()).toHaveLength(1)
+  })
+
+  it('does not interpret the stopped recorder after the next recording was stopped and the screen goes away (OO9)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { unmount } = renderLegacy(muteConfig())
+    await recordOnce(0, ['a'], { stream: makeFakeStream() })
+    const orphan = await failByRecognition()
+    // 次の録音を利用者が止めた後（userStoppedRef が true のまま）に画面を離れる
+    await recordOnce(2, ['new'])
+    expect(interpretCalls()).toHaveLength(2)
+    unmount()
+    await act(async () => {
+      orphan.ondataavailable?.({ data: new Blob(['old']) })
+      orphan.onstop?.()
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(interpretCalls()).toHaveLength(2)
+  })
+
+  it('does not call stop() when MediaRecorder.start() throws (OO9)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    renderLegacy(muteConfig())
+    const stream = makeFakeStream()
+    await recordOnce(0, ['a'], { stream })
+    const failing = setupMediaRecorder({ throwOnStart: true })
+    await act(async () => { fireEvent.click(flag()) })
+    expect(failing.instances[0].state).toBe('inactive')
+    expect(failing.instances[0].stop).not.toHaveBeenCalled()
+    expect(stream.tracks[0].enabled).toBe(false)
+    expect(screen.getByRole('alert').textContent).toBe(getLocalizedMessage('microphone_denied', 'ja', 'en'))
   })
 
   it('stops the track when the screen goes away', async () => {
@@ -299,7 +389,7 @@ describe('LegacyInterpreterPage with exp=legacymute: records', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     renderLegacy(muteConfig())
     await recordOnce(0, ['a'], { stream: makeFakeStream() })
-    // 2回目は開始の後に AudioContext より後の音声認識の作成で失敗し、onstop が来ない
+    // 2回目は開始の後に AudioContext より後の音声認識の作成で失敗する。止めた MediaRecorder の onstop は、テストが起こすまで来ない
     ;(recognitions.Ctor as unknown as { mockImplementationOnce: (f: () => never) => void }).mockImplementationOnce(function () { throw new Error('unavailable') })
     await act(async () => { fireEvent.click(flag()) })
     const json = await copyJson()
@@ -456,6 +546,25 @@ describe('LegacyInterpreterPage without legacymute (unchanged)', () => {
     const json = await copyJson()
     expect(json).not.toHaveProperty('ttsPlays')
     json.recordings.forEach((r: object) => expect(r).not.toHaveProperty('keepStream'))
+  })
+
+  it('leaves the MediaRecorder recording when the recognition constructor throws with legacykeep and legacy (OO9)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    for (const search of ['?exp=legacykeep', '?exp=legacy']) {
+      const { unmount } = renderLegacy(readExperimentConfig(search))
+      const before = recorders.instances.length
+      await recordOnce(before, ['a'], { stream: makeFakeStream() })
+      ;(recognitions.Ctor as unknown as { mockImplementationOnce: (f: () => never) => void }).mockImplementationOnce(function () { throw new Error('unavailable') })
+      await act(async () => { fireEvent.click(flag()) })
+      // legacy は録音のたびに getUserMedia を呼ぶ
+      if (search === '?exp=legacy') await act(async () => { await gum.calls[gum.calls.length - 1].resolve(makeFakeStream()) })
+      const started = recorders.instances[before + 1]
+      expect(started.start).toHaveBeenCalledTimes(1)
+      expect(started.stop).not.toHaveBeenCalled()
+      expect(started.state).toBe('recording')
+      expect(screen.getByRole('alert').textContent).toBe(getLocalizedMessage('microphone_denied', 'ja', 'en'))
+      unmount()
+    }
   })
 
   it('works as before without exp', async () => {

@@ -365,6 +365,9 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
 
   const startRecording = async (lang: Language, flagIndex: 0 | 1) => {
     const mimeType = getSupportedMimeType()
+    // legacymute：この呼び出しで作った MediaRecorder と AudioContext（開始の途中で失敗したときに片付ける）
+    let muteRecorder: MediaRecorder | null = null
+    let muteAudioCtx: AudioContext | null = null
     try {
       // legacykeep：持っている stream に track が1つ以上あり、どれも ended でなければ、getUserMedia を呼ばずに
       // その stream を使う。持っていないとき、track がないとき、ended の track があるときは、古い track を
@@ -418,6 +421,9 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
       recordingLangRef.current = lang
 
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      if (experiment.legacyMute) muteRecorder = recorder
+      // legacymute：ほかの録音の MediaRecorder が今の録音になった（開始の途中で失敗して止めた録音の、遅れて来た出来事）
+      const replacedByOther = () => experiment.legacyMute && mediaRecorderRef.current !== null && mediaRecorderRef.current !== recorder
       // 実験の記録
       const rec: LegacyRecording | null = experiment.enabled ? { startCalledAt: null, stopCalledAt: null, dataSizes: [], blobSize: null, blobType: null } : null
       if (rec && experiment.legacyKeep) {
@@ -437,9 +443,11 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
       legacyRecordingRef.current = rec
       recorder.ondataavailable = (e) => {
         if (rec) rec.dataSizes.push(e.data.size) // 実験の記録
+        if (replacedByOther()) return
         if (e.data.size > 0) audioChunksRef.current.push(e.data)
       }
       recorder.onstop = () => {
+        if (replacedByOther()) return
         // legacykeep：track を止めず、stream も手放さない（画面が外れるときに止める）
         if (!experiment.legacyKeep) {
           stream.getTracks().forEach(t => t.stop())
@@ -467,6 +475,7 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
       const keep = rec?.keepStream
       try {
         const audioCtx = new AudioContext()
+        if (experiment.legacyMute) muteAudioCtx = audioCtx
         if (keep) keep.audioContextState = audioCtx.state
         const source = audioCtx.createMediaStreamSource(stream)
         const analyser = audioCtx.createAnalyser()
@@ -541,8 +550,28 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
       }
     } catch (e) {
       console.warn('[GoTalk] microphone error', { reason: e instanceof Error ? e.name : typeof e })
-      // legacymute：開始の途中で失敗したときは、有効に戻した track を無効に戻す
-      if (experiment.legacyMute) streamRef.current?.getTracks().forEach(t => { t.enabled = false })
+      // legacymute：開始の途中で失敗したときは、この呼び出しで始めた MediaRecorder を止め（翻訳には送らない）、
+      // 波紋と AudioContext を片付け、有効に戻した track を無効に戻す
+      if (experiment.legacyMute) {
+        if (muteRecorder?.state === 'recording') {
+          userStoppedRef.current = false
+          if (mediaRecorderRef.current === muteRecorder) mediaRecorderRef.current = null
+          muteRecorder.stop()
+        }
+        if (muteAudioCtx && audioContextRef.current === muteAudioCtx) {
+          if (rafIdRef.current !== null) {
+            cancelAnimationFrame(rafIdRef.current)
+            rafIdRef.current = null
+          }
+          muteAudioCtx.close()
+          audioContextRef.current = null
+          analyserRef.current = null
+        }
+        rippleRefs.current.forEach(el => {
+          if (el) { el.style.transform = 'scale(0)'; el.style.opacity = '0' }
+        })
+        streamRef.current?.getTracks().forEach(t => { t.enabled = false })
+      }
       showMessage('microphone_denied')
       setStatus('idle')
       setRecordingFlagIndex(null)
