@@ -167,7 +167,7 @@ describe('LegacyInterpreterPage with exp=recogonly: start', () => {
     const r = lastRecord()
     expect(r).toEqual({
       recordingNo: 1, lang: 'ja', recognitionCtorMissing: false, utteranceStartedAt: expect.any(Number), startCalledAt: expect.any(Number),
-      stopCalledAt: null, finishedAt: null, startError: null, stopError: null,
+      stopCalledAt: null, finishedAt: null, startError: null, stopError: null, constructorError: null,
       events: [{ type: 'start', at: expect.any(Number), by: 'gesture' }], eventsDropped: 0,
       autoRestarts: 0, restartErrors: [], restartLimitReached: false, silenceBeforeAutoEndMs: [], stopToEndMs: null, endTimeoutFired: false,
       finishReason: null, finalTextLength: null, segments: 0, transcriptSent: false, interpretResult: null,
@@ -193,6 +193,56 @@ describe('LegacyInterpreterPage with exp=recogonly: start', () => {
     // idle に戻り、recordingFlagIndex も null
     expect(flag()).toBeEnabled()
     expect(screen.queryByRole('button', { name: 'Japaneseの録音を停止' })).toBeNull()
+  })
+
+  // 部品の constructor の例外（ctor-error）の後の記録と画面（開始前が idle のときと ready のとき）
+  async function expectCtorError() {
+    const r = lastRecord()
+    expect(r.recognitionCtorMissing).toBe(false)
+    expect(r.constructorError).toBe('Error')
+    expect(r.finishReason).toBe('ctor-error')
+    expect(r.finishedAt).not.toBeNull()
+    expect(r.startCalledAt).toBeNull()
+    expect(r.startError).toBeNull()
+    expect(r.events).toEqual([])
+    expect(screen.getByRole('alert').textContent).toBe(message('recording_start_failed'))
+    expect(flag()).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Japaneseの録音を停止' })).toBeNull()
+  }
+
+  it('records ctor-error when the constructor throws and goes back to idle with recording_start_failed', async () => {
+    recognitions = setupSpeechRecognition({ throwOnCreate: true })
+    renderRecogOnly()
+    await tap()
+    expect(diagnostics().recordings).toHaveLength(1)
+    await expectCtorError()
+    expect(diagnostics().recognitionStarts.gesture).toBe(0)
+    expect(recognitions.instances).toHaveLength(0)
+    expect(interpretCalls()).toHaveLength(0)
+  })
+
+  it('records ctor-error after a ready utterance and goes back to idle', async () => {
+    renderRecogOnly()
+    await utterance()
+    expect(document.querySelector('.translation-card__text')).toHaveTextContent('My name is Arita Shin.')
+    const first = recognition()
+    recognitions = setupSpeechRecognition({ throwOnCreate: true })
+    await tap()
+    expect(diagnostics().recordings).toHaveLength(2)
+    await expectCtorError()
+    expect(diagnostics().recognitionStarts.gesture).toBe(1)
+    expect(interpretCalls()).toHaveLength(1)
+    expect(first.start).toHaveBeenCalledTimes(1)
+    expect(first.abort).not.toHaveBeenCalled()
+    // スナップショットと「コピー」の JSON に constructorError が入る
+    let copied = ''
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn(async (text: string) => { copied = text }) }, configurable: true })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'コピー' })) })
+    const json = JSON.parse(copied) as { diagnostics: RecogOnlyDiagnostics }
+    expect(json.diagnostics.recordings.map(r => r.constructorError)).toEqual([null, 'Error'])
+    fireEvent.click(screen.getByRole('button', { name: '更新' }))
+    expect(screen.getByTestId('experiment-snapshot')).toHaveTextContent('終了=ctor-error')
+    expect(screen.getByTestId('experiment-snapshot')).toHaveTextContent('constructor:Error')
   })
 
   it('records start-error when the first start() throws', async () => {
@@ -654,7 +704,7 @@ describe('LegacyInterpreterPage with exp=recogonly: events and records', () => {
     const json = JSON.parse(copied) as { kind: string; diagnostics: RecogOnlyDiagnostics }
     expect(json.kind).toBe('recogonly')
     expect(Object.keys(json.diagnostics.recordings[0]).sort()).toEqual([
-      'autoRestarts', 'endTimeoutFired', 'events', 'eventsDropped', 'finalTextLength', 'finishReason', 'finishedAt', 'interpretResult', 'lang',
+      'autoRestarts', 'constructorError', 'endTimeoutFired', 'events', 'eventsDropped', 'finalTextLength', 'finishReason', 'finishedAt', 'interpretResult', 'lang',
       'recognitionCtorMissing', 'recordingNo', 'restartErrors', 'restartLimitReached', 'segments', 'silenceBeforeAutoEndMs', 'startCalledAt',
       'startError', 'stopCalledAt', 'stopError', 'stopToEndMs', 'transcriptSent', 'utteranceStartedAt',
     ])

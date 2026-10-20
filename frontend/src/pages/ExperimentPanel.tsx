@@ -97,7 +97,7 @@ export interface RecogOnlyEvent {
 // recogonly：終了の理由
 export type RecogOnlyFinishReason =
   | 'user-stop' | 'end-timeout' | 'restart-limit' | 'restart-start-error'
-  | 'not-allowed' | 'service-not-allowed' | 'unmount' | 'ctor-missing' | 'start-error'
+  | 'not-allowed' | 'service-not-allowed' | 'unmount' | 'ctor-missing' | 'ctor-error' | 'start-error'
 
 // recogonly：発話ごとの記録（画面ごとに直近の 20 件）
 export interface RecogOnlyRecording {
@@ -108,12 +108,13 @@ export interface RecogOnlyRecording {
   startCalledAt: number | null            // 実際に最初の recognition.start() を呼んだ時刻（performance.now()）。部品がないときは null
   stopCalledAt: number | null
   finishedAt: number | null
-  startError: string | null               // 最初の start() の例外の name
-  stopError: string | null                // stop() の例外の name
+  startError: string | null               // 最初の start() の例外を recogErrorName() で文字列にした値（なければ null）
+  stopError: string | null                // stop() の例外を recogErrorName() で文字列にした値（なければ null）
+  constructorError: string | null         // new RecognitionCtor() の例外を recogErrorName() で文字列にした値（なければ null）
   events: RecogOnlyEvent[]                // 最大 300 件
   eventsDropped: number                   // 300 件を超えて残さなかった出来事の数
   autoRestarts: number                    // 自動の始め直しの start() を呼んだ回数（例外でも数える。成功した回数ではない）
-  restartErrors: string[]
+  restartErrors: string[]                 // 自動の始め直しの start() の例外を recogErrorName() で文字列にした値
   restartLimitReached: boolean
   silenceBeforeAutoEndMs: (number | null)[] // 自動の onend ごとに、その認識（直前の start() から）の最後の result からの ms（その認識で result がなければ null）
   stopToEndMs: number | null              // stop() から onend まで（onend が来なければ null）
@@ -360,7 +361,7 @@ function RecogOnlyView({ snapshot }: { snapshot: Extract<ExperimentSnapshot, { k
               {`#${r.recordingNo}、言語=${r.lang}、終了=${r.finishReason ?? '-'}、自動の始め直し=${r.autoRestarts}、`
                 + `stop→end=${r.stopToEndMs === null ? '-' : `${Math.round(r.stopToEndMs)}ms`}、時間切れ=${r.endTimeoutFired ? 'した' : 'しない'}、`
                 + `文字数=${r.finalTextLength ?? '-'}、transcriptSent=${r.transcriptSent}、結果=${r.interpretResult ?? '-'}、`
-                + `エラー=${[...errors, ...(r.startError ? [`start:${r.startError}`] : []), ...(r.stopError ? [`stop:${r.stopError}`] : []), ...r.restartErrors.map(e => `restart:${e}`)].join(', ') || 'なし'}`}
+                + `エラー=${[...errors, ...(r.startError ? [`start:${r.startError}`] : []), ...(r.stopError ? [`stop:${r.stopError}`] : []), ...(r.constructorError ? [`constructor:${r.constructorError}`] : []), ...r.restartErrors.map(e => `restart:${e}`)].join(', ') || 'なし'}`}
             </li>
           )
         })}

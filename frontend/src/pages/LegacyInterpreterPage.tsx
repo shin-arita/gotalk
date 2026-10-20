@@ -707,7 +707,8 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
         setStatus('idle')
         break
       case 'ctor-missing':
-        // 部品がないときは finishUtterance を通さない（startRecogOnly で記録に直接書く）
+      case 'ctor-error':
+        // 部品がないときと、部品の constructor の例外のときは finishUtterance を通さない（startRecogOnly で記録に直接書く）
         break
     }
     // 5. 今の発話を手放す
@@ -743,6 +744,7 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
       finishedAt: null,
       startError: null,
       stopError: null,
+      constructorError: null,
       events: [],
       eventsDropped: 0,
       autoRestarts: 0,
@@ -771,7 +773,19 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
       return
     }
 
-    const recognition = new RecognitionCtor()
+    let recognition: SpeechRecognition
+    try {
+      recognition = new RecognitionCtor()
+    } catch (e) {
+      // 部品の constructor の例外（ctor-error）：ctor-missing と同じく、RecogOnlyUtterance は作らず、記録に直接書く
+      record.constructorError = recogErrorName(e)
+      record.finishReason = 'ctor-error'
+      record.finishedAt = perfNow()
+      showMessage('recording_start_failed')
+      setRecordingFlagIndex(null)
+      setStatus('idle')
+      return
+    }
     recognition.lang = lang.speechCode
     recognition.continuous = true
     recognition.interimResults = true
