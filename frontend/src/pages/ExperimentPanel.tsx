@@ -72,9 +72,79 @@ export interface LegacyTtsPlay {
   error: boolean
 }
 
+// recogonly：出来事の種類
+export type RecogOnlyEventType =
+  | 'start'        // start() を呼んだ（by で、利用者の操作の中か外かを分ける）
+  | 'audiostart' | 'soundstart' | 'speechstart' | 'speechend' | 'soundend' | 'audioend'
+  | 'result'
+  | 'error'
+  | 'end'
+  | 'stop'         // 利用者の終了で stop() を呼んだ
+  | 'abort'        // abort() を呼んだ
+
+export interface RecogOnlyEvent {
+  type: RecogOnlyEventType
+  // 発話の開始（RecogOnlyRecording.utteranceStartedAt）からの ms（performance.now() の差。整数に丸める）
+  at: number
+  // start のときだけ：'gesture'（国旗のタップの中）か 'restart'（自動の始め直し）
+  by?: 'gesture' | 'restart'
+  // error のときだけ：event.error
+  error?: string
+  // end のときだけ：その時の phase（'listening' は自動の終わり、'stopping' は利用者の終了の後、'finished' は終了の後に来たもの）
+  phase?: 'listening' | 'stopping' | 'finished'
+}
+
+// recogonly：終了の理由
+export type RecogOnlyFinishReason =
+  | 'user-stop' | 'end-timeout' | 'restart-limit' | 'restart-start-error'
+  | 'not-allowed' | 'service-not-allowed' | 'unmount' | 'ctor-missing' | 'start-error'
+
+// recogonly：発話ごとの記録（画面ごとに直近の 20 件）
+export interface RecogOnlyRecording {
+  recordingNo: number                     // 画面を開いてから何回目の発話か（1から）
+  lang: string                            // タップした国旗の言語の id
+  recognitionCtorMissing: boolean
+  utteranceStartedAt: number              // 国旗のタップで記録を作った時刻（performance.now()）。出来事の時刻の基準
+  startCalledAt: number | null            // 実際に最初の recognition.start() を呼んだ時刻（performance.now()）。部品がないときは null
+  stopCalledAt: number | null
+  finishedAt: number | null
+  startError: string | null               // 最初の start() の例外の name
+  stopError: string | null                // stop() の例外の name
+  events: RecogOnlyEvent[]                // 最大 300 件
+  eventsDropped: number                   // 300 件を超えて残さなかった出来事の数
+  autoRestarts: number                    // 自動の始め直しの start() を呼んだ回数（例外でも数える。成功した回数ではない）
+  restartErrors: string[]
+  restartLimitReached: boolean
+  silenceBeforeAutoEndMs: (number | null)[] // 自動の onend ごとに、その認識（直前の start() から）の最後の result からの ms（その認識で result がなければ null）
+  stopToEndMs: number | null              // stop() から onend まで（onend が来なければ null）
+  endTimeoutFired: boolean
+  finishReason: RecogOnlyFinishReason | null
+  finalTextLength: number | null          // 送った（送ろうとした）文字の文字数。文字そのものは残さない
+  segments: number                        // result があった認識の数（1つの認識で最初の onresult のときだけ数える）
+  transcriptSent: boolean                 // /api/interpret に送ったか（fetch の直前に、transcript を付けたかで決める。送らなければ false）
+  interpretResult: string | null          // 'ok'、'empty'、'language_mismatch'、エラーの値。決まるまでは null
+}
+
+// recogonly：読み上げの記録（画面ごとに直近の 10 件）
+export interface RecogOnlyTtsPlay {
+  afterRecordingNo: number | null
+  playCalledAt: number
+  playResult: string | null
+  ended: boolean
+  error: boolean
+}
+
+// recogonly：画面全体の記録
+export interface RecogOnlyDiagnostics {
+  recordings: RecogOnlyRecording[]        // 直近の 20 件すべて
+  ttsPlays: RecogOnlyTtsPlay[]            // 直近の 10 件すべて
+  recognitionStarts: { gesture: number; restart: number } // 画面を開いてから start() を呼んだ回数の合計
+}
+
 export type ExperimentSnapshot =
   | { kind: 'audioSession'; takenAt: string; effective: string[]; diagnostics: AudioDiagnostics }
   | { kind: 'legacy'; takenAt: string; effective: string[]; config: Pick<ExperimentConfig, 'raw' | 'requested' | 'ignored' | 'inactive' | 'effective'>; recordings: LegacyRecording[]; ttsPlays?: LegacyTtsPlay[] }
+  | { kind: 'recogonly'; takenAt: string; effective: string[]; config: Pick<ExperimentConfig, 'raw' | 'requested' | 'ignored' | 'inactive' | 'effective'>; diagnostics: RecogOnlyDiagnostics }
 
 interface ExperimentPanelProps {
   config: ExperimentConfig
@@ -131,6 +201,7 @@ export default function ExperimentPanel({ config, busy, read }: ExperimentPanelP
 }
 
 function SnapshotView({ snapshot }: { snapshot: ExperimentSnapshot }) {
+  if (snapshot.kind === 'recogonly') return <RecogOnlyView snapshot={snapshot} />
   if (snapshot.kind === 'legacy') {
     const recordings = snapshot.recordings.slice(-SHOWN_SESSIONS)
     const mute = snapshot.effective.includes('legacymute')
@@ -269,5 +340,44 @@ function RecognitionOnceView({ once }: { once: ExperimentRecognitionOnce }) {
       {`前の実行の end を待たずに飛ばした録音=${once.skippedPendingEnd.length}件`}
       {once.skippedPendingEnd.length > 0 && `（${once.skippedPendingEnd.map(k => `セッション ${k.sessionId}@${ms(k.at, 0)}`).join('、')}。時刻は、ほかの行と違い、ページを開いてからの時間。recogonce の判定に使わない）`}
     </p>
+  )
+}
+
+// recogonly の記録（直近の 5 発話と、直近の 5 件の読み上げ。「コピー」の JSON にはすべて入る）
+function RecogOnlyView({ snapshot }: { snapshot: Extract<ExperimentSnapshot, { kind: 'recogonly' }> }) {
+  const { recordings, ttsPlays, recognitionStarts } = snapshot.diagnostics
+  const shown = recordings.slice(-SHOWN_SESSIONS)
+  const shownPlays = ttsPlays.slice(-SHOWN_TTS_PLAYS)
+  return (
+    <div data-testid="experiment-snapshot">
+      <p style={{ margin: '8px 0 4px' }}>{snapshot.takenAt}（recogonly）</p>
+      {shown.length === 0 && <p>発話の記録はありません</p>}
+      <ol style={{ margin: 0, paddingLeft: '20px' }}>
+        {shown.map(r => {
+          const errors = r.events.filter(e => e.type === 'error').map(e => e.error ?? '-')
+          return (
+            <li key={r.recordingNo}>
+              {`#${r.recordingNo}、言語=${r.lang}、終了=${r.finishReason ?? '-'}、自動の始め直し=${r.autoRestarts}、`
+                + `stop→end=${r.stopToEndMs === null ? '-' : `${Math.round(r.stopToEndMs)}ms`}、時間切れ=${r.endTimeoutFired ? 'した' : 'しない'}、`
+                + `文字数=${r.finalTextLength ?? '-'}、transcriptSent=${r.transcriptSent}、結果=${r.interpretResult ?? '-'}、`
+                + `エラー=${[...errors, ...(r.startError ? [`start:${r.startError}`] : []), ...(r.stopError ? [`stop:${r.stopError}`] : []), ...r.restartErrors.map(e => `restart:${e}`)].join(', ') || 'なし'}`}
+            </li>
+          )
+        })}
+      </ol>
+      <p style={{ margin: '4px 0 0' }}>{`start() の回数：操作の中=${recognitionStarts.gesture}、自動の始め直し=${recognitionStarts.restart}`}</p>
+      <div data-testid="experiment-tts-plays">
+        <p style={{ margin: '8px 0 4px' }}>読み上げ</p>
+        {shownPlays.length === 0 && <p>読み上げの記録はありません</p>}
+        <ol style={{ margin: 0, paddingLeft: '20px' }}>
+          {shownPlays.map((p, i) => (
+            <li key={i}>
+              {`直前の発話の番号=${p.afterRecordingNo ?? '-'}、play()=${p.playResult ?? '結果なし'}、`
+                + `onended=${p.ended ? '来た' : '来ていない'}、onerror=${p.error ? '来た' : '来ていない'}`}
+            </li>
+          ))}
+        </ol>
+      </div>
+    </div>
   )
 }
