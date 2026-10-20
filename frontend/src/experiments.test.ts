@@ -303,3 +303,29 @@ describe('resolveExperimentConfig: legacymute', () => {
     expect(config.legacyKeep).toBe(true)
   })
 })
+
+// 5回目の実験のスイッチ（recogonly）の指定と組み合わせ
+describe('resolveExperimentConfig: recogonly', () => {
+  const ALL_KEYS = ['legacy', 'legacyKeep', 'legacyMute', 'recogOnly', 'noRecog', 'legacyRecog', 'noMeter', 'noDisconnect', 'awaitClose', 'noTrackRead', 'noEndedListener', 'noLifecycle', 'trace',
+    'recogFirst', 'recogAbort', 'recogDelay', 'recogEarly', 'recogOnce'] as const
+
+  it('keeps recogonly off by default', () => {
+    expect(DEFAULT_EXPERIMENT_CONFIG.recogOnly).toBe(false)
+    expect(readExperimentConfig('?exp=').recogOnly).toBe(false)
+    expect(readExperimentConfig('?exp=legacymute').recogOnly).toBe(false)
+  })
+
+  it('turns on recogonly alone', () => {
+    const config = readExperimentConfig('?exp=recogonly')
+    expect(config.effective).toEqual(['recogonly'])
+    expect(config.inactive).toEqual([])
+    ALL_KEYS.forEach(k => expect(config[k]).toBe(k === 'recogOnly'))
+  })
+
+  it('prefers recogonly over legacymute, legacykeep, legacy and makes the others inactive', () => {
+    const config = readExperimentConfig('?exp=legacymute,trace,recogonly,legacykeep,legacy')
+    expect(config.effective).toEqual(['recogonly'])
+    expect(config.inactive).toEqual(['legacymute', 'trace', 'legacykeep', 'legacy'].map(name => ({ name, reason: 'recogonly と組み合わせない' })))
+    ALL_KEYS.forEach(k => expect(config[k]).toBe(k === 'recogOnly'))
+  })
+})
