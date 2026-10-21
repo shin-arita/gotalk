@@ -109,6 +109,13 @@ export interface FakeRecognition {
   lang: string
   interimResults: boolean
   continuous: boolean
+  // 5回目の実験（recogonly）で足した、記録だけに使う出来事（初めは null）
+  onaudiostart: (() => void) | null
+  onsoundstart: (() => void) | null
+  onspeechstart: (() => void) | null
+  onspeechend: (() => void) | null
+  onsoundend: (() => void) | null
+  onaudioend: (() => void) | null
   onresult: ((e: { results: { transcript: string }[][] }) => void) | null
   onerror: ((e?: { error?: string }) => void) | null
   onend: (() => void) | null
@@ -117,7 +124,9 @@ export interface FakeRecognition {
   abort: ReturnType<typeof vi.fn>
 }
 
-export function setupSpeechRecognition(options: { throwOnCreate?: boolean; throwOnStop?: boolean } = {}) {
+// throwOnStart（5回目の実験の recogonly で足したもの）：部品ごとの start() の呼び出しの from 回目（1から）で例外を出す。
+// only が true ならその1回だけ、false か省略なら from 回目から後のすべて（例：最初の呼び出しだけは { from: 1, only: true }）
+export function setupSpeechRecognition(options: { throwOnCreate?: boolean; throwOnStop?: boolean; throwOnStart?: { from: number; only?: boolean } } = {}) {
   const instances: FakeRecognition[] = []
   const Ctor = vi.fn(function () {
     if (options.throwOnCreate) throw new Error('unavailable')
@@ -125,10 +134,21 @@ export function setupSpeechRecognition(options: { throwOnCreate?: boolean; throw
       lang: '',
       interimResults: false,
       continuous: false,
+      onaudiostart: null,
+      onsoundstart: null,
+      onspeechstart: null,
+      onspeechend: null,
+      onsoundend: null,
+      onaudioend: null,
       onresult: null,
       onerror: null,
       onend: null,
-      start: vi.fn(),
+      start: vi.fn(() => {
+        const throwOnStart = options.throwOnStart
+        if (!throwOnStart) return
+        const n = recognition.start.mock.calls.length
+        if (throwOnStart.only ? n === throwOnStart.from : n >= throwOnStart.from) throw new DOMException('cannot start', 'InvalidStateError')
+      }),
       stop: vi.fn(() => { if (options.throwOnStop) throw new Error('stop failed') }),
       abort: vi.fn(),
     }

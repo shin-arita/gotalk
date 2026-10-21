@@ -861,6 +861,46 @@ func TestInterpretHandler_TranscriptPath_PromptForbidsSpeechCorrection(t *testin
 	}
 }
 
+// TestInterpretHandler_TranscriptPath_EmptyAudio verifies the request shape of the recogonly
+// experiment (frontend): a 0-byte audio part with a non-empty transcript and a valid speaker
+// returns 200 without calling transcription (Whisper).
+func TestInterpretHandler_TranscriptPath_EmptyAudio(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	whisperCalls := 0
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() == whisperURL {
+			whisperCalls++
+			return fakeHTTPResponse(http.StatusOK, `{"language":"japanese","text":"x"}`), nil
+		}
+		return fakeHTTPResponse(http.StatusOK, openAITextResponse("My name is Arita Shin.")), nil
+	})
+	req, err := buildInterpretRequestWithTranscript(
+		[]byte{},
+		`{"id":"ja","label":"Japanese"}`,
+		`{"id":"en","label":"English"}`,
+		"ja",
+		"わたしのなまえはありたしんです",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	interpretHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if whisperCalls != 0 {
+		t.Fatalf("whisper calls=%d want=0", whisperCalls)
+	}
+	var resp InterpretResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.SourceLanguage != "ja" || resp.TargetLanguage != "en" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
 // TestTranslateHandler_HakataStation verifies the proper noun protection path for 博多駅.
 // Kagome detects 博多 (place) → placeholder __GT_PROPN_000__; 駅 (common noun) is left for OpenAI to translate.
 // OpenAI receives "__GT_PROPN_000__駅はどこですか" and returns "Where is __GT_PROPN_000__ Station?".

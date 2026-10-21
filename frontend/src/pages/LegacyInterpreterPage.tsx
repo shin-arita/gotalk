@@ -6,7 +6,8 @@ import type { MessageKey } from '../messages'
 import { DEFAULT_EXPERIMENT_CONFIG } from '../experiments'
 import type { ExperimentConfig } from '../experiments'
 import ExperimentPanel from './ExperimentPanel'
-import type { LegacyRecording, LegacyTtsPlay } from './ExperimentPanel'
+import type { LegacyRecording, LegacyTtsPlay, RecogOnlyDiagnostics, RecogOnlyEvent, RecogOnlyFinishReason, RecogOnlyRecording, RecogOnlyTtsPlay } from './ExperimentPanel'
+import { joinRecognitionSegments } from '../recogOnlyText'
 import './InterpreterPage.css'
 
 // 切り分けの実験の legacy（docs/testing.md の「実験のスイッチ」）。PR #26 の前（07f06f0）の
@@ -17,6 +18,8 @@ import './InterpreterPage.css'
 // （3回目の実験。「legacykeep」のコメントの行）。画面が外れるときは、今までどおり閉じる
 // exp に legacymute があるときは、legacykeep の動きに加えて、録音が止まったら track を無効にし（enabled = false）、
 // 次の録音の開始で有効に戻す（4回目の実験。「legacymute」のコメントの行）
+// exp に recogonly があるときは、getUserMedia も録音もせず、音声認識だけで録音の開始と終了を行う
+// （5回目の実験。「recogonly」のコメントの行と、recogonly 専用の関数）
 
 // 実験の記録に残す録音の数
 const MAX_LEGACY_RECORDINGS = 10
@@ -28,6 +31,14 @@ const MAX_LEGACY_MUTE_TTS_PLAYS = 10
 const perfNow = () => performance.now()
 // legacymute：実験の記録の track の状態（readyState/enabled/muted）
 const describeTrack = (t: MediaStreamTrack) => `${t.readyState}/${t.enabled ? 'enabled' : 'disabled'}/${t.muted ? 'muted' : 'unmuted'}`
+// recogonly：記録に残す発話と読み上げの数、1発話の出来事の数、1発話の自動の始め直しの上限、利用者の終了から onend を待つ時間
+const MAX_RECOG_ONLY_RECORDINGS = 20
+const MAX_RECOG_ONLY_TTS_PLAYS = 10
+const MAX_RECOG_ONLY_EVENTS = 300
+const MAX_RECOG_ONLY_AUTO_RESTARTS = 20
+const RECOG_ONLY_END_TIMEOUT_MS = 2000
+// recogonly：例外の name
+const recogErrorName = (e: unknown) => (e instanceof Error || e instanceof DOMException ? e.name : typeof e)
 
 type InterpreterStatus = 'idle' | 'recording' | 'processing' | 'ready' | 'speaking'
 
@@ -117,15 +128,27 @@ interface SpeechRecognitionEvent {
   readonly results: { readonly length: number; readonly [i: number]: { readonly [j: number]: { readonly transcript: string } } }
 }
 
+interface SpeechRecognitionErrorEvent {
+  readonly error: string
+}
+
 interface SpeechRecognition {
   lang: string
   interimResults: boolean
   continuous: boolean
+  // recogonly：記録だけに使う出来事（ブラウザの onstart は使わない。RecogOnlyEvent の start は「start() を呼んだ」の意味）
+  onaudiostart: (() => void) | null
+  onsoundstart: (() => void) | null
+  onspeechstart: (() => void) | null
+  onspeechend: (() => void) | null
+  onsoundend: (() => void) | null
+  onaudioend: (() => void) | null
   onresult: ((event: SpeechRecognitionEvent) => void) | null
-  onerror: (() => void) | null
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null
   onend: (() => void) | null
   start(): void
   stop(): void
+  abort(): void
 }
 
 type SpeechRecognitionCtor = new () => SpeechRecognition
@@ -133,6 +156,32 @@ type SpeechRecognitionCtor = new () => SpeechRecognition
 function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
   const w = window as Window & { SpeechRecognition?: SpeechRecognitionCtor; webkitSpeechRecognition?: SpeechRecognitionCtor }
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null
+}
+
+// recogonly：発話ごとの状態（ref の中身。React の state にはしない。音声認識の部品を作れたときだけ作る）
+interface RecogOnlyUtterance {
+  recognition: SpeechRecognition       // この発話の部品（遅れて来た出来事の照合に使う）。null にはしない
+  lang: Language
+  phase: 'listening' | 'stopping' | 'finished'
+  committedText: string                // 前の認識（始め直す前）までの文字
+  sessionText: string                  // 今回の認識の event.results の全部（確定と途中）をつないだ文字
+  lastResultAt: number | null          // 今回の認識（直前の start() から）で最後に result が来た時刻。start() を呼ぶたびに null に戻す
+  autoRestarts: number
+  endTimer: ReturnType<typeof setTimeout> | null
+  record: RecogOnlyRecording           // 記録（記録の配列にも同じものを入れる。先に作ったもの）
+}
+
+// recogonly：出来事を記録する（300 件に達していたら足さずに eventsDropped を数える）
+function pushRecogEvent(record: RecogOnlyRecording, event: Omit<RecogOnlyEvent, 'at'>) {
+  if (record.events.length >= MAX_RECOG_ONLY_EVENTS) { record.eventsDropped++; return }
+  record.events.push({ ...event, at: Math.round(perfNow() - record.utteranceStartedAt) })
+}
+
+// recogonly：callInterpretApi の例外を、診断の interpretResult の値にする
+function recogInterpretError(e: unknown): string {
+  if (e instanceof ApiError) return e.reason ?? (e.status !== null ? `status_${e.status}` : 'status_none')
+  if (e instanceof DOMException && e.name === 'AbortError') return 'frontend_timeout'
+  return e instanceof Error ? `exception_${e.name}` : `exception_${typeof e}`
 }
 
 export default function LegacyInterpreterPage({ selectedLanguages, onBack, experiment = DEFAULT_EXPERIMENT_CONFIG }: InterpreterPageProps) {
@@ -181,6 +230,10 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
   // legacymute：画面を開いてから録音の記録が成立した回数と、読み上げの記録
   const muteRecordingCountRef = useRef(0)
   const muteTtsPlaysRef = useRef<LegacyTtsPlay[]>([])
+  // recogonly：今の発話（ないときは null）、画面を開いてからの発話の数、画面全体の記録
+  const recogUtteranceRef = useRef<RecogOnlyUtterance | null>(null)
+  const recogRecordingCountRef = useRef(0)
+  const recogDiagRef = useRef<RecogOnlyDiagnostics>({ recordings: [], ttsPlays: [], recognitionStarts: { gesture: 0, restart: 0 } })
 
   useEffect(() => {
     if (!isEditing || !editRef.current) return
@@ -218,8 +271,12 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
     setStatus('idle')
   }
 
-  const callInterpretApi = async (audioBlob: Blob) => {
-    if (isInterpretingRef.current) return
+  // recogRecord は recogonly の診断の記録先（recogonly でない呼び出しでは渡さない）
+  const callInterpretApi = async (audioBlob: Blob, recogRecord?: RecogOnlyRecording) => {
+    if (isInterpretingRef.current) {
+      if (recogRecord) recogRecord.interpretResult = 'skipped_busy' // recogonly
+      return
+    }
     isInterpretingRef.current = true
     setStatus('processing')
     setErrorMessage('')
@@ -250,6 +307,8 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
       // legacykeep：音声認識の文字を付けて送ったか（Backend に送る直前に記録する）
       const keep = legacyRecordingRef.current?.keepStream
       if (keep) keep.transcriptSent = formData.has('transcript')
+      // recogonly：音声認識の文字を付けて送ったか
+      if (recogRecord) recogRecord.transcriptSent = formData.has('transcript')
 
       const res = await fetch('/api/interpret', { method: 'POST', body: formData, signal: controller.signal })
 
@@ -258,7 +317,11 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
 
       if (res.status === 422) {
         const data = await res.json()
-        if (data.error === 'language_mismatch') { handleLangMismatch(); return }
+        if (data.error === 'language_mismatch') {
+          if (recogRecord) recogRecord.interpretResult = 'language_mismatch' // recogonly
+          handleLangMismatch()
+          return
+        }
       }
       if (!res.ok) throw await apiErrorFromResponse('/api/interpret', res)
 
@@ -270,7 +333,9 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
       setBackTranslation(data.backTranslation)
       setStatus('ready')
       addHistoryEntry(data.text, data.translatedText, data.backTranslation, data.sourceLanguage, data.targetLanguage)
+      if (recogRecord) recogRecord.interpretResult = 'ok' // recogonly
     } catch (e) {
+      if (recogRecord) recogRecord.interpretResult = recogInterpretError(e) // recogonly
       showMessage(messageKeyForError('/api/interpret', e))
       setStatus('idle')
     } finally {
@@ -600,9 +665,249 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
     mediaRecorderRef.current.stop()
   }
 
+  // recogonly：終了は、すべてここを通す（最初に呼ばれた1回だけが効く）
+  const finishUtterance = (u: RecogOnlyUtterance, reason: RecogOnlyFinishReason) => {
+    if (u.phase === 'finished') return
+    // 1. 完了を確定し、時間切れの timer を解除する
+    u.phase = 'finished'
+    if (u.endTimer !== null) { clearTimeout(u.endTimer); u.endTimer = null }
+    // 2. 理由と時刻を記録する
+    const { record, recognition } = u
+    record.finishReason = reason
+    record.finishedAt = perfNow()
+    // 3. 国旗の録音中の表示を戻す（unmount は画面が消えるので不要）
+    if (reason !== 'unmount') setRecordingFlagIndex(null)
+    // 4. 理由ごとの扱い（abort() と出来事 abort の記録は、ここでだけ行う）
+    const abortRecognition = () => {
+      pushRecogEvent(record, { type: 'abort' })
+      try { recognition.abort() } catch { /* 無視 */ }
+    }
+    switch (reason) {
+      case 'user-stop':
+      case 'restart-limit':
+      case 'restart-start-error':
+        interpretUtterance(u)
+        break
+      case 'end-timeout':
+        // 翻訳を始めた後に abort() を呼ぶ
+        interpretUtterance(u)
+        abortRecognition()
+        break
+      case 'not-allowed':
+      case 'service-not-allowed':
+        abortRecognition()
+        showMessage('microphone_denied')
+        setStatus('idle')
+        break
+      case 'unmount':
+        abortRecognition()
+        break
+      case 'start-error':
+        showMessage('recording_start_failed')
+        setStatus('idle')
+        break
+      case 'ctor-missing':
+      case 'ctor-error':
+        // 部品がないときと、部品の constructor の例外のときは finishUtterance を通さない（startRecogOnly で記録に直接書く）
+        break
+    }
+    // 5. 今の発話を手放す
+    if (recogUtteranceRef.current === u) recogUtteranceRef.current = null
+  }
+
+  // recogonly：interpret の扱い（callInterpretApi はここでだけ呼ぶ。await しない）
+  const interpretUtterance = (u: RecogOnlyUtterance) => {
+    const finalText = joinRecognitionSegments(u.lang.id, u.committedText, u.sessionText).trim()
+    u.record.finalTextLength = Array.from(finalText).length
+    if (finalText === '') {
+      u.record.interpretResult = 'empty'
+      showMessage('recording_failed')
+      setStatus('idle')
+      return
+    }
+    recognizedTextRef.current = finalText
+    hasLiveTranscriptRef.current = true
+    callInterpretApi(new Blob([], { type: 'audio/webm' }), u.record)
+  }
+
+  // recogonly：録音の開始（国旗の1回目のタップ）。getUserMedia、MediaRecorder、AudioContext は使わない。
+  // 利用者の操作の中で start() を呼ぶため、途中に await を挟まない
+  const startRecogOnly = (lang: Language, flagIndex: 0 | 1) => {
+    const diag = recogDiagRef.current
+    const record: RecogOnlyRecording = {
+      recordingNo: ++recogRecordingCountRef.current,
+      lang: lang.id,
+      recognitionCtorMissing: false,
+      utteranceStartedAt: perfNow(),
+      startCalledAt: null,
+      stopCalledAt: null,
+      finishedAt: null,
+      startError: null,
+      stopError: null,
+      constructorError: null,
+      events: [],
+      eventsDropped: 0,
+      autoRestarts: 0,
+      restartErrors: [],
+      restartLimitReached: false,
+      silenceBeforeAutoEndMs: [],
+      stopToEndMs: null,
+      endTimeoutFired: false,
+      finishReason: null,
+      finalTextLength: null,
+      segments: 0,
+      transcriptSent: false,
+      interpretResult: null,
+    }
+    diag.recordings.push(record)
+    if (diag.recordings.length > MAX_RECOG_ONLY_RECORDINGS) diag.recordings.shift()
+
+    const RecognitionCtor = getSpeechRecognitionCtor()
+    if (!RecognitionCtor) {
+      record.recognitionCtorMissing = true
+      record.finishReason = 'ctor-missing'
+      record.finishedAt = perfNow()
+      showMessage('recording_start_failed')
+      setRecordingFlagIndex(null)
+      setStatus('idle')
+      return
+    }
+
+    let recognition: SpeechRecognition
+    try {
+      recognition = new RecognitionCtor()
+    } catch (e) {
+      // 部品の constructor の例外（ctor-error）：ctor-missing と同じく、RecogOnlyUtterance は作らず、記録に直接書く
+      record.constructorError = recogErrorName(e)
+      record.finishReason = 'ctor-error'
+      record.finishedAt = perfNow()
+      showMessage('recording_start_failed')
+      setRecordingFlagIndex(null)
+      setStatus('idle')
+      return
+    }
+    recognition.lang = lang.speechCode
+    recognition.continuous = true
+    recognition.interimResults = true
+    const u: RecogOnlyUtterance = {
+      recognition, lang, phase: 'listening', committedText: '', sessionText: '', lastResultAt: null, autoRestarts: 0, endTimer: null, record,
+    }
+    // 今の発話の部品の出来事か（前の発話の部品の出来事と、終了の後の出来事は、記録だけにする）
+    const isActive = () => recogUtteranceRef.current?.recognition === recognition && u.phase !== 'finished'
+
+    recognition.onaudiostart = () => pushRecogEvent(record, { type: 'audiostart' })
+    recognition.onsoundstart = () => pushRecogEvent(record, { type: 'soundstart' })
+    recognition.onspeechstart = () => pushRecogEvent(record, { type: 'speechstart' })
+    recognition.onspeechend = () => pushRecogEvent(record, { type: 'speechend' })
+    recognition.onsoundend = () => pushRecogEvent(record, { type: 'soundend' })
+    recognition.onaudioend = () => pushRecogEvent(record, { type: 'audioend' })
+    recognition.onresult = (event) => {
+      pushRecogEvent(record, { type: 'result' })
+      if (!isActive()) return
+      let transcript = ''
+      for (let i = 0; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript
+      }
+      u.sessionText = transcript
+      const text = joinRecognitionSegments(lang.id, u.committedText, u.sessionText)
+      recognizedTextRef.current = text
+      setRecognizedText(text)
+      if (u.lastResultAt === null) record.segments++
+      u.lastResultAt = perfNow()
+    }
+    recognition.onerror = (event) => {
+      pushRecogEvent(record, { type: 'error', error: event.error })
+      if (!isActive()) return
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') finishUtterance(u, event.error)
+    }
+    recognition.onend = () => {
+      pushRecogEvent(record, { type: 'end', phase: u.phase })
+      if (!isActive()) return
+      if (u.phase === 'stopping') {
+        record.stopToEndMs = record.stopCalledAt === null ? null : perfNow() - record.stopCalledAt
+        finishUtterance(u, 'user-stop')
+        return
+      }
+      // 自動の終わり（利用者がまだ終了していない）：途中の文字も含めて確定し、同じ部品の start() を呼び直す
+      record.silenceBeforeAutoEndMs.push(u.lastResultAt === null ? null : perfNow() - u.lastResultAt)
+      u.committedText = joinRecognitionSegments(lang.id, u.committedText, u.sessionText)
+      u.sessionText = ''
+      if (u.autoRestarts >= MAX_RECOG_ONLY_AUTO_RESTARTS) {
+        record.restartLimitReached = true
+        finishUtterance(u, 'restart-limit')
+        return
+      }
+      u.autoRestarts++
+      record.autoRestarts++
+      diag.recognitionStarts.restart++
+      u.lastResultAt = null
+      pushRecogEvent(record, { type: 'start', by: 'restart' })
+      try {
+        recognition.start()
+      } catch (e) {
+        record.restartErrors.push(recogErrorName(e))
+        finishUtterance(u, 'restart-start-error')
+      }
+    }
+
+    // 今の startRecording と同じく、録音の開始の状態を整える（callInterpretApi が speaker と翻訳の向きを recordingLangRef から決める）
+    recordingLangRef.current = lang
+    hasLiveTranscriptRef.current = false
+    isInterpretingRef.current = false
+    recogUtteranceRef.current = u
+    setRecordingFlagIndex(flagIndex)
+    setStatus('recording')
+    record.startCalledAt = perfNow()
+    diag.recognitionStarts.gesture++
+    pushRecogEvent(record, { type: 'start', by: 'gesture' })
+    try {
+      recognition.start()
+    } catch (e) {
+      record.startError = recogErrorName(e)
+      finishUtterance(u, 'start-error')
+    }
+  }
+
+  // recogonly：利用者の終了（国旗の2回目のタップ）。listening のときだけ受け付ける
+  const stopRecogOnly = () => {
+    const u = recogUtteranceRef.current
+    if (!u || u.phase !== 'listening') return
+    u.phase = 'stopping'
+    setStatus('processing')
+    const { record, recognition } = u
+    record.stopCalledAt = perfNow()
+    pushRecogEvent(record, { type: 'stop' })
+    try {
+      recognition.stop()
+    } catch (e) {
+      // 例外が出ても、そのまま onend と時間切れを待つ
+      record.stopError = recogErrorName(e)
+    }
+    u.endTimer = setTimeout(() => {
+      record.endTimeoutFired = true
+      finishUtterance(u, 'end-timeout')
+    }, RECOG_ONLY_END_TIMEOUT_MS)
+  }
+
+  // recogonly：画面が外れるとき（useEffect の片付け）は、今の発話があれば unmount で終える。
+  // finishUtterance は描画ごとに作り直すので、最新のものを ref に入れて片付けで使う
+  const finishUtteranceRef = useRef<((u: RecogOnlyUtterance, reason: RecogOnlyFinishReason) => void) | null>(null)
+  useEffect(() => { finishUtteranceRef.current = finishUtterance })
+  useEffect(() => {
+    if (!experiment.recogOnly) return
+    return () => {
+      const u = recogUtteranceRef.current
+      if (u) finishUtteranceRef.current?.(u, 'unmount')
+    }
+  }, [experiment.recogOnly])
+
   const handleFlagTap = (flagIndex: 0 | 1) => {
     if (status === 'recording') {
-      if (recordingFlagIndex === flagIndex) stopRecording()
+      if (recordingFlagIndex === flagIndex) {
+        // recogonly：MediaRecorder を使わないので、recogonly 専用の終了の関数を呼ぶ
+        if (experiment.recogOnly) stopRecogOnly()
+        else stopRecording()
+      }
       return
     }
     if (status !== 'idle' && status !== 'ready') return
@@ -613,7 +918,9 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
     setTtsText('')
     setBackTranslation('')
     setErrorMessage('')
-    startRecording(selectedLanguages[flagIndex], flagIndex)
+    // recogonly：recogonly 専用の開始の関数を呼ぶ
+    if (experiment.recogOnly) startRecogOnly(selectedLanguages[flagIndex], flagIndex)
+    else startRecording(selectedLanguages[flagIndex], flagIndex)
   }
 
   const handleSpeak = async () => {
@@ -651,7 +958,28 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
       }
       audio.onended = cleanup
       audio.onerror = cleanup
-      if (experiment.legacyMute) {
+      if (experiment.recogOnly) {
+        // recogonly：読み上げの記録（play() を呼ぶ直前に作る。legacymute と同じ場所で記録する）
+        const plays = recogDiagRef.current.ttsPlays
+        const play: RecogOnlyTtsPlay = {
+          afterRecordingNo: recogRecordingCountRef.current > 0 ? recogRecordingCountRef.current : null,
+          playCalledAt: perfNow(),
+          playResult: null,
+          ended: false,
+          error: false,
+        }
+        plays.push(play)
+        if (plays.length > MAX_RECOG_ONLY_TTS_PLAYS) plays.shift()
+        audio.onended = () => { play.ended = true; cleanup() }
+        audio.onerror = () => { play.error = true; cleanup() }
+        try {
+          await audio.play()
+          play.playResult = 'resolved'
+        } catch (e) {
+          play.playResult = recogErrorName(e)
+          throw e
+        }
+      } else if (experiment.legacyMute) {
         // legacymute：読み上げの記録（play() を呼ぶ直前に作る）
         const play: LegacyTtsPlay = {
           afterRecordingNo: muteRecordingCountRef.current > 0 ? muteRecordingCountRef.current : null,
@@ -887,7 +1215,20 @@ export default function LegacyInterpreterPage({ selectedLanguages, onBack, exper
         // 録音の確定（onstop と翻訳の結果）の前に押せないよう、processing の間も押せなくする（LL1）。
         // processing への変化は 07f06f0 にもともとある再描画なので、新しい state や再描画は足さない
         busy={status === 'recording' || status === 'processing'}
-        read={() => ({
+        read={() => (experiment.recogOnly ? {
+          // recogonly：記録の写し（配列と、その中の配列も写す）
+          kind: 'recogonly',
+          takenAt: new Date().toISOString(),
+          effective: [...experiment.effective],
+          config: { raw: experiment.raw, requested: experiment.requested, ignored: experiment.ignored, inactive: experiment.inactive, effective: experiment.effective },
+          diagnostics: {
+            recordings: recogDiagRef.current.recordings.map(r => ({
+              ...r, events: r.events.map(e => ({ ...e })), restartErrors: [...r.restartErrors], silenceBeforeAutoEndMs: [...r.silenceBeforeAutoEndMs],
+            })),
+            ttsPlays: recogDiagRef.current.ttsPlays.map(p => ({ ...p })),
+            recognitionStarts: { ...recogDiagRef.current.recognitionStarts },
+          },
+        } : {
           kind: 'legacy',
           takenAt: new Date().toISOString(),
           effective: [...experiment.effective],
