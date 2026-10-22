@@ -42,11 +42,14 @@ const watchEnded = (stream: MediaStream) => {
 }
 
 // マイクを取得する。getUserMedia を待っている間の要求には、同じ Promise を返す（2回 getUserMedia を呼ばない）。
-// 失敗は呼び出し元にそのまま投げる
+// 使える stream を持っていれば、getUserMedia を呼ばずにそれを返す（古い stream を開いたまま上書きしないための守り。
+// 今の経路では、セッションは peekLive() が null のときだけ呼ぶ）。失敗は呼び出し元にそのまま投げる
 export function acquire(): Promise<MediaStream> {
   if (pending) return pending
-  if (held && !peekLive()) {
-    // ended の track に stop() を呼んでも害はない
+  const live = peekLive()
+  if (live) return Promise.resolve(live)
+  if (held) {
+    // 持っている stream は使えない（track がない、ended がある）。ended の track に stop() を呼んでも害はない
     held.getTracks().forEach(t => t.stop())
     held = null
   }

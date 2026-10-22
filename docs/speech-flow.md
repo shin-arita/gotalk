@@ -163,7 +163,7 @@ stateDiagram-v2
 - 最初の録音のときに `getUserMedia` で開き、録音の後も、中断のとき（`hidden`、`pagehide`、戻る、外れる、失敗）も、track を `stop()` しません。`enabled` も変えません。ページを離れるとき（`pagehide`、`unload`）も閉じません（ページを離れるときはブラウザが閉じます）
 - React の部品の外にあるので、言語の選択の画面に戻っても残り、もう一度選んで録音しても `getUserMedia` を呼びません
 - 次の録音では、持っている stream に track が1本以上あり、どれも `ended` でなければ、そのまま使います。track がない、または `ended` の track があるときだけ、古い track をすべて `stop()` してから `getUserMedia` で取り直します。track の `stop()` を呼ぶのは、ここ（`keptMic.acquire()`）だけです
-- `getUserMedia` を待っている間の2回目の要求には、同じ Promise を返します（2回呼びません）
+- `getUserMedia` を待っている間の2回目の要求には、同じ Promise を返します（2回呼びません）。使える stream を持っているときに `acquire()` が呼ばれた場合は、`getUserMedia` を呼ばずにその stream を返します（古い stream を開いたまま上書きしない守り。今の経路では、セッションは使える stream がないときだけ呼びます）。順番は「待っている Promise があれば返す → 使える stream があれば返す → 使えない stream の track を止める → `getUserMedia`」です
 - track の `ended` の見張りは `keptMic` だけが持ちます。新しい stream を持ったときに、各 track に `ended` の listener を1回だけ付け、`ended` が来たら診断の記録（`endedEvents`。時刻と track の番号、最大 20 件）を残すだけにします（track は止めません。次の録音の開始で取り直します）。録音のセッションなど、ほかからは stream と track に listener を付けません
 - `MediaRecorder`、音量の取得の `AudioContext`、音声認識は、録音ごとに作って片付けます
 
@@ -309,9 +309,9 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 - `MediaRecorder` の state、mimeType、録音の時間、録音の大きさ、エラー、利用者の停止から `onstop` までの時間（`stopLatencyMs`）、見張りのタイマーで片付けたか（`stopTimedOut`）と待った時間（`stopWaitedMs`）
 - `AudioContext` の state、音量の RMS と最大値と、取れたサンプルの数
 - 音声認識の結果があったかと、その文字数（本文は残しません）
-- 画面が残す出来事：マイクの音が来ないと判断した録音（`no_audio_detected:bytes=<大きさ>,ms=<長さ>`）、読み上げの見張りのタイマーで `ready` に戻したこと（`tts_ended_timeout`）、読み上げの `resume()` の失敗（`tts_resume_failed:<state>`）
+- 画面が残す出来事：マイクの音が来ないと判断した録音（`no_audio_detected:bytes=<大きさ>,ms=<長さ>`）、読み上げの見張りのタイマーで `ready` に戻したこと（`tts_ended_timeout`）、読み上げの `resume()` の失敗（拒否されたとき（同期の例外を含む）は `tts_resume_rejected:<例外の name>`、解決したが `running` でないときは `tts_resume_not_running:<state>`）、読み上げ用の `AudioContext` を作れなかったこと（`tts_context_create_failed:<例外の name>`）
 
-`keptMic` は、`getUserMedia` を呼んだ回数（`getUserMediaCalls()`）と、track の `ended` の記録（`endedEvents()`）を持ちます（今は診断の表示には出しません）。
+`keptMic` は、`getUserMedia` を呼んだ回数（`getUserMediaCalls()`）と、track の `ended` の記録（`endedEvents()`）を持ちます。`useKeptAudioSession` の `getDiagnostics()` の結果に `keptMic: { getUserMediaCalls, endedEvents }` として入り、「コピー」の JSON にも入ります（診断の表示の画面には出しません。実験のスイッチのとき（`useAudioSession`）は入りません）。iPhone が track を止めたか（`ended` が来たか）を確かめ、`microphone_no_audio` が出たときの原因の切り分けに使います。
 
 2回目から録音が空になる不具合の切り分けのため、URL の query の `exp` で指定する実験のスイッチと、その診断の表示を入れています（詳しくは [testing.md](testing.md) の「切り分けの実験のスイッチ」）。`useAudioSession` の実験のスイッチがあるときは、前の版の `useAudioSession` を使います。スイッチと `useAudioSession` は PR C で外します。
 
@@ -404,10 +404,10 @@ TTS model は `OPENAI_TTS_MODEL` を使い、未設定時は `gpt-4o-mini-tts` �
 
 Frontend は、読み上げを `AudioContext` で鳴らします。マイクを開いたまま `<audio>` で鳴らすと、次の録音が壊れるためです。`<audio>`（`new Audio()`、オブジェクト URL）は使わず、失敗しても `<audio>` に切り替えて鳴らし直すことはしません。
 
-1. 読み上げ用の `AudioContext` を、画面で1つ持ちます（`ttsContextRef`）。最初の読み上げのタップのときに作り、画面が外れるまで使い回します
+1. 読み上げ用の `AudioContext` を、画面で1つ持ちます（`ttsContextRef`）。最初の読み上げのタップのときに作り、画面が外れるまで使い回します。作れないとき（`new AudioContext()` の例外。`AudioContext` がない、作れる数の上限など）は、読み上げの失敗として、ログ（`logApiError` と診断の出来事 `tts_context_create_failed:<例外の name>`）を残し、文言は出さず、`ready` のまま戻ります。鳴らせないので `/api/tts` は呼ばず、`speaking` にもしません。`ttsContextRef` は空のままにし、次の読み上げのタップでもう一度作るのを試します
 2. タップの処理の中（`await` の前）で `resume()` を呼び、Promise を持っておきます（ここでは待ちません。iPhone では、利用者の操作の中でないと鳴らせないためです）。`resume()` が同期の例外を出したときは、拒否された Promise と同じに扱います
 3. `/api/tts` の結果を `arrayBuffer()` で受け取り、`decodeAudioData` で `AudioBuffer` にします
-4. 再生を始める直前に `resume()` の結果を確かめます。拒否されたとき、または解決しても `state` が `running` でないときは、再生を始めず、読み上げの失敗として扱います（文言は出さず、診断のログに `tts_resume_failed:<state>` を残し、`ready` に戻します）
+4. 再生を始める直前に `resume()` の結果を確かめます。拒否されたとき、または解決しても `state` が `running` でないときは、再生を始めず、読み上げの失敗として扱います（文言は出さず、診断のログに、拒否されたとき（同期の例外を含む）は `tts_resume_rejected:<例外の name>` を、解決したが `running` でないときは `tts_resume_not_running:<state>` を残し、`ready` に戻します）
 5. `createBufferSource()` に `AudioBuffer` を入れて `destination` につなぎ、`start()` します。今鳴らしている `AudioBufferSourceNode` を `ttsSourceRef` に持ちます
 6. `onended` で `ready` に戻します。再生を始めた後に、見張りのタイマー（`AudioBuffer.duration` × 1000 ＋ 3000 ミリ秒）を始め、それまでに `onended` が来なければ、診断のログに `tts_ended_timeout` を残して `ready` に戻します（iPhone の割り込みなどで再生が止まり、`onended` が来ないまま `speaking` に残らないため）
 

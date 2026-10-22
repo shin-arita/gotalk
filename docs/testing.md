@@ -310,8 +310,8 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
   - `frontend/src/App.test.tsx`（`exp` に関わるテストを消した後に残すものがあるかを、外す PR で判断します）
 - 戻すもの
   - `frontend/src/hooks/useAudioSession.ts`：`createAudioSession` と `useAudioSession` の `config` の引数、スイッチの分岐（`norecog`、`legacyrecog`、`nometer`、`nodisconnect`、`awaitclose`、`notrackread`、`noendedlistener`、`trace`、2回目の実験の `recogfirst`、`recogabort`、`recogdelay`、`recogearly`、`recogonce`）、2回目の実験のために足したもの（`RECOGNITION_END_TIMEOUT_MS`、`RECOGNITION_END_DELAY_MS`、`RecognitionEndWait`、`Session.recognitionEndWait`、`stopRecognitionFirst`、`waitRecognitionEnd`、`timeOutRecognitionEndWait`、`settleRecognitionEndWait`、`cancelRecognitionEndWait`、`onceRecognition`、`onceRecognitionRunning`、`recordOnce`、`disposeOnceRecognition`、`abort` を分けた `abortSession`、`SpeechRecognition` の型の `abort()`）、`exp` の記録（`Session.exp`、`expDiag`、`perfNow` と、`if (s.exp)` の行のすべて）、`recordPageEvent`、`markTraceListenerOnly`、`AudioDiagnostics.experiment`、`trace` のための型（`SpeechRecognition` の `onstart`、`onaudiostart`、`onaudioend`）、`experiments` と `experimentTrace` の import。`stop` の後半を分けた `stopRecorder` と `startStopWatchdog` を残すか戻すかは、外す PR で判断します
-  - `frontend/src/hooks/useKeptAudioSession.ts`（PR A）：`useInterpreterAudioSession` の実験のスイッチの分岐（`AUDIO_SESSION_EXPERIMENTS`、`usesAudioSessionExperiment`、`createAudioSession` を使う分岐）。外した後は `useKeptAudioSession` だけを使い、`useAudioSession.ts` は、`useKeptAudioSession.ts` が import している型と `RECORDER_STOP_TIMEOUT_MS` を移してから消します（`useAudioSession` の単体テスト4ファイルも消します）。`recordPageEvent` と `markTraceListenerOnly`（何もしない）も外します
-  - `frontend/src/hooks/useKeptAudioSession.test.ts` と `frontend/src/pages/InterpreterPage.keptMic.test.tsx`（PR A）：スイッチがあるときに `useAudioSession` を使うことを確かめるテスト（`useInterpreterAudioSession`、`lists every useAudioSession switch`、`?exp=trace` を付けたテスト）
+  - `frontend/src/hooks/useKeptAudioSession.ts`（PR A）：`useInterpreterAudioSession` の実験のスイッチの分岐（`AUDIO_SESSION_EXPERIMENTS`、`usesAudioSessionExperiment`、`createAudioSession` を使う分岐）。外した後は `useKeptAudioSession` だけを使い、`useAudioSession.ts` は、`useKeptAudioSession.ts` が import している型と `RECORDER_STOP_TIMEOUT_MS` を移してから消します（`useAudioSession` の単体テスト4ファイルも消します）。`recordPageEvent` と `markTraceListenerOnly`（何もしない）も外します。`getDiagnostics()` の `keptMic`（`KeptAudioDiagnostics`）は、診断の表示（「コピー」の JSON）を外すときに、残すかを判断します（`keptMic.ts` の `getUserMediaCalls()` と `endedEvents()` も同じ）
+  - `frontend/src/hooks/useKeptAudioSession.test.ts` と `frontend/src/pages/InterpreterPage.keptMic.test.tsx`（PR A）：スイッチがあるときに `useAudioSession` を使うことを確かめるテスト（`useInterpreterAudioSession`、`lists every useAudioSession switch`、`?exp=trace` を付けたテスト。スイッチのときに `keptMic` の診断が入らないことのテストも含む）
   - `frontend/src/pages/InterpreterPage.tsx`：`experiment` の props、`experimentRef`、`useInterpreterAudioSession` に渡す `experiment`、ページの listener の分岐（`trace` の記録、`nolifecycle`、記録だけの listener）と `audioSessionRef`、`ExperimentPanel` とその import
   - `frontend/src/App.tsx`：`readExperimentConfig` で読む `experiment`、`LegacyInterpreterPage` への切り替えとその import、`InterpreterPage` に渡す `experiment`
   - `frontend/src/test/audioMocks.ts`：2回目の実験で足した、音声認識の代わりの `abort`（`FakeRecognition.abort`）
@@ -356,7 +356,7 @@ iPhone の Safari と Chrome のそれぞれで、ブラウザを終了してか
 2. 言語の選択の画面に戻り、もう一度選んで1回話す
 3. ブラウザを裏に回して 10 秒ほど待ち、戻って1回話す
 4. ページを読み込み直して1回話す
-5. 最後に診断の「コピー」の JSON を取る
+5. 最後に診断の「コピー」の JSON を取る。3 と 4 の後にも JSON を取り、`diagnostics.keptMic.getUserMediaCalls`（`getUserMedia` を呼んだ回数）と `diagnostics.keptMic.endedEvents`（iPhone が track を止めたか）を記録する（記録するだけで、成功の条件にはしない。`microphone_no_audio` が出たときの原因の切り分けに使う）
 
 成功の条件：
 

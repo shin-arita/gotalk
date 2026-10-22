@@ -110,6 +110,11 @@ const PAGESHOW_RECOVERY_STATUS: Record<InterpreterStatus, InterpreterStatus> = {
 // 録音の長さを測る時刻（ミリ秒）。callback の中だけで呼ぶ
 const nowMs = () => Date.now()
 
+// 診断のログに残す、例外の名前
+function errorName(e: unknown): string {
+  return e instanceof Error || e instanceof DOMException ? e.name : typeof e
+}
+
 export default function InterpreterPage({ selectedLanguages, onBack, experiment = DEFAULT_EXPERIMENT_CONFIG }: InterpreterPageProps) {
   const [status, setStatus] = useState<InterpreterStatus>('idle')
   const [recordingFlagIndex, setRecordingFlagIndex] = useState<0 | 1 | null>(null)
@@ -508,7 +513,17 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     }
     // await の前（タップの処理の中）で resume() を呼ぶ（iPhone では、利用者の操作の中でないと鳴らせないため）。
     // ここでは待たず、再生を始める直前に結果を確かめる。拒否が未処理にならないよう、catch を付けておく
-    ttsContextRef.current ??= new AudioContext()
+    if (!ttsContextRef.current) {
+      // 作れないとき（AudioContext がない、作れる数の上限など）は、読み上げの失敗として、文言を出さずに ready のまま戻る。
+      // 鳴らせないので /api/tts は呼ばない。ttsContextRef は空のままにして、次のタップでもう一度作るのを試す
+      try {
+        ttsContextRef.current = new AudioContext()
+      } catch (e) {
+        audioSession.logEvent(`tts_context_create_failed:${errorName(e)}`)
+        logApiError('/api/tts', e)
+        return
+      }
+    }
     const ctx = ttsContextRef.current
     let resumed: Promise<void>
     try {
@@ -563,7 +578,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       }
       if (activeTtsIdRef.current !== ttsId) return
       if (resumeError !== null || ctx.state !== 'running') {
-        audioSession.logEvent(`tts_resume_failed:${ctx.state}`)
+        audioSession.logEvent(resumeError !== null ? `tts_resume_rejected:${errorName(resumeError)}` : `tts_resume_not_running:${ctx.state}`)
         logApiError('/api/tts', resumeError ?? new Error(`AudioContext is ${ctx.state}`))
         stopSpeaking()
         changeStatus('ready')

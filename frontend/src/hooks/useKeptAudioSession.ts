@@ -56,6 +56,11 @@ export interface KeptAudioSessionDiagnostics extends AudioSessionDiagnostics {
   getUserMedia: AudioSessionDiagnostics['getUserMedia'] & { acquired: boolean; reused: boolean }
 }
 
+// 診断の情報。keptMic の診断（getUserMedia を呼んだ回数と、track の ended の記録）を足す（「コピー」の JSON に入る）
+export interface KeptAudioDiagnostics extends AudioDiagnostics {
+  keptMic: { getUserMediaCalls: number; endedEvents: keptMic.KeptMicEndedEvent[] }
+}
+
 // 録音の資源のまとまり。stream は keptMic が持つもので、このセッションは閉じない
 interface Session {
   id: number
@@ -482,7 +487,11 @@ export function createKeptAudioSession(initialCallbacks: AudioSessionCallbacks):
     abort,
     hasActiveSession: () => current !== null,
     logEvent: (type: string) => logEvent(type),
-    getDiagnostics: () => ({ sessions: [...diagnostics.sessions], events: [...diagnostics.events] }),
+    getDiagnostics: (): KeptAudioDiagnostics => ({
+      sessions: [...diagnostics.sessions],
+      events: [...diagnostics.events],
+      keptMic: { getUserMediaCalls: keptMic.getUserMediaCalls(), endedEvents: keptMic.endedEvents() },
+    }),
     setCallbacks: (next: AudioSessionCallbacks) => { latestCallbacks = next },
     // 実験のスイッチがあるときは useAudioSession を使うので、呼ばれない
     recordPageEvent: () => {},

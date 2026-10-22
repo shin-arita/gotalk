@@ -9,7 +9,7 @@ import { LANGUAGES } from '../languages'
 import { getLocalizedMessage } from '../messages'
 import type { MessageKey } from '../messages'
 import {
-  AUDIO_GLOBALS, makeTtsOkResponse, saveGlobals, setupAudioContext, setupDeferredGetUserMedia, setupMediaRecorder, setupSpeechRecognition,
+  AUDIO_GLOBALS, endTrack, makeTtsOkResponse, saveGlobals, setupAudioContext, setupDeferredGetUserMedia, setupMediaRecorder, setupSpeechRecognition,
   ttsContextOf,
 } from '../test/audioMocks'
 import type { FakeAudioContext, FakeStream } from '../test/audioMocks'
@@ -131,7 +131,7 @@ async function speakToEnd() {
   expect(speakButton()).not.toBeDisabled()
 }
 
-async function copyJson(): Promise<{ kind: string; diagnostics: { sessions: { getUserMedia: { acquired: boolean; reused: boolean } }[]; events: { type: string }[]; experiment?: unknown } }> {
+async function copyJson(): Promise<{ kind: string; diagnostics: { sessions: { getUserMedia: { acquired: boolean; reused: boolean } }[]; events: { type: string }[]; experiment?: unknown; keptMic?: { getUserMediaCalls: number; endedEvents: { at: number; track: number }[] } } }> {
   const writes: string[] = []
   Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn(async (text: string) => { writes.push(text) }) }, configurable: true })
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'コピー' })) })
@@ -189,6 +189,25 @@ describe('InterpreterPage kept microphone', () => {
     expect(JSON.stringify(json)).not.toContain('聞かれたくない本文')
   })
 
+  it('puts keptMic into the copied JSON with an empty exp (the new session without an experiment switch)', async () => {
+    vi.mocked(Date.now).mockImplementation(() => 7000)
+    renderPage(readExperimentConfig('?exp='))
+    await recordAndTranslate()
+    await recordAndTranslate()
+    expect((await copyJson()).diagnostics.keptMic).toEqual({ getUserMediaCalls: 1, endedEvents: [] })
+    act(() => { endTrack(streams[0].tracks[0]) })
+    expect((await copyJson()).diagnostics.keptMic).toEqual({ getUserMediaCalls: 1, endedEvents: [{ at: 7000, track: 0 }] })
+    // ended の後の録音で取り直すと、回数が増える
+    await recordAndTranslate()
+    expect((await copyJson()).diagnostics.keptMic?.getUserMediaCalls).toBe(2)
+  })
+
+  it('does not put keptMic into the copied JSON with a useAudioSession switch', async () => {
+    renderPage(readExperimentConfig('?exp=trace'))
+    await recordAndTranslate()
+    expect((await copyJson()).diagnostics.keptMic).toBeUndefined()
+  })
+
   it('uses useAudioSession with an experiment switch (getUserMedia and track stop() for every recording)', async () => {
     renderPage(readExperimentConfig('?exp=trace'))
     await recordAndTranslate()
@@ -239,19 +258,52 @@ describe('InterpreterPage TTS with AudioContext', () => {
     expect(ttsContext().close).not.toHaveBeenCalled()
   })
 
+  // 出来事の名前を「コピー」の JSON で確かめるため、新しいセッションを使うとき（実験のスイッチがないとき）の ?exp= で描画する
   it.each([
-    ['resume() rejects', { resumeRejects: true }],
-    ['resume() throws', { resumeThrows: true }],
-    ['the state is not running after resume()', { stateAfterResume: 'suspended' }],
-  ])('does not play and returns to ready without a message when %s', async (_, options) => {
+    ['resume() rejects', { resumeRejects: true }, 'tts_resume_rejected:NotAllowedError'],
+    ['resume() throws', { resumeThrows: true }, 'tts_resume_rejected:InvalidStateError'],
+    ['the state is not running after resume()', { stateAfterResume: 'suspended' }, 'tts_resume_not_running:suspended'],
+  ])('does not play and returns to ready without a message when %s', async (_, options, event) => {
     audioContexts = setupAudioContext(options).instances
-    renderPage()
+    renderPage(readExperimentConfig('?exp='))
     await recordAndTranslate()
     await speak()
     expect(ttsContext().createBufferSource).not.toHaveBeenCalled()
     expect(speakButton()).not.toBeDisabled()
     expect(alertText()).toBeUndefined()
     expect(AudioCtor).not.toHaveBeenCalled()
+    const types = await eventTypes()
+    expect(types).toContain(event)
+    expect(types.filter(t => t.startsWith('tts_resume_'))).toEqual([event])
+  })
+
+  it('does not call /api/tts, stays ready without a message, and tries again on the next tap when the AudioContext cannot be created', async () => {
+    // 未処理の Promise の拒否を数える（テストは Node で動く。アプリの型には process がないので、ここだけで型を付ける）
+    const nodeProcess = (globalThis as unknown as { process: { on: (type: string, f: () => void) => void; off: (type: string, f: () => void) => void } }).process
+    const unhandled = vi.fn()
+    nodeProcess.on('unhandledRejection', unhandled)
+    try {
+      setupAudioContext({ throwOnCreate: true })
+      renderPage(readExperimentConfig('?exp='))
+      await recordAndTranslate()
+      await act(async () => { fireEvent.click(speakButton()!) })
+      await flush()
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(ttsCalls()).toHaveLength(0)
+      expect(speakButton()).not.toBeDisabled()
+      expect(alertText()).toBeUndefined()
+      expect(AudioCtor).not.toHaveBeenCalled()
+      expect(unhandled).not.toHaveBeenCalled()
+      expect(await eventTypes()).toContain('tts_context_create_failed:Error')
+      expect(console.warn).toHaveBeenCalledWith('[GoTalk] API error', expect.objectContaining({ endpoint: '/api/tts' }))
+      // 次のタップで作れたら鳴る
+      audioContexts = setupAudioContext().instances
+      await speakToEnd()
+      expect(ttsCalls()).toHaveLength(1)
+      expect(AudioCtor).not.toHaveBeenCalled()
+    } finally {
+      nodeProcess.off('unhandledRejection', unhandled)
+    }
   })
 
   it('does not let a late rejection of an old resume() change the new reading', async () => {

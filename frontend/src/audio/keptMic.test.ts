@@ -60,6 +60,16 @@ describe('keptMic', () => {
     expect(getUserMediaCalls()).toBe(2)
   })
 
+  it('returns the live stream without calling getUserMedia or stopping the tracks when acquire() is called with a live stream', async () => {
+    const stream = makeFakeStream()
+    await acquireWith(0, stream)
+    expect(await acquire()).toBe(stream)
+    expect(gum.getUserMedia).toHaveBeenCalledTimes(1)
+    expect(getUserMediaCalls()).toBe(1)
+    expect(stream.tracks[0].stop).not.toHaveBeenCalled()
+    expect(peekLive()).toBe(stream)
+  })
+
   it('acquires again when the stream has no track', async () => {
     await acquireWith(0, makeFakeStream([]))
     expect(peekLive()).toBeNull()

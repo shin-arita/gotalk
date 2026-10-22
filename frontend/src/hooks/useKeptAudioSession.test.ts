@@ -5,7 +5,7 @@ import type { AudioSession, AudioSessionAbortReason, AudioSessionCallbacks } fro
 import {
   AUDIO_SESSION_EXPERIMENTS, createKeptAudioSession, useInterpreterAudioSession, useKeptAudioSession, usesAudioSessionExperiment,
 } from './useKeptAudioSession'
-import type { KeptAudioSessionDiagnostics } from './useKeptAudioSession'
+import type { KeptAudioDiagnostics, KeptAudioSessionDiagnostics } from './useKeptAudioSession'
 import { peekLive, resetKeptMicForTest } from '../audio/keptMic'
 import { DEFAULT_EXPERIMENT_CONFIG, EXPERIMENT_NAMES, readExperimentConfig } from '../experiments'
 import {
@@ -534,7 +534,7 @@ describe('useKeptAudioSession: stale callbacks and cleanup', () => {
     const session = createKeptAudioSession(makeCallbacks())
     session.recordPageEvent('pagehide', true)
     session.markTraceListenerOnly()
-    expect(session.getDiagnostics()).toEqual({ sessions: [], events: [] })
+    expect(session.getDiagnostics()).toEqual({ sessions: [], events: [], keptMic: { getUserMediaCalls: 0, endedEvents: [] } })
   })
 })
 
@@ -551,6 +551,29 @@ describe('useKeptAudioSession hooks', () => {
     await started
     expect(second.onRecordingStarted).toHaveBeenCalledTimes(1)
     expect(first.onRecordingStarted).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['without exp', DEFAULT_EXPERIMENT_CONFIG],
+    ['with an empty exp', readExperimentConfig('?exp=')],
+  ])('puts the keptMic diagnostics into getDiagnostics() %s', async (_, config) => {
+    vi.spyOn(Date, 'now').mockReturnValue(5000)
+    const { result } = renderHook(() => useInterpreterAudioSession(makeCallbacks(), config))
+    const session = result.current
+    const started = session.start('ja-JP')
+    const stream = await gum.calls[0].resolve()
+    await started
+    expect((session.getDiagnostics() as KeptAudioDiagnostics).keptMic).toEqual({ getUserMediaCalls: 1, endedEvents: [] })
+    endTrack(stream.tracks[0])
+    expect((session.getDiagnostics() as KeptAudioDiagnostics).keptMic).toEqual({ getUserMediaCalls: 1, endedEvents: [{ at: 5000, track: 0 }] })
+  })
+
+  it('does not put the keptMic diagnostics with a useAudioSession switch', async () => {
+    const { result } = renderHook(() => useInterpreterAudioSession(makeCallbacks(), readExperimentConfig('?exp=trace')))
+    const started = result.current.start('ja-JP')
+    await gum.calls[0].resolve()
+    await started
+    expect('keptMic' in result.current.getDiagnostics()).toBe(false)
   })
 
   it('lists every useAudioSession switch, and only those', () => {
