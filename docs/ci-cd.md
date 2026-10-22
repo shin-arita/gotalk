@@ -166,7 +166,7 @@ flock -w 600 ~/.gotalk-deploy.lock sh -c 'docker compose --parallel 1 build --pu
 | 本番の deploy とステージングの deploy（あらゆる組み合わせ） | GitHub の共通の concurrency group `gotalk-vps-deploy`（`queue: max`）。待機中のものは置き換わらず、順番に処理される |
 | 上をすり抜けた場合（VPS の上の手作業など） | VPS の `flock`（同じロックのファイル `~/.gotalk-deploy.lock`、最大 10 分の待ち）。VPS で手で build と起動をするときも、同じロックのファイルを取る（上の形で実行する） |
 | 本番が古いコミットに戻る | VPS の `HEAD` が `TARGET_SHA` の祖先であることの確認 |
-| ステージングが本番と衝突する古い Compose で起動する | `resolve` と VPS の両方で、Docker と Compose のファイルが現在の `main` と完全に同じことを確かめる。VPS では、ロックを取った後に fetch して確かめ直し、そのままロックの中で build と起動まで行うので、確かめてから build までの間にほかの deploy や手作業が入らない（4 章を参照） |
+| ステージングが本番と衝突する古い Compose で起動する | `resolve` と VPS の両方で、Docker と Compose のファイルが現在の `main` と完全に同じことを確かめる。VPS では、ロックを取った後に fetch して確かめ直し、そのままロックの中で build と起動まで行うので、ロックの待ちの間に確かめの結果が古くならず、確かめてから build と起動までの間に、同じロックを取るほかの deploy や手作業が入らない。GitHub の `main` はロックを持っている間にも進みうるが、deploy するのは確定した `TARGET_SHA` で、それがロックを取った後の時点の `origin/main` と Docker と Compose のファイルが同じことを確かめている（4 章を参照） |
 
 ### 手動での再 deploy
 
@@ -330,7 +330,7 @@ if ! printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
   exit 1
 fi
 # 同じ VPS の本番の deploy や手作業と重ならないよう、ここでロックを取り、build と起動までをロックの中で行う
-# （確かめてから build までの間に main が変わらないようにするため。10 分待っても取れなければ失敗。ロックは script の終わりに外れる）
+# （ロックを取った後に fetch して確かめ直すので、ロックの待ちの間に確かめの結果が古くならない。確かめてから build と起動までの間に、同じロックを取るほかの deploy や手作業が入らない。10 分待っても取れなければ失敗。ロックは script の終わりに外れる）
 exec 9>~/.gotalk-deploy.lock
 if ! flock -w 600 9; then
   echo "Could not acquire ~/.gotalk-deploy.lock within 600 seconds"
@@ -355,7 +355,7 @@ docker compose up -d
 docker compose ps
 ```
 
-script は、SHA の形を確かめた後に、最初に `~/.gotalk-deploy.lock` のロックを取ります（`exec 9>~/.gotalk-deploy.lock` と `flock -w 600 9`。10 分待っても取れなければ失敗）。ロックの中で fetch、Docker と Compose のファイルの確かめ、checkout、build、起動を行うので、確かめてから build までの間に、ほかの deploy や手作業が入りません（`main` の Docker と Compose のファイルが、確かめた後に変わることがない）。ロックは script の終わり（SSH のシェルが終わるとき）に外れます。本番の script は build と起動のところだけでロックを取りますが、本番の確かめ（VPS の `HEAD` が `TARGET_SHA` の祖先であることと fast-forward）は、ロックを待つ間に `main` が進んでも結果が変わらないためです。
+script は、SHA の形を確かめた後に、最初に `~/.gotalk-deploy.lock` のロックを取ります（`exec 9>~/.gotalk-deploy.lock` と `flock -w 600 9`。10 分待っても取れなければ失敗）。ロックの中で fetch、Docker と Compose のファイルの確かめ、checkout、build、起動を行うので、ロックの待ちの間に確かめの結果が古くならず、確かめてから build と起動までの間に、同じロックを取るほかの deploy や手作業が入りません。ロックが直列にするのは、同じ VPS の上で同じロックのファイルを取る deploy と手作業だけで、GitHub の `main` はロックを持っている間にも進みえます。deploy するのは確定した `TARGET_SHA` で、それがロックを取った後に fetch した時点の `origin/main` と、Docker と Compose のファイルが同じことを確かめています。ロックは script の終わり（SSH のシェルが終わるとき）に外れます。本番の script は build と起動のところだけでロックを取りますが、本番の確かめ（VPS の `HEAD` が `TARGET_SHA` の祖先であることと fast-forward）は、ロックを待つ間に `main` が進んでも結果が変わらないためです。
 
 本番と違い、ステージングは fast-forward ではなく、`TARGET_SHA` を detached HEAD で checkout します（PR の HEAD も deploy するため）。Frontend は `./frontend` をコンテナに bind mount しているので、ステージングの clone のファイルは、実行中のコンテナや手作業で変わりえます。そのため、build の前に `git reset --hard` と `git clean -fd` で作業ツリーを `TARGET_SHA` の内容に強制的に戻し、`HEAD` が `TARGET_SHA` と一致すること、作業ツリーに差がないことを確かめます。ignore しているファイル（`.env`）は `git clean` で消しません（`-x` を付けない）。
 
