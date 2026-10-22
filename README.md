@@ -209,6 +209,8 @@ docker compose up -d --build frontend backend
 | http://localhost:5173 | Frontend |
 | http://localhost:8080 | Backend API |
 
+ポートは既定の値です（`FRONTEND_PORT`、`BACKEND_PORT` で変えられます。[docs/docker.md](docs/docker.md) を参照）。`frontend` と `backend` には `restart: unless-stopped` を設定しているため、止めていないコンテナは Docker が起動し直したときに自動で起動します。
+
 `frontend` と `backend` のポートは `127.0.0.1` だけに公開しているため、同じマシンからだけアクセスできます。本番の VPS では、HTTPS を終端する nginx が `127.0.0.1:5173` と `127.0.0.1:8080` に転送しており、外からは nginx 経由でだけ届きます（Docker Engine のバージョンなどの前提を含め、詳細は [docs/infrastructure.md の「ポートの公開範囲の前提」](docs/infrastructure.md#ポートの公開範囲の前提) を参照）。
 
 詳しい開発手順は [docs/development.md](docs/development.md) を参照してください。
