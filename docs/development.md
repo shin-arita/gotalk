@@ -313,17 +313,17 @@ npm run build
 
 ## 8. 注意点
 
-- 録音音声は録音終了のたびに Backend の `/api/interpret` に送信します。Frontend の `SpeechRecognition` / `webkitSpeechRecognition` の認識テキストが得られた場合は `transcript` として同じリクエストに添え、Backend はそのテキストを翻訳します。得られなかった場合は Backend が OpenAI の音声文字起こし API で文字起こしします。
+- 録音音声は録音終了のたびに Backend の `/api/interpret` に送信します（認識テキストがなく、録音のデータが 1024 バイト未満のときは送りません。[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。Frontend の `SpeechRecognition` / `webkitSpeechRecognition` の認識テキストが得られた場合は `transcript` として同じリクエストに添え、Backend はそのテキストを翻訳します。得られなかった場合は Backend が OpenAI の音声文字起こし API で文字起こしします。
 - Backend API は `/health`、`/api/tts`、`/api/interpret`、`/api/translate` の 4 本です。
 - TTS は Backend の `/api/tts` から OpenAI Audio Speech API を呼び出し、`audio/mpeg` を返します。
 - `http://localhost:5173/#tts-test` を開くと `TtsTestPage` が表示されます。ブラウザの `speechSynthesis`（Web Speech API の音声合成）で日本語とタイ語の発声、`getVoices()` の一覧、発声イベントのログを確認するための開発確認用ページです。Backend の `/api/tts` は使いません。通常の利用画面とは独立しています。
-- `http://localhost:5173/#mic-test` を開くと `MicTestPage` が表示されます。通訳の画面で国旗を押すたびにブラウザのマイクのお知らせ（iPhone の Chrome の「マイクへのアクセスが許可されています」など）や許可の画面が出る原因が、`getUserMedia` でマイクを開き直すことか、音声認識（`SpeechRecognition` / `webkitSpeechRecognition`）を始め直すことかを、実機で確かめるための開発確認用ページです。通常の利用画面からはリンクしておらず、通訳の画面の動作は変えません。
+- `http://localhost:5173/#mic-test` を開くと `MicTestPage` が表示されます。PR A の前の通訳の画面で、国旗を押すたびにブラウザのマイクのお知らせ（iPhone の Chrome の「マイクへのアクセスが許可されています」など）や許可の画面が出ていた原因が、`getUserMedia` でマイクを開き直すことか、音声認識（`SpeechRecognition` / `webkitSpeechRecognition`）を始め直すことかを、実機で確かめるための開発確認用ページです。通常の利用画面からはリンクしておらず、通訳の画面の動作は変えません。
   - 使い方：テストのボタンで開始と停止を何回でも繰り返し、ブラウザのお知らせ、許可の画面、マイクの使用中の表示（オレンジの点など）を目で見て記録します。テストを切り替えるときは、前のテストのマイクと音声認識をすべて閉じてから始めます。画面のログ（時刻はミリ秒まで）は「ログをコピー」でクリップボードにコピーでき、コピーできない場合はログの欄を全選択して写せます。
   - テストの内容は次のとおりです。`MediaRecorder` の mimeType は、通訳の画面と同じ選び方です。音声認識の `continuous = true` と `interimResults = true` は通訳の画面と同じですが、`lang` は `ja-JP` に固定しています（通訳の画面は押した国旗の言語）。また、通訳の画面にある、録音の間の音声認識の自動の始め直し（`onend` で `start()` を呼ぶこと）と、`AudioContext`（音量の取得）は、このページのテストにはありません。実機の結果を読むときは、これらの違いに気を付けてください。
 
     | # | 内容 |
     | --- | --- |
-    | S1 | 開始のたびに `getUserMedia({ audio: true })` でマイクを開いて `MediaRecorder` で録音し、停止で録音を止めて track を `stop()` で閉じます（今の通訳の画面のマイクの部分） |
+    | S1 | 開始のたびに `getUserMedia({ audio: true })` でマイクを開いて `MediaRecorder` で録音し、停止で録音を止めて track を `stop()` で閉じます（このページを作ったときの、PR A の前の通訳の画面のマイクの部分。今の通訳の画面は、マイクを閉じずに使い回します） |
     | S2 | 最初の開始で1回だけマイクを開き、以後は閉じません。開始で `track.enabled = true` にして録音を始め、停止で録音を止めて `track.enabled = false` にします。音声認識は使いません |
     | S3 | 最初の開始で1回だけマイクを開き、以後は閉じません（`track.enabled` は true のまま）。開始のたびに音声認識を新しく作って `start()` し、停止で `stop()` します。録音はしません |
     | S4 | マイク（`getUserMedia`）は開きません。開始のたびに音声認識を新しく作って `start()` し、停止で `stop()` します |

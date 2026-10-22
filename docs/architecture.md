@@ -4,7 +4,7 @@
 
 GoTalk は、異なる言語を話す 2 人がブラウザ上で会話するための音声通訳 Web アプリケーションです。
 
-現在の GoTalk は、国旗ボタンで開始した発話を `MediaRecorder` で録音し、録音終了時に音声を Backend の `/api/interpret` に送って確定翻訳とバックトランスレーションを取得します。録音と並行してブラウザの `SpeechRecognition` も動かし、認識テキストが得られた場合はそのテキストを `transcript` として同じリクエストに添えます。Backend は `transcript` があればそれを翻訳し、なければ OpenAI の音声文字起こし API で言語判定と文字起こしを行ってから翻訳します。翻訳文は Frontend に表示され、必要に応じて `/api/tts` で音声合成して再生します。
+現在の GoTalk は、国旗ボタンで開始した発話を `MediaRecorder` で録音し、録音終了時に音声を Backend の `/api/interpret` に送って確定翻訳とバックトランスレーションを取得します（認識テキストがなく、録音のデータがほとんどないときは送りません）。マイクはページ全体で1つ持ち、録音のたびに開き直しません。録音と並行してブラウザの `SpeechRecognition` も動かし、認識テキストが得られた場合はそのテキストを `transcript` として同じリクエストに添えます。Backend は `transcript` があればそれを翻訳し、なければ OpenAI の音声文字起こし API で言語判定と文字起こしを行ってから翻訳します。翻訳文は Frontend に表示され、必要に応じて `/api/tts` で音声合成して `AudioContext` で再生します。
 
 録音中は `SpeechRecognition` の認識テキストを `/api/translate` に送ってリアルタイム翻訳を表示します。原文を編集した後の再翻訳も `/api/translate` で行います。
 
@@ -54,13 +54,13 @@ Frontend はブラウザ上の会話 UI と、Backend API へのリクエスト�
 
 - 2 つの利用言語を選択する
 - 選択した言語ごとの国旗ボタンで録音を開始・停止する
-- `getUserMedia` で取得した音声を `MediaRecorder` で録音する
+- マイクをページ全体で1つ持ち（最初の録音と、track が `ended` のときだけ `getUserMedia` で取得し、閉じない）、その音声を `MediaRecorder` で録音する
 - 録音と並行して `SpeechRecognition` / `webkitSpeechRecognition` を動かし、認識テキストを表示する
 - 録音中の認識テキストを使って `/api/translate` へリアルタイム翻訳を投げる
-- 録音終了時に音声を `/api/interpret` へ送り、確定翻訳とバックトランスレーションを取得する。タップされた国旗の言語を `myLanguage` と `speaker`、もう一方を `theirLanguage` として送り、認識テキストがあれば `transcript` として添える
+- 録音終了時に音声を `/api/interpret` へ送り、確定翻訳とバックトランスレーションを取得する。タップされた国旗の言語を `myLanguage` と `speaker`、もう一方を `theirLanguage` として送り、認識テキストがあれば `transcript` として添える。認識テキストがなく、録音のデータが 1024 バイト未満のときは送らずに知らせる
 - 原文、翻訳文、バックトランスレーションを表示する
 - 原文の編集後、`/api/translate` で再翻訳する
-- `/api/tts` から返る `audio/mpeg` を `Audio` で再生する
+- `/api/tts` から返る `audio/mpeg` を `AudioContext` で再生する（マイクを開いたまま `<audio>` で鳴らすと次の録音が壊れるため、`<audio>` は使わない）
 - 画面内に会話履歴を保持して表示する
 
 Vite の開発サーバーでは `frontend/vite.config.ts` の proxy により、`/api` リクエストを `VITE_BACKEND_URL` または `http://localhost:8080` へ転送します。
@@ -172,7 +172,7 @@ sequenceDiagram
   participant TTS as OpenAI Audio Speech API
 
   User->>FE: tap language flag to start
-  FE->>FE: getUserMedia
+  FE->>FE: use the kept microphone (getUserMedia only for the first recording or after the track ended)
   FE->>MR: start recording
   FE->>Browser: start SpeechRecognition with selected speechCode
   Browser-->>FE: interim transcript
@@ -183,6 +183,7 @@ sequenceDiagram
   FE->>Browser: stop SpeechRecognition
   FE->>MR: stop recording
   MR-->>FE: onstop (audio blob)
+  FE->>FE: do not send when there is no transcript and the blob is smaller than 1024 bytes
   FE->>BE: POST /api/interpret audio + languages + speaker + optional transcript
   BE-->>FE: text + translatedText + backTranslation + ttsText
   User->>FE: tap speak button
@@ -190,10 +191,10 @@ sequenceDiagram
   BE->>TTS: synthesize speech
   TTS-->>BE: audio/mpeg
   BE-->>FE: audio/mpeg
-  FE->>FE: play audio
+  FE->>FE: play audio with AudioContext
 ```
 
-録音開始時は `getUserMedia({ audio: true })` でマイク入力を取得し、`MediaRecorder` で録音します。`AudioContext` / `AnalyserNode` で入力中の波紋表示を制御します。録音と並行してブラウザの `SpeechRecognition` を動かし、認識テキストを表示とリアルタイム翻訳に使います。録音終了時は、`SpeechRecognition` の認識テキストの有無にかかわらず録音音声を `/api/interpret` に送ります。認識テキストがある場合は `transcript` として添え、ない場合は Backend が音声から文字起こしします。
+マイクはページ全体で1つ持ちます（`frontend/src/audio/keptMic.ts`）。最初の録音と、track が `ended` になった後の録音のときだけ `getUserMedia({ audio: true })` でマイク入力を取得し、録音の後も中断のときも閉じずに、次の録音で使い回します。録音は `MediaRecorder` で行い、録音ごとに作る `AudioContext` / `AnalyserNode` で入力中の波紋表示を制御します（録音の資源は `frontend/src/hooks/useKeptAudioSession.ts`。URL の `exp` に切り分けの実験のスイッチがあるときだけ、録音のたびにマイクを開いて閉じる前の版の `useAudioSession.ts` を使います）。録音と並行してブラウザの `SpeechRecognition` を動かし、認識テキストを表示とリアルタイム翻訳に使います。録音終了時は、録音音声を `/api/interpret` に送ります。認識テキストがある場合は `transcript` として添え、ない場合は Backend が音声から文字起こしします。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは送りません（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。読み上げは `AudioContext` で鳴らします（[speech-flow.md](speech-flow.md) の「9. TTS」）。
 
 ## 9. 固有名詞保護の概要
 

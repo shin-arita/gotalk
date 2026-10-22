@@ -5,6 +5,10 @@ import { LANGUAGES } from '../languages'
 import type { Language } from '../languages'
 import { MESSAGES, getLocalizedMessage } from '../messages'
 import type { MessageKey } from '../messages'
+import { MIN_INTERPRET_AUDIO_BYTES } from '../api'
+import { resetKeptMicForTest } from '../audio/keptMic'
+import { makeTtsOkResponse, setupAudioContext } from '../test/audioMocks'
+import type { FakeAudioContext } from '../test/audioMocks'
 
 // --- Shared fixtures ---
 
@@ -70,40 +74,22 @@ function make500Response(): Response {
 
 // --- Audio / TTS mock ---
 
-interface MockAudioInstance {
-  play: ReturnType<typeof vi.fn>
-  pause: ReturnType<typeof vi.fn>
-  onended: (() => void) | null
-  onerror: (() => void) | null
-}
+// 録音のデータ。マイクの音が来ていないかの判定（MIN_INTERPRET_AUDIO_BYTES 未満は送らない）に掛からない大きさにする
+const AUDIO_DATA = 'a'.repeat(MIN_INTERPRET_AUDIO_BYTES)
 
-let mockAudioInstance: MockAudioInstance | null = null
+// 読み上げは AudioContext で鳴らす（<audio> は使わない）。音量の取得も同じ AudioContext の代わりを使う
+let audioContexts: FakeAudioContext[] = []
 
 function setupAudioMock() {
-  mockAudioInstance = null
-  const instance: MockAudioInstance = {
-    play: vi.fn().mockResolvedValue(undefined),
-    pause: vi.fn(),
-    onended: null,
-    onerror: null,
-  }
-  Object.defineProperty(globalThis, 'Audio', {
-    value: vi.fn(function () { mockAudioInstance = instance; return instance }),
-    writable: true,
-    configurable: true,
-  })
-  globalThis.URL.createObjectURL = vi.fn().mockReturnValue('blob:fake')
-  globalThis.URL.revokeObjectURL = vi.fn()
-  return instance
+  audioContexts = setupAudioContext().instances
 }
 
-function makeAudioOkResponse(): Response {
-  return {
-    ok: true,
-    status: 200,
-    blob: () => Promise.resolve(new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/mpeg' })),
-  } as unknown as Response
+// 今鳴らしている読み上げの音（最後に作った AudioBufferSourceNode）
+function lastBufferSource() {
+  return audioContexts.flatMap(c => c.bufferSources).at(-1)
 }
+
+const makeAudioOkResponse = makeTtsOkResponse
 
 // ============================================================
 // MediaRecorder / getUserMedia mock helpers (flag-tap tests)
@@ -166,7 +152,7 @@ async function renderAndInterpret() {
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
   })
-  act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+  act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([AUDIO_DATA]) }) })
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
   })
@@ -185,7 +171,10 @@ function saveProperty(target: object, key: string) {
 beforeEach(() => {
   // エラーのときのログ（console.warn）は、ログを確かめるテスト以外では出さない
   vi.spyOn(console, 'warn').mockImplementation(() => {})
+  // マイクはページ全体で1つ持つので、テストごとに空にする
+  resetKeptMicForTest()
   savedProperties = []
+  saveProperty(globalThis, 'AudioContext')
   saveProperty(globalThis.navigator, 'mediaDevices')
   saveProperty(globalThis.URL, 'createObjectURL')
   saveProperty(globalThis.URL, 'revokeObjectURL')
@@ -422,8 +411,8 @@ describe('InterpreterPage TTS (OpenAI)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '発声する' }))
 
-    await waitFor(() => expect(mockAudioInstance).not.toBeNull())
-    act(() => { mockAudioInstance!.onended?.() })
+    await waitFor(() => expect(lastBufferSource()?.start).toHaveBeenCalled())
+    act(() => { lastBufferSource()!.onended?.() })
     expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
   })
 
@@ -581,7 +570,7 @@ describe('InterpreterPage translation visibility during recording', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
     })
-    act(() => { mockRec2!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    act(() => { mockRec2!.ondataavailable?.({ data: new Blob([AUDIO_DATA]) }) })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
     })
@@ -643,7 +632,7 @@ describe('InterpreterPage flag-tap recording', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
     })
-    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([AUDIO_DATA]) }) })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
     })
@@ -660,7 +649,7 @@ describe('InterpreterPage flag-tap recording', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
     })
-    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([AUDIO_DATA]) }) })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
     })
@@ -681,7 +670,7 @@ describe('InterpreterPage flag-tap recording', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Englishで話す' }))
     })
-    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([AUDIO_DATA]) }) })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Englishの録音を停止' }))
     })
@@ -702,7 +691,7 @@ describe('InterpreterPage flag-tap recording', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
     })
-    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([AUDIO_DATA]) }) })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
     })
@@ -752,7 +741,7 @@ describe('InterpreterPage flag-tap recording', () => {
     expect(recognition.lang).toBe(ja.speechCode)
     expect(recognition.start).toHaveBeenCalled()
     act(() => { recognition.onresult?.({ results: [[{ transcript: 'こんにちは' }]] }) })
-    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([AUDIO_DATA]) }) })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
     })
@@ -776,7 +765,7 @@ describe('InterpreterPage flag-tap recording', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
     })
-    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([AUDIO_DATA]) }) })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
     })
@@ -860,7 +849,7 @@ describe('InterpreterPage fetch signal and timeout', () => {
     })
     act(() => { recognition.onresult?.({ results: [[{ transcript: 'こんにちは' }]] }) })
     await act(async () => { vi.advanceTimersByTime(800) })
-    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([AUDIO_DATA]) }) })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
     })
@@ -974,7 +963,7 @@ describe('InterpreterPage fetch signal and timeout', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/translate', expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(liveSignal!.aborted).toBe(false)
 
-    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([AUDIO_DATA]) }) })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
     })
@@ -1319,7 +1308,7 @@ describe('InterpreterPage messages in the two selected languages', () => {
   })
 
   // langs[0] の国旗をタップして録音し、止めて /api/interpret を呼ぶ
-  async function interpretWith(langs: Language[], size = 5) {
+  async function interpretWith(langs: Language[], size = MIN_INTERPRET_AUDIO_BYTES) {
     mockRecorder = undefined
     setupMediaRecorderMock()
     setupGetUserMediaMock()
@@ -1425,6 +1414,26 @@ describe('InterpreterPage messages in the two selected languages', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Thaiで話す' }))
     })
     await waitFor(() => expect(alertText()).toBe(twoLanguages('recording_start_failed', 'th', 'vi')))
+  })
+
+  it('microphone_no_audio (no transcript, almost no data, and 1 second or longer)', async () => {
+    let now = 1_000_000
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    mockRecorder = undefined
+    setupMediaRecorderMock()
+    setupGetUserMediaMock()
+    renderPage([th, vi_])
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Thaiで話す' }))
+    })
+    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([new Uint8Array(5)]) }) })
+    now += 1500
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Thaiの録音を停止' }))
+    })
+    expect(alertText()).toBe(twoLanguages('microphone_no_audio', 'th', 'vi'))
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('recording_failed (MediaRecorder onerror after the recording is established)', async () => {
@@ -1533,7 +1542,7 @@ describe('InterpreterPage messages in the two selected languages', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
       })
       act(() => { recognition.onresult?.({ results: [[{ transcript: '秘密の発話' }]] }) })
-      act(() => { mockRecorder!.ondataavailable?.({ data: new Blob(['audio']) }) })
+      act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([AUDIO_DATA]) }) })
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
       })

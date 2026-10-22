@@ -159,6 +159,15 @@ export function setupSpeechRecognition(options: { throwOnCreate?: boolean; throw
   return { Ctor, instances }
 }
 
+export interface FakeBufferSource {
+  buffer: unknown
+  onended: (() => void) | null
+  connect: ReturnType<typeof vi.fn>
+  disconnect: ReturnType<typeof vi.fn>
+  start: ReturnType<typeof vi.fn>
+  stop: ReturnType<typeof vi.fn>
+}
+
 export interface FakeAudioContext {
   state: string
   close: ReturnType<typeof vi.fn>
@@ -166,9 +175,31 @@ export interface FakeAudioContext {
   createAnalyser: ReturnType<typeof vi.fn>
   source: { connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }
   analyser: { fftSize: number; getByteTimeDomainData: ReturnType<typeof vi.fn> }
+  // 読み上げ（InterpreterPage の AudioContext での再生）で使うもの
+  destination: object
+  resume: ReturnType<typeof vi.fn>
+  decodeAudioData: ReturnType<typeof vi.fn>
+  createBufferSource: ReturnType<typeof vi.fn>
+  bufferSources: FakeBufferSource[]
 }
 
-export function setupAudioContext(options: { throwOnCreate?: boolean; closeRejects?: boolean } = {}) {
+// 読み上げの options（PR A で足したもの）：
+// resumeRejects：resume() が拒否する / resumeThrows：resume() が同期の例外を出す /
+// stateAfterResume：resume() の後の state（既定は running。suspended なども指定できる） /
+// decodeRejects：decodeAudioData が拒否する / startThrows：AudioBufferSourceNode の start() が例外を出す /
+// bufferDuration：decodeAudioData が返す AudioBuffer の duration（秒。既定は 1） /
+// resumeImpl：resume() の代わり（呼ぶたびに終わらせ方をテストが決める）
+export function setupAudioContext(options: {
+  throwOnCreate?: boolean
+  closeRejects?: boolean
+  resumeRejects?: boolean
+  resumeThrows?: boolean
+  stateAfterResume?: string
+  decodeRejects?: boolean
+  startThrows?: boolean
+  bufferDuration?: number
+  resumeImpl?: (ctx: FakeAudioContext) => Promise<void>
+} = {}) {
   const instances: FakeAudioContext[] = []
   const Ctor = vi.fn(function () {
     if (options.throwOnCreate) throw new Error('AudioContext unavailable')
@@ -188,12 +219,51 @@ export function setupAudioContext(options: { throwOnCreate?: boolean; closeRejec
       createAnalyser: vi.fn(() => analyser),
       source,
       analyser,
+      destination: {},
+      resume: vi.fn(() => {
+        if (options.resumeImpl) return options.resumeImpl(ctx)
+        if (options.resumeThrows) throw new DOMException('cannot resume', 'InvalidStateError')
+        if (options.resumeRejects) return Promise.reject(new DOMException('not allowed', 'NotAllowedError'))
+        ctx.state = options.stateAfterResume ?? 'running'
+        return Promise.resolve()
+      }),
+      decodeAudioData: vi.fn(() => (options.decodeRejects
+        ? Promise.reject(new DOMException('cannot decode', 'EncodingError'))
+        : Promise.resolve({ duration: options.bufferDuration ?? 1 }))),
+      createBufferSource: vi.fn(() => {
+        const node: FakeBufferSource = {
+          buffer: null,
+          onended: null,
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+          start: vi.fn(() => { if (options.startThrows) throw new DOMException('cannot start', 'InvalidStateError') }),
+          stop: vi.fn(),
+        }
+        ctx.bufferSources.push(node)
+        return node
+      }),
+      bufferSources: [],
     }
     instances.push(ctx)
     return ctx
   })
   Object.defineProperty(globalThis, 'AudioContext', { value: Ctor, writable: true, configurable: true })
   return { Ctor, instances }
+}
+
+// 読み上げの AudioContext（InterpreterPage で最初の読み上げのときに作るもの）。音量の取得の AudioContext と
+// 区別するため、resume() を呼んだものを返す
+export function ttsContextOf(instances: FakeAudioContext[]): FakeAudioContext | undefined {
+  return instances.find(c => c.resume.mock.calls.length > 0)
+}
+
+// /api/tts の成功の応答（AudioContext で鳴らすので arrayBuffer で読む）
+export function makeTtsOkResponse(): Response {
+  return {
+    ok: true,
+    status: 200,
+    arrayBuffer: () => Promise.resolve(new Uint8Array([1, 2, 3]).buffer),
+  } as unknown as Response
 }
 
 // requestAnimationFrame を、テストが frame() を呼ぶまで進めない
