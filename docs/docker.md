@@ -95,7 +95,7 @@ services:
 | `OPENAI_API_KEY` | （秘密。文書に書かない） | ステージング専用の OpenAI の Project のキー（本番とは別のキー） |
 | `OPENAI_MODEL` | `gpt-4o-mini` | 翻訳とバックトランスレーションに使う model。本番と同じ値にする |
 
-ステージングの全体の構成と deploy の手順は、ステージングの deploy の仕組みとあわせて別の PR で書きます。
+ステージングの全体の構成と deploy の手順は、[ci-cd.md の「4. ステージング」](ci-cd.md#4-ステージング) を参照してください。
 
 ## 4. frontend
 

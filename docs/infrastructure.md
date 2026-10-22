@@ -116,7 +116,7 @@ CD は `.github/workflows/cd.yml` で定義されています。
 | --- | --- |
 | Trigger | `workflow_run`（`CI` の完了、`main`。CI が成功した場合だけ deploy）、`workflow_dispatch`（手動） |
 | GitHub Environment | `production` |
-| concurrency | `deploy` job に group `cd-production`（deploy を同時に実行しない） |
+| concurrency | `deploy` job に group `gotalk-vps-deploy`、`queue: max`（ステージングの deploy と共通。同じ VPS への deploy を同時に実行せず、待機中のものを置き換えない） |
 | 接続方式 | SSH |
 | GitHub Action | `appleboy/ssh-action` v1.2.2（コミットの SHA `2ead5e36573f08b82fbfce1504f1a4b05a647c6f` で固定） |
 | Deploy target | VPS |
@@ -149,16 +149,17 @@ if [ "$(git rev-parse HEAD)" != "$TARGET_SHA" ]; then
   echo "HEAD $(git rev-parse HEAD) does not match $TARGET_SHA"
   exit 1
 fi
-docker compose build --pull
-docker compose up -d
+flock -w 600 ~/.gotalk-deploy.lock sh -c 'docker compose --parallel 1 build --pull && docker compose up -d'
 docker compose ps
 ```
 
-`git fetch origin main` の後、VPS の現在のコミットが `TARGET_SHA` の祖先であることを確認し、`git merge --ff-only` で `TARGET_SHA` まで fast-forward します。`origin/main` がさらに進んでいても、CI が検証していないコミットは反映しません。新しいコミットがすでに反映されている場合は、古いコミットへ戻さずに失敗します。その後、`docker compose build --pull` で base image を pull してから image を build し、`docker compose up -d` で service を更新します。最後に `docker compose ps` で service 状態を表示します。
+`git fetch origin main` の後、VPS の現在のコミットが `TARGET_SHA` の祖先であることを確認し、`git merge --ff-only` で `TARGET_SHA` まで fast-forward します。`origin/main` がさらに進んでいても、CI が検証していないコミットは反映しません。新しいコミットがすでに反映されている場合は、古いコミットへ戻さずに失敗します。その後、`flock -w 600 ~/.gotalk-deploy.lock` でロックを取り（ステージングの deploy と同じロックのファイル。10 分待っても取れなければ失敗）、`docker compose --parallel 1 build --pull` で base image を pull してから image を build し、`docker compose up -d` で service を更新します。`appleboy/ssh-action` の `command_timeout` は `30m` です。最後に `docker compose ps` で service 状態を表示します。
 
-`docker compose build --pull` と `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを pull・build・起動します。
+`docker compose --parallel 1 build --pull` と `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを pull・build・起動します。
 
-手動で再 deploy する場合は、CD の run の Re-run か、CD workflow の `workflow_dispatch`（`main` から実行）を使います。VPS では手作業で `git pull` をしないでください。CI が成功していないコミットまで作業ツリーが進むためです。手作業でコミットを合わせる必要がある場合は、CI が成功したコミットを指定して `git merge --ff-only <SHA>` を実行します。build や pull で失敗した場合は、失敗した CD の run を Re-run すれば build から再実行でき、それまでのコンテナは動き続けます。詳細は [ci-cd.md](ci-cd.md) を参照してください。
+手動で再 deploy する場合は、CD の run の Re-run か、CD workflow の `workflow_dispatch`（`main` から実行）を使います。VPS では手作業で `git pull` をしないでください。CI が成功していないコミットまで作業ツリーが進むためです。手作業でコミットを合わせる必要がある場合は、CI が成功したコミットを指定して `git merge --ff-only <SHA>` を実行します。build や pull で失敗した場合は、失敗した CD の run を Re-run すれば build から再実行でき、それまでのコンテナは動き続けます。本番の clone（`~/gotalk`）では、手でファイルを変更しないでください（手で変えたファイルがあると `git merge --ff-only` が止まります）。詳細は [ci-cd.md](ci-cd.md) を参照してください。
+
+同じ VPS では、ステージング（`~/gotalk-staging`、`staging.gotalk.chiemaru.com`、ポート `5174` と `8081`）も動かします。ステージングの構成と deploy（`.github/workflows/cd-staging.yml`）は [ci-cd.md の「4. ステージング」](ci-cd.md#4-ステージング) を参照してください。
 
 ## 5. 環境変数
 

@@ -1,0 +1,141 @@
+name: CD (staging)
+
+on:
+  # 手動でだけ起動する。main から起動したときだけ進める（staging Environment の deploy できるブランチも main だけ）
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "ステージングに deploy するコミット（40 桁の SHA）。main に含まれるコミットか、このリポジトリから出された open の PR の HEAD だけを deploy できる"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve commit to deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Resolve and verify commit
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::This workflow must be run from main (ref: $REF)"
+            exit 1
+          fi
+          sha="$INPUT_SHA"
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Invalid commit SHA: $sha"
+            exit 1
+          fi
+          # main に含まれるコミット（ステージングを main に戻すとき）か、
+          # このリポジトリから出された open の PR の HEAD であること
+          status=$(gh api "repos/$REPO/compare/$sha...main" --jq .status 2>/dev/null || true)
+          if [ "$status" = "identical" ] || [ "$status" = "ahead" ]; then
+            echo "Commit $sha is on main"
+          else
+            prs=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+              --jq ".[] | select(.head.repo.full_name == \"$REPO\" and .head.sha == \"$sha\") | .number")
+            if [ -z "$prs" ]; then
+              echo "::error::Commit $sha is neither on main nor the HEAD of an open PR from $REPO"
+              exit 1
+            fi
+            echo "Commit $sha is the HEAD of PR: $(printf '%s' "$prs" | tr '\n' ' ')"
+          fi
+          echo "Deploy target: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Docker and Compose files match main
+        env:
+          TARGET_SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$TARGET_SHA"
+          if ! git diff --quiet origin/main "$TARGET_SHA" -- \
+            ':(glob)docker-compose*.yml' ':(glob)compose*.yml' \
+            ':(glob)**/Dockerfile*' ':(glob)**/.dockerignore'; then
+            echo "::error::Docker/Compose files of $TARGET_SHA differ from origin/main"
+            git diff --stat origin/main "$TARGET_SHA" -- \
+              ':(glob)docker-compose*.yml' ':(glob)compose*.yml' \
+              ':(glob)**/Dockerfile*' ':(glob)**/.dockerignore'
+            exit 1
+          fi
+
+  ci:
+    name: CI
+    needs: resolve
+    permissions:
+      contents: read
+    # 呼び出す ci.yml は、この workflow と同じ main のコミットのもの
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.resolve.outputs.sha }}
+
+  deploy:
+    name: Deploy to staging
+    needs: [resolve, ci]
+    runs-on: ubuntu-latest
+    environment: staging
+    # 本番（cd.yml）と同じ group にして、同じ VPS への deploy を直列にする。
+    # queue: max で待機中の run を置き換えず、順に処理する。実行中の deploy は止めない
+    concurrency:
+      group: gotalk-vps-deploy
+      queue: max
+      cancel-in-progress: false
+
+    steps:
+      - name: Deploy via SSH
+        # VPS の SSH 秘密鍵を扱うため、action はコミットの SHA で固定する（v1.2.2）。
+        # secrets は staging Environment のもの（ステージング専用の鍵）が、リポジトリ全体の同じ名前のものより優先される
+        uses: appleboy/ssh-action@2ead5e36573f08b82fbfce1504f1a4b05a647c6f # v1.2.2
+        env:
+          TARGET_SHA: ${{ needs.resolve.outputs.sha }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          # envs には変数名をカンマ区切りで書く（README の例と drone-ssh の実装による。key=value 形式では渡らない）
+          envs: TARGET_SHA
+          # flock の最大 10 分の待ちと、build と起動の合計に余裕を持たせる
+          command_timeout: 30m
+          # COMPOSE_PROJECT_NAME と COMPOSE_FILE は ~/gotalk-staging/.env から読まれる
+          script: |
+            set -e
+            cd ~/gotalk-staging
+            if ! printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "Invalid TARGET_SHA: $TARGET_SHA"
+              exit 1
+            fi
+            git fetch origin main "$TARGET_SHA"
+            # 承認と待ちの間に main の Docker と Compose のファイルが変わっていないかを、build の直前にもう一度確かめる
+            if ! git diff --quiet origin/main "$TARGET_SHA" -- \
+              ':(glob)docker-compose*.yml' ':(glob)compose*.yml' \
+              ':(glob)**/Dockerfile*' ':(glob)**/.dockerignore'; then
+              echo "Docker/Compose files of $TARGET_SHA differ from origin/main; refusing to deploy"
+              exit 1
+            fi
+            git checkout --detach --force "$TARGET_SHA"
+            # 作業ツリーを TARGET_SHA の内容そのものにする（ignore 済みの .env は残す。-x は付けない）
+            git reset --hard "$TARGET_SHA"
+            git clean -fd
+            test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+            test -z "$(git status --porcelain)"
+            # 同じ VPS の本番の deploy と重ならないようにする（10 分待っても取れなければ失敗）
+            flock -w 600 ~/.gotalk-deploy.lock sh -c 'docker compose --parallel 1 build --pull && docker compose up -d'
+            docker compose ps
