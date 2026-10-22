@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 
 // 開発用のマイクの確認のページ（#mic-test）。
-// 国旗を押すたびに出るブラウザのマイクのお知らせが、getUserMedia の開き直しと
-// 音声認識の始め直しのどちらで出るのかを、実機で確かめるために使います。
+// PR A の前の通訳の画面で、国旗を押すたびに出ていたブラウザのマイクのお知らせが、getUserMedia の開き直しと
+// 音声認識の始め直しのどちらで出るのかを、実機で確かめるために作りました。
 // 録音した音声と音声認識の結果は、送信も保存もせず、ページの中に表示するだけです。
 // 直前の1件の録音だけは、音が取れているかを確かめるため、ページの中で再生できるようにメモリに持ちます。
 // 再生は <audio> と AudioContext（Web Audio API）の2つの方法で行えます。iPhone の Chrome で、<audio> で
@@ -16,7 +16,7 @@ import { useState, useEffect, useRef } from 'react'
 type TestId = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S7'
 
 const TESTS: { id: TestId; description: string }[] = [
-  { id: 'S1', description: '開始のたびに getUserMedia でマイクを開いて録音し、停止で track を stop() で閉じる（今の通訳の画面のマイクの部分）' },
+  { id: 'S1', description: '開始のたびに getUserMedia でマイクを開いて録音し、停止で track を stop() で閉じる（このページを作ったときの、PR A の前の通訳の画面のマイクの部分。今の通訳の画面は、マイクを閉じずに使い回します）' },
   { id: 'S2', description: 'マイクは最初の1回だけ開いて閉じない。開始で track.enabled = true にして録音し、停止で録音を止めて track.enabled = false にする。音声認識は使わない' },
   { id: 'S3', description: 'マイクは最初の1回だけ開いて閉じない（track.enabled は true のまま）。開始のたびに音声認識を新しく作って start() し、停止で stop() する。録音はしない' },
   { id: 'S4', description: 'マイク（getUserMedia）は開かない。開始のたびに音声認識を新しく作って start() し、停止で stop() する' },

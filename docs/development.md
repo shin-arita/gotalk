@@ -317,7 +317,7 @@ npm run build
 - Backend API は `/health`、`/api/tts`、`/api/interpret`、`/api/translate` の 4 本です。
 - TTS は Backend の `/api/tts` から OpenAI Audio Speech API を呼び出し、`audio/mpeg` を返します。
 - `http://localhost:5173/#tts-test` を開くと `TtsTestPage` が表示されます。ブラウザの `speechSynthesis`（Web Speech API の音声合成）で日本語とタイ語の発声、`getVoices()` の一覧、発声イベントのログを確認するための開発確認用ページです。Backend の `/api/tts` は使いません。通常の利用画面とは独立しています。
-- `http://localhost:5173/#mic-test` を開くと `MicTestPage` が表示されます。通訳の画面で国旗を押すたびにブラウザのマイクのお知らせ（iPhone の Chrome の「マイクへのアクセスが許可されています」など）や許可の画面が出る原因が、`getUserMedia` でマイクを開き直すことか、音声認識（`SpeechRecognition` / `webkitSpeechRecognition`）を始め直すことかを、実機で確かめるための開発確認用ページです。通常の利用画面からはリンクしておらず、通訳の画面の動作は変えません。
+- `http://localhost:5173/#mic-test` を開くと `MicTestPage` が表示されます。PR A の前の通訳の画面で、国旗を押すたびにブラウザのマイクのお知らせ（iPhone の Chrome の「マイクへのアクセスが許可されています」など）や許可の画面が出ていた原因が、`getUserMedia` でマイクを開き直すことか、音声認識（`SpeechRecognition` / `webkitSpeechRecognition`）を始め直すことかを、実機で確かめるための開発確認用ページです。通常の利用画面からはリンクしておらず、通訳の画面の動作は変えません。
   - 使い方：テストのボタンで開始と停止を何回でも繰り返し、ブラウザのお知らせ、許可の画面、マイクの使用中の表示（オレンジの点など）を目で見て記録します。テストを切り替えるときは、前のテストのマイクと音声認識をすべて閉じてから始めます。画面のログ（時刻はミリ秒まで）は「ログをコピー」でクリップボードにコピーでき、コピーできない場合はログの欄を全選択して写せます。
   - テストの内容は次のとおりです。`MediaRecorder` の mimeType は、通訳の画面と同じ選び方です。音声認識の `continuous = true` と `interimResults = true` は通訳の画面と同じですが、`lang` は `ja-JP` に固定しています（通訳の画面は押した国旗の言語）。また、通訳の画面にある、録音の間の音声認識の自動の始め直し（`onend` で `start()` を呼ぶこと）と、`AudioContext`（音量の取得）は、このページのテストにはありません。実機の結果を読むときは、これらの違いに気を付けてください。
 

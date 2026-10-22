@@ -239,6 +239,27 @@ describe('InterpreterPage TTS with AudioContext', () => {
     expect(AudioCtor).not.toHaveBeenCalled()
   })
 
+  it('creates the AudioContext, calls resume(), and calls fetch(/api/tts) in this order in the tap itself (QQ6)', async () => {
+    const { Ctor, instances } = setupAudioContext()
+    audioContexts = instances
+    renderPage()
+    await recordAndTranslate()
+    const ctorCallsBefore = Ctor.mock.calls.length
+    // act も await も挟まずに、タップの同期の処理だけを進める
+    fireEvent.click(speakButton()!)
+    expect(Ctor.mock.calls.length).toBe(ctorCallsBefore + 1)
+    const ctx = ttsContext()
+    expect(ctx).toBe(instances.at(-1))
+    expect(ctx.resume).toHaveBeenCalledTimes(1)
+    expect(ttsCalls()).toHaveLength(1)
+    const ttsFetchOrder = fetchMock.mock.invocationCallOrder[fetchMock.mock.calls.findIndex((c: unknown[]) => String(c[0]) === '/api/tts')]
+    const ctorOrder = Ctor.mock.invocationCallOrder.at(-1)!
+    expect(ctorOrder).toBeLessThan(ctx.resume.mock.invocationCallOrder[0])
+    expect(ctx.resume.mock.invocationCallOrder[0]).toBeLessThan(ttsFetchOrder)
+    await flush()
+    await flush()
+  })
+
   it('calls resume() synchronously in the tap', async () => {
     renderPage()
     await recordAndTranslate()
