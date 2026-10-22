@@ -313,7 +313,7 @@ npm run build
 
 ## 8. 注意点
 
-- 録音音声は録音終了のたびに Backend の `/api/interpret` に送信します。Frontend の `SpeechRecognition` / `webkitSpeechRecognition` の認識テキストが得られた場合は `transcript` として同じリクエストに添え、Backend はそのテキストを翻訳します。得られなかった場合は Backend が OpenAI の音声文字起こし API で文字起こしします。
+- 録音音声は録音終了のたびに Backend の `/api/interpret` に送信します（認識テキストがなく、録音のデータが 1024 バイト未満のときは送りません。[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。Frontend の `SpeechRecognition` / `webkitSpeechRecognition` の認識テキストが得られた場合は `transcript` として同じリクエストに添え、Backend はそのテキストを翻訳します。得られなかった場合は Backend が OpenAI の音声文字起こし API で文字起こしします。
 - Backend API は `/health`、`/api/tts`、`/api/interpret`、`/api/translate` の 4 本です。
 - TTS は Backend の `/api/tts` から OpenAI Audio Speech API を呼び出し、`audio/mpeg` を返します。
 - `http://localhost:5173/#tts-test` を開くと `TtsTestPage` が表示されます。ブラウザの `speechSynthesis`（Web Speech API の音声合成）で日本語とタイ語の発声、`getVoices()` の一覧、発声イベントのログを確認するための開発確認用ページです。Backend の `/api/tts` は使いません。通常の利用画面とは独立しています。
@@ -323,7 +323,7 @@ npm run build
 
     | # | 内容 |
     | --- | --- |
-    | S1 | 開始のたびに `getUserMedia({ audio: true })` でマイクを開いて `MediaRecorder` で録音し、停止で録音を止めて track を `stop()` で閉じます（今の通訳の画面のマイクの部分） |
+    | S1 | 開始のたびに `getUserMedia({ audio: true })` でマイクを開いて `MediaRecorder` で録音し、停止で録音を止めて track を `stop()` で閉じます（このページを作ったときの、PR A の前の通訳の画面のマイクの部分。今の通訳の画面は、マイクを閉じずに使い回します） |
     | S2 | 最初の開始で1回だけマイクを開き、以後は閉じません。開始で `track.enabled = true` にして録音を始め、停止で録音を止めて `track.enabled = false` にします。音声認識は使いません |
     | S3 | 最初の開始で1回だけマイクを開き、以後は閉じません（`track.enabled` は true のまま）。開始のたびに音声認識を新しく作って `start()` し、停止で `stop()` します。録音はしません |
     | S4 | マイク（`getUserMedia`）は開きません。開始のたびに音声認識を新しく作って `start()` し、停止で `stop()` します |
