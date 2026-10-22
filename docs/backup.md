@@ -67,12 +67,11 @@ if [ "$(git rev-parse HEAD)" != "$TARGET_SHA" ]; then
   echo "HEAD $(git rev-parse HEAD) does not match $TARGET_SHA"
   exit 1
 fi
-docker compose build --pull
-docker compose up -d
+flock -w 600 ~/.gotalk-deploy.lock sh -c 'docker compose --parallel 1 build --pull && docker compose up -d'
 docker compose ps
 ```
 
-`docker compose build --pull` と `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを pull・build・起動します。詳細は [ci-cd.md](ci-cd.md) を参照してください。
+`docker compose --parallel 1 build --pull` と `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを pull・build・起動します。詳細は [ci-cd.md](ci-cd.md) を参照してください。
 
 ## 4. VPS
 
@@ -115,11 +114,10 @@ cron:
 5. `sudo nginx -t` で nginx 設定を確認する
 6. `sudo systemctl reload nginx` を実行する
 7. `/home/ubuntu/uptime-kuma` で `docker compose restart` を実行する
-8. `/home/ubuntu/gotalk` で `docker compose build --pull` を実行する
-9. `/home/ubuntu/gotalk` で `docker compose up -d` を実行する
-10. `docker compose ps` と Backend health check を確認する
+8. `/home/ubuntu/gotalk` で `flock -w 600 ~/.gotalk-deploy.lock sh -c 'docker compose --parallel 1 build --pull && docker compose up -d'` を実行する
+9. `docker compose ps` と Backend health check を確認する
 
-手順 8 の `docker compose build --pull` と手順 9 の `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを pull・build・起動します。手順 8 は CD の deploy script と同じく `--pull` を付け、base image を pull してから build します。
+手順 8 は、CD の deploy script と同じ形です。deploy と重ならないよう、同じロックのファイル（`~/.gotalk-deploy.lock`）を取ってから build と起動をします（VPS の上で手で build と起動をするときは、いつもこの形で実行します。[ci-cd.md](ci-cd.md) の「deploy が重ならないようにする仕組み」を参照）。`docker compose --parallel 1 build --pull` と `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを pull・build・起動します。CD の deploy script と同じく `--pull` を付け、base image を pull してから build します。
 
 手順 2 の clone では `main` の先頭が checkout されます。CI がまだ成功していないコミットを避けたい場合は、clone の後に `git checkout -B main <CI が成功したコミット>` で `main` をそのコミットに合わせてから手順 8 に進みます。復旧後の CD は、VPS の現在のコミットが deploy するコミットの祖先である場合だけ deploy します。そのため、復旧時に `main` の先頭より古いコミットに合わせた場合でも、その後の CD はそれ以降のコミットを fast-forward で反映できます。
 

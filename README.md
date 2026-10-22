@@ -123,6 +123,8 @@ flowchart LR
 
 CD は、`main` への push で起動した CI が成功した場合だけ起動し（`workflow_run`）、その CI が検証したコミットを VPS に deploy します。CI が失敗した場合は deploy しません。deploy は `concurrency` で同時に実行されないようにし、VPS ではすでに反映されているコミットより古いコミットへは戻しません。deploy 時は `docker compose build --pull` で base image を pull してから build します。CD の deploy job は `production` Environment を指定しているため、GitHub 側で Required reviewers が設定されている場合は、承認されるまで VPS への deploy は実行されません。手動で再 deploy する場合は、CD の run の Re-run か `workflow_dispatch` を使います（詳細は [docs/ci-cd.md](docs/ci-cd.md)）。
 
+同じ VPS のステージング（`staging.gotalk.chiemaru.com`）には、`.github/workflows/cd-staging.yml` を `main` から手動で起動して deploy します。本番とステージングの deploy は、共通の `concurrency` の group で直列にしています（詳細は [docs/ci-cd.md の「4. ステージング」](docs/ci-cd.md#4-ステージング)）。
+
 ## インフラ / 運用
 
 - Docker Compose による frontend/backend の実行
