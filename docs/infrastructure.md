@@ -153,11 +153,11 @@ flock -w 600 ~/.gotalk-deploy.lock sh -c 'docker compose --parallel 1 build --pu
 docker compose ps
 ```
 
-`git fetch origin main` の後、VPS の現在のコミットが `TARGET_SHA` の祖先であることを確認し、`git merge --ff-only` で `TARGET_SHA` まで fast-forward します。`origin/main` がさらに進んでいても、CI が検証していないコミットは反映しません。新しいコミットがすでに反映されている場合は、古いコミットへ戻さずに失敗します。その後、`flock -w 600 ~/.gotalk-deploy.lock` でロックを取り（ステージングの deploy と同じロックのファイル。10 分待っても取れなければ失敗）、`docker compose --parallel 1 build --pull` で base image を pull してから image を build し、`docker compose up -d` で service を更新します。`appleboy/ssh-action` の `command_timeout` は `30m` です。最後に `docker compose ps` で service 状態を表示します。
+`git fetch origin main` の後、VPS の現在のコミットが `TARGET_SHA` の祖先であることを確認し、`git merge --ff-only` で `TARGET_SHA` まで fast-forward します。`origin/main` がさらに進んでいても、CI が検証していないコミットは反映しません。新しいコミットがすでに反映されている場合は、古いコミットへ戻さずに失敗します。その後、`flock -w 600 ~/.gotalk-deploy.lock` でロックを取り（ステージングの deploy と同じロックのファイル。10 分待っても取れなければ失敗）、`docker compose --parallel 1 build --pull` で base image を pull してから image を build し、`docker compose up -d` で service を更新します。`--parallel 1` を付けるのは、VPS のメモリが少ない（961Mi。スワップ 2G）ので、Frontend と Backend の build を同時に行わず、1つずつ行ってメモリの使用を抑えるためです。`appleboy/ssh-action` の `command_timeout` は `30m` です。最後に `docker compose ps` で service 状態を表示します。
 
 `docker compose --parallel 1 build --pull` と `docker compose up -d` はサービス名を指定していませんが、`backend-dev` には `profiles: ["dev"]` が付いているため対象にならず、`frontend` と `backend` だけを pull・build・起動します。
 
-手動で再 deploy する場合は、CD の run の Re-run か、CD workflow の `workflow_dispatch`（`main` から実行）を使います。VPS では手作業で `git pull` をしないでください。CI が成功していないコミットまで作業ツリーが進むためです。手作業でコミットを合わせる必要がある場合は、CI が成功したコミットを指定して `git merge --ff-only <SHA>` を実行します。build や pull で失敗した場合は、失敗した CD の run を Re-run すれば build から再実行でき、それまでのコンテナは動き続けます。本番の clone（`~/gotalk`）では、手でファイルを変更しないでください（手で変えたファイルがあると `git merge --ff-only` が止まります）。詳細は [ci-cd.md](ci-cd.md) を参照してください。
+手動で再 deploy する場合は、CD の run の Re-run か、CD workflow の `workflow_dispatch`（`main` から実行）を使います。VPS では手作業で `git pull` をしないでください。CI が成功していないコミットまで作業ツリーが進むためです。手作業でコミットを合わせる必要がある場合は、CI が成功したコミットを指定して `git merge --ff-only <SHA>` を実行します。VPS の上で手で build と起動をするときは、deploy と重ならないよう、同じロックのファイルを取る `flock -w 600 ~/.gotalk-deploy.lock sh -c 'docker compose --parallel 1 build --pull && docker compose up -d'` の形で実行します（ステージングの `~/gotalk-staging` でも同じ）。build や pull で失敗した場合は、失敗した CD の run を Re-run すれば build から再実行でき、それまでのコンテナは動き続けます。本番の clone（`~/gotalk`）では、手でファイルを変更しないでください（手で変えたファイルがあると `git merge --ff-only` が止まります）。詳細は [ci-cd.md](ci-cd.md) を参照してください。
 
 同じ VPS では、ステージング（`~/gotalk-staging`、`staging.gotalk.chiemaru.com`、ポート `5174` と `8081`）も動かします。ステージングの構成と deploy（`.github/workflows/cd-staging.yml`）は [ci-cd.md の「4. ステージング」](ci-cd.md#4-ステージング) を参照してください。
 

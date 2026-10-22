@@ -73,6 +73,8 @@ jobs:
     needs: resolve
     runs-on: ubuntu-latest
     environment: production
+    # この job は GitHub の API を使わないので、GITHUB_TOKEN に権限を与えない
+    permissions: {}
     # resolve を通った run だけが競合するよう、concurrency は deploy job に置く。
     # ステージング（cd-staging.yml）と同じ group にして、同じ VPS への deploy を直列にする。
     # queue: max で待機中の run を置き換えず、順に処理する。実行中の deploy は止めない

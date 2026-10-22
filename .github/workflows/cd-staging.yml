@@ -92,6 +92,8 @@ jobs:
     needs: [resolve, ci]
     runs-on: ubuntu-latest
     environment: staging
+    # この job は GitHub の API を使わないので、GITHUB_TOKEN に権限を与えない
+    permissions: {}
     # 本番（cd.yml）と同じ group にして、同じ VPS への deploy を直列にする。
     # queue: max で待機中の run を置き換えず、順に処理する。実行中の deploy は止めない
     concurrency:
@@ -122,6 +124,13 @@ jobs:
               echo "Invalid TARGET_SHA: $TARGET_SHA"
               exit 1
             fi
+            # 同じ VPS の本番の deploy や手作業と重ならないよう、ここでロックを取り、build と起動までをロックの中で行う
+            # （確かめてから build までの間に main が変わらないようにするため。10 分待っても取れなければ失敗。ロックは script の終わりに外れる）
+            exec 9>~/.gotalk-deploy.lock
+            if ! flock -w 600 9; then
+              echo "Could not acquire ~/.gotalk-deploy.lock within 600 seconds"
+              exit 1
+            fi
             git fetch origin main "$TARGET_SHA"
             # 承認と待ちの間に main の Docker と Compose のファイルが変わっていないかを、build の直前にもう一度確かめる
             if ! git diff --quiet origin/main "$TARGET_SHA" -- \
@@ -136,6 +145,6 @@ jobs:
             git clean -fd
             test "$(git rev-parse HEAD)" = "$TARGET_SHA"
             test -z "$(git status --porcelain)"
-            # 同じ VPS の本番の deploy と重ならないようにする（10 分待っても取れなければ失敗）
-            flock -w 600 ~/.gotalk-deploy.lock sh -c 'docker compose --parallel 1 build --pull && docker compose up -d'
+            docker compose --parallel 1 build --pull
+            docker compose up -d
             docker compose ps

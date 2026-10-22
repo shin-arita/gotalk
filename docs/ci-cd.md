@@ -142,8 +142,6 @@ GitHub のドキュメントでは、Environment を参照する job は、す�
 
 | 状況 | 動き | 運用 |
 | --- | --- | --- |
-| 状況 | 動き | 運用 |
-| --- | --- | --- |
 | 本番かステージングの `deploy` job が承認待ちのまま、別の `deploy` job（本番でもステージングでも）が来た | 新しい job は pending になり、承認待ちの job が承認または Reject されるまで待つ（GitHub のドキュメント「Actions limits」では、Environment の承認待ちの上限は 30 日、run 全体の上限は待ち時間を含めて 35 日で、上限に達した run はキャンセルされる。承認されないまま残った job は、それまで group を占有しうる） | **承認するか Reject するかをすぐに決める**。特に、ステージングの承認を放置すると、本番の deploy がその後ろで待つ。本番で、古いコミットの job を承認すると古いコミットが deploy され、その後に pending の新しい job が動き出してもう一度承認を求める。最新のコミットだけを deploy したい場合は、古い job を Reject してよい（Reject した run は失敗として終わる） |
 | pending の job がある状態で、さらに新しい `deploy` job が来た | pending の job は置き換えられず、新しい job はその後ろに並ぶ（最大 100 件） | 対応は不要。並んだ job は順に処理される（承認が必要な job は、順番が来たときに承認を求める） |
 
@@ -151,16 +149,24 @@ concurrency と承認待ちのどちらが先に効くかは、GitHub のドキ�
 
 GitHub のドキュメントでは、concurrency group の中での実行順は保証されないとされています。そのため、deploy script でも、VPS の現在のコミット（`HEAD`）が deploy するコミットの祖先であることを確認します。新しいコミットがすでに反映されている状態で古いコミットの deploy が来た場合は、`git merge-base --is-ancestor` の確認で失敗し、古いコミットへ戻しません。
 
-GitHub の group を通らない手作業の deploy や、想定外の重なりへの最後の守りとして、本番とステージングの deploy script は、build と起動を同じロックのファイルの `flock`（`flock -w 600 ~/.gotalk-deploy.lock sh -c 'docker compose --parallel 1 build --pull && docker compose up -d'`）で囲みます。10 分待ってもロックを取れなければ、deploy は失敗します。`flock` の最大 10 分の待ちと、build と起動の合計に余裕を持たせるため、`appleboy/ssh-action` の `command_timeout` は `30m`（既定は `10m`）にしています。
+GitHub の group を通らない手作業や、想定外の重なりへの最後の守りとして、本番とステージングの deploy script は、同じロックのファイル（`~/.gotalk-deploy.lock`）を `flock` で取ります。本番の script は、build と起動を `flock -w 600 ~/.gotalk-deploy.lock sh -c 'docker compose --parallel 1 build --pull && docker compose up -d'` で囲みます。ステージングの script は、script の最初でロックを取り、fetch から起動までをロックの中で行います（4 章の「VPS の deploy script」を参照）。10 分待ってもロックを取れなければ、deploy は失敗します。
+
+`flock` は、同じロックのファイルを取る処理どうしだけを直列にします。そのため、**VPS の上で（本番の `~/gotalk` でもステージングの `~/gotalk-staging` でも）手で build と起動をするときも、同じロックのファイルを取る次の形で実行してください**。ロックを取らずに `docker compose build` や `docker compose up` を実行すると、deploy と重なりえます。
+
+```bash
+flock -w 600 ~/.gotalk-deploy.lock sh -c 'docker compose --parallel 1 build --pull && docker compose up -d'
+```
+
+`--parallel 1` を付けるのは、VPS のメモリが少ない（961Mi。スワップ 2G）ので、Frontend と Backend の build を同時に行わず、1つずつ行ってメモリの使用を抑えるためです。`flock` の最大 10 分の待ちと、build と起動の合計に余裕を持たせるため、`appleboy/ssh-action` の `command_timeout` は `30m`（既定は `10m`）にしています。
 
 本番とステージングの deploy が重ならないようにする仕組みをまとめると、次のとおりです。
 
 | 重なり | 防ぎ方 |
 | --- | --- |
 | 本番の deploy とステージングの deploy（あらゆる組み合わせ） | GitHub の共通の concurrency group `gotalk-vps-deploy`（`queue: max`）。待機中のものは置き換わらず、順番に処理される |
-| 上をすり抜けた場合（手作業の deploy など） | VPS の `flock`（同じロックのファイル、最大 10 分の待ち） |
+| 上をすり抜けた場合（VPS の上の手作業など） | VPS の `flock`（同じロックのファイル `~/.gotalk-deploy.lock`、最大 10 分の待ち）。VPS で手で build と起動をするときも、同じロックのファイルを取る（上の形で実行する） |
 | 本番が古いコミットに戻る | VPS の `HEAD` が `TARGET_SHA` の祖先であることの確認 |
-| ステージングが本番と衝突する古い Compose で起動する | `resolve` と VPS の両方で、Docker と Compose のファイルが現在の `main` と完全に同じことを確かめる（4 章を参照） |
+| ステージングが本番と衝突する古い Compose で起動する | `resolve` と VPS の両方で、Docker と Compose のファイルが現在の `main` と完全に同じことを確かめる。VPS では、ロックを取った後に fetch して確かめ直し、そのままロックの中で build と起動まで行うので、確かめてから build までの間にほかの deploy や手作業が入らない（4 章を参照） |
 
 ### 手動での再 deploy
 
@@ -228,7 +234,7 @@ deploy script は次の順に処理します。
 2. VPS の現在のコミット（`HEAD`）が `TARGET_SHA` の祖先であることを確認する（同じコミットの場合も含む）
 3. `git merge --ff-only "$TARGET_SHA"` で、checkout 中の branch を `TARGET_SHA` まで fast-forward する。`origin/main` が `TARGET_SHA` より先に進んでいても、`TARGET_SHA` より先のコミットは反映しない
 4. `HEAD` が `TARGET_SHA` と一致することを確認する（その前に、`TARGET_SHA` が 40 桁の SHA であることも確認する）
-5. `flock -w 600 ~/.gotalk-deploy.lock` でロックを取り（10 分待っても取れなければ失敗）、ロックを持ったまま、`docker compose --parallel 1 build --pull` で base image を pull してから image を build し（service を1つずつ build する）、`docker compose up -d` で service を更新する
+5. `flock -w 600 ~/.gotalk-deploy.lock` でロックを取り（10 分待っても取れなければ失敗）、ロックを持ったまま、`docker compose --parallel 1 build --pull` で base image を pull してから image を build し（メモリの使用を抑えるため、service を1つずつ build する）、`docker compose up -d` で service を更新する
 6. `docker compose ps` で service 状態を表示する
 
 VPS の作業ツリーは、`~/gotalk` の `main` を fast-forward で更新します。`TARGET_SHA` まで fast-forward した後の `main` は、`origin/main` の祖先です。
@@ -289,7 +295,7 @@ gh api -X POST repos/shin-arita/gotalk/actions/workflows/cd-staging.yml/dispatch
 | --- | --- |
 | `resolve`（`permissions` は `contents: read`、`pull-requests: read`） | `main` から起動されたこと（`github.ref` が `refs/heads/main`）。`sha` が 40 桁の小文字の 16 進数であること。`sha` が `main` に含まれるコミット（GitHub API の compare（`<sha>...main`）が `identical` または `ahead`。ステージングを `main` に戻すとき）か、このリポジトリから出された open の PR の HEAD（`head.repo.full_name` がこのリポジトリで、`head.sha` が `sha`）であること。Docker と Compose のファイルが現在の `main` と完全に同じであること（下の「Docker と Compose のファイル」） |
 | `ci`（`needs: resolve`） | `ci.yml` を `workflow_call` で呼び出し、`ref` に `sha` を渡して、そのコミットで Frontend と Backend の CI を実行する。呼び出す `ci.yml` は caller（`main`）と同じコミットのもので、feature ブランチの `ci.yml` ではない。`secrets: inherit` は使わない |
-| `deploy`（`needs: [resolve, ci]`） | `staging` Environment の承認の後に、SSH で VPS に入り、下の deploy script を実行する。concurrency は本番と同じ group（`gotalk-vps-deploy`、`queue: max`、`cancel-in-progress: false`）。`appleboy/ssh-action` の `command_timeout` は `30m` |
+| `deploy`（`needs: [resolve, ci]`、`permissions: {}`） | `staging` Environment の承認の後に、SSH で VPS に入り、下の deploy script を実行する。concurrency は本番と同じ group（`gotalk-vps-deploy`、`queue: max`、`cancel-in-progress: false`）。`appleboy/ssh-action` の `command_timeout` は `30m`。GitHub の API を使わないので、`GITHUB_TOKEN` に権限を与えない |
 
 ### Docker と Compose のファイル
 
@@ -304,7 +310,7 @@ gh api -X POST repos/shin-arita/gotalk/actions/workflows/cd-staging.yml/dispatch
 
 git の pathspec に `:(glob)` を付けて、`**` を「任意の階層」の意味で使います。`docker-compose*.yml` と `compose*.yml` はリポジトリの直下のファイル、`Dockerfile*` と `.dockerignore` はどの階層のファイルも対象です。
 
-`resolve` job で `git diff --quiet origin/main "$TARGET_SHA" -- <上の pathspec>` を実行し、差があれば失敗させます。承認と待ちの間に `main` が進むことがあるので、VPS の deploy script でも、build の直前に同じ確認をもう一度行います。
+`resolve` job で `git diff --quiet origin/main "$TARGET_SHA" -- <上の pathspec>` を実行し、差があれば失敗させます。承認と待ちの間に `main` が進むことがあるので、VPS の deploy script でも、ロックを取った後の build の直前に同じ確認をもう一度行います。
 
 そのため、次のコミットはステージングに出せません。
 
@@ -323,6 +329,13 @@ if ! printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
   echo "Invalid TARGET_SHA: $TARGET_SHA"
   exit 1
 fi
+# 同じ VPS の本番の deploy や手作業と重ならないよう、ここでロックを取り、build と起動までをロックの中で行う
+# （確かめてから build までの間に main が変わらないようにするため。10 分待っても取れなければ失敗。ロックは script の終わりに外れる）
+exec 9>~/.gotalk-deploy.lock
+if ! flock -w 600 9; then
+  echo "Could not acquire ~/.gotalk-deploy.lock within 600 seconds"
+  exit 1
+fi
 git fetch origin main "$TARGET_SHA"
 # 承認と待ちの間に main の Docker と Compose のファイルが変わっていないかを、build の直前にもう一度確かめる
 if ! git diff --quiet origin/main "$TARGET_SHA" -- \
@@ -337,15 +350,18 @@ git reset --hard "$TARGET_SHA"
 git clean -fd
 test "$(git rev-parse HEAD)" = "$TARGET_SHA"
 test -z "$(git status --porcelain)"
-flock -w 600 ~/.gotalk-deploy.lock sh -c 'docker compose --parallel 1 build --pull && docker compose up -d'
+docker compose --parallel 1 build --pull
+docker compose up -d
 docker compose ps
 ```
+
+script は、SHA の形を確かめた後に、最初に `~/.gotalk-deploy.lock` のロックを取ります（`exec 9>~/.gotalk-deploy.lock` と `flock -w 600 9`。10 分待っても取れなければ失敗）。ロックの中で fetch、Docker と Compose のファイルの確かめ、checkout、build、起動を行うので、確かめてから build までの間に、ほかの deploy や手作業が入りません（`main` の Docker と Compose のファイルが、確かめた後に変わることがない）。ロックは script の終わり（SSH のシェルが終わるとき）に外れます。本番の script は build と起動のところだけでロックを取りますが、本番の確かめ（VPS の `HEAD` が `TARGET_SHA` の祖先であることと fast-forward）は、ロックを待つ間に `main` が進んでも結果が変わらないためです。
 
 本番と違い、ステージングは fast-forward ではなく、`TARGET_SHA` を detached HEAD で checkout します（PR の HEAD も deploy するため）。Frontend は `./frontend` をコンテナに bind mount しているので、ステージングの clone のファイルは、実行中のコンテナや手作業で変わりえます。そのため、build の前に `git reset --hard` と `git clean -fd` で作業ツリーを `TARGET_SHA` の内容に強制的に戻し、`HEAD` が `TARGET_SHA` と一致すること、作業ツリーに差がないことを確かめます。ignore しているファイル（`.env`）は `git clean` で消しません（`-x` を付けない）。
 
 **ステージングの clone（`~/gotalk-staging`）では、手でファイルを変更しないでください**。deploy のたびに `git reset --hard` と `git clean -fd` で消えます。
 
-build と起動は、本番と同じロックのファイルの `flock` で囲みます（3 章の「deploy が重ならないようにする仕組み」を参照）。
+ロックのファイルは本番と同じです（3 章の「deploy が重ならないようにする仕組み」を参照）。build も本番と同じく `--parallel 1` で1つずつ行います。
 
 ### 初回の確認
 
