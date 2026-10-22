@@ -9,18 +9,19 @@ import {
   setupSpeechRecognition, setVisibility,
 } from '../test/audioMocks'
 import type { FakeStream } from '../test/audioMocks'
+import { resetKeptMicForTest } from '../audio/keptMic'
 
 // 通訳の画面の、切り分けの実験のスイッチと診断の表示（docs/testing.md の「実験のスイッチ」）
 
 const hookSpy = vi.hoisted(() => ({ configs: [] as unknown[] }))
 
-vi.mock('../hooks/useAudioSession', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../hooks/useAudioSession')>()
+vi.mock('../hooks/useKeptAudioSession', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/useKeptAudioSession')>()
   return {
     ...actual,
-    useAudioSession: (...args: Parameters<typeof actual.useAudioSession>) => {
+    useInterpreterAudioSession: (...args: Parameters<typeof actual.useInterpreterAudioSession>) => {
       hookSpy.configs.push(args[1])
-      return actual.useAudioSession(...args)
+      return actual.useInterpreterAudioSession(...args)
     },
   }
 })
@@ -38,6 +39,7 @@ let winAdd: ReturnType<typeof vi.spyOn>
 beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   restoreGlobals = saveGlobals(AUDIO_GLOBALS)
+  resetKeptMicForTest()
   gum = setupDeferredGetUserMedia()
   recorders = setupMediaRecorder()
   recognitions = setupSpeechRecognition()
@@ -148,8 +150,9 @@ describe('InterpreterPage with exp (diagnostics panel)', () => {
     expect(panel).toHaveTextContent('効いていない：legacyrecog（norecog が優先）')
   })
 
-  it('changes the view only when 更新 is pressed', async () => {
-    renderPage(readExperimentConfig('?exp='))
+  // 録音ごとの実験の記録（ondataavailable の回数、Blob の大きさ）は、useAudioSession の実験のスイッチのときだけある
+  it('changes the view only when 更新 is pressed (trace)', async () => {
+    renderPage(readExperimentConfig('?exp=trace'))
     expect(screen.queryByTestId('experiment-snapshot')).toBeNull()
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '更新' })) })
     expect(screen.getByTestId('experiment-snapshot')).toHaveTextContent('録音の記録はありません')
@@ -168,8 +171,8 @@ describe('InterpreterPage with exp (diagnostics panel)', () => {
     expect(screen.getByTestId('experiment-snapshot')).not.toHaveTextContent('セッション 2')
   })
 
-  it('copies the latest JSON without the recognized text', async () => {
-    renderPage(readExperimentConfig('?exp='))
+  it('copies the latest JSON without the recognized text (trace)', async () => {
+    renderPage(readExperimentConfig('?exp=trace'))
     await startRecording(0)
     await act(async () => { recognitions.instances[0].onresult?.({ results: [[{ transcript: '聞かれたくない本文' }]] }) })
     await stopAndFinish(0, ['abcd'])

@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import type { Language } from '../languages'
-import { API_TIMEOUT_MS, ApiError, MAX_INTERPRET_AUDIO_BYTES, apiErrorCode, apiErrorFromResponse, isTooLongForTts, logApiError, messageKeyForCode, messageKeyForError } from '../api'
+import { API_TIMEOUT_MS, ApiError, MAX_INTERPRET_AUDIO_BYTES, MIN_INTERPRET_AUDIO_BYTES, apiErrorCode, apiErrorFromResponse, isTooLongForTts, logApiError, messageKeyForCode, messageKeyForError } from '../api'
 import { getLocalizedMessage } from '../messages'
 import type { MessageKey } from '../messages'
-import { useAudioSession } from '../hooks/useAudioSession'
+import { useInterpreterAudioSession } from '../hooks/useKeptAudioSession'
 import type { AudioSessionAbortReason, AudioSessionStartFailure } from '../hooks/useAudioSession'
 import { DEFAULT_EXPERIMENT_CONFIG } from '../experiments'
 import type { ExperimentConfig } from '../experiments'
@@ -107,6 +107,9 @@ const PAGESHOW_RECOVERY_STATUS: Record<InterpreterStatus, InterpreterStatus> = {
   error: 'idle',
 }
 
+// 録音の長さを測る時刻（ミリ秒）。callback の中だけで呼ぶ
+const nowMs = () => Date.now()
+
 export default function InterpreterPage({ selectedLanguages, onBack, experiment = DEFAULT_EXPERIMENT_CONFIG }: InterpreterPageProps) {
   const [status, setStatus] = useState<InterpreterStatus>('idle')
   const [recordingFlagIndex, setRecordingFlagIndex] = useState<0 | 1 | null>(null)
@@ -128,9 +131,12 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
 
   // 非同期の callback の中では、React の状態ではなく、これらの ref でその時点の最新の値を読む
   const statusRef = useRef<InterpreterStatus>('idle')
-  const audioRef = useRef<HTMLAudioElement | null>(null)
-  const audioUrlRef = useRef<string | null>(null)
-  // 読み上げの番号（/api/tts の問い合わせと <audio> の再生）。今有効な番号を1つだけ持つ
+  // 読み上げ用の AudioContext（画面で1つ。最初の読み上げのタップのときに作る）と、今鳴らしている音、
+  // onended が来ないときの見張りのタイマー（docs/speech-flow.md の「読み上げ」）
+  const ttsContextRef = useRef<AudioContext | null>(null)
+  const ttsSourceRef = useRef<AudioBufferSourceNode | null>(null)
+  const ttsWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 読み上げの番号（/api/tts の問い合わせと AudioContext での再生）。今有効な番号を1つだけ持つ
   const ttsSeqRef = useRef(0)
   const activeTtsIdRef = useRef<number | null>(null)
   const ttsControllerRef = useRef<AbortController | null>(null)
@@ -144,12 +150,15 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   const recordingLangRef = useRef<Language | null>(null)
   const hasLiveTranscriptRef = useRef(false)
   const recognizedTextRef = useRef('')
+  // 画面が recording になった時刻（録音の長さを測り、マイクの音が来ていないかの判定に使う）
+  const recordingStartedAtRef = useRef<number | null>(null)
   const rippleRefs = useRef<(HTMLDivElement | null)[]>([null, null, null])
   // 切り分けの実験のスイッチ。最初の描画のときの値だけを使う
   const experimentRef = useRef(experiment)
 
-  // 録音のセッション。状態は持たず、録音の成立、最後のデータ、失敗を callback で知らせる
-  const audioSession = useAudioSession({
+  // 録音のセッション。状態は持たず、録音の成立、最後のデータ、失敗を callback で知らせる。
+  // useAudioSession の実験のスイッチがあるときは今の useAudioSession を、ないときはマイクを閉じないセッションを使う
+  const audioSession = useInterpreterAudioSession({
     onRecordingStarted: () => handleRecordingStarted(),
     onStartFailed: (failure, reason) => handleStartFailed(failure, reason),
     onTranscript: (transcript) => {
@@ -383,22 +392,24 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     })
   }
 
-  // 読み上げを止める（<audio> を止めて object URL を解放し、/api/tts の問い合わせも止める）。冪等
+  // 読み上げを止める（今鳴らしている音を止めてつなぎを外し、見張りのタイマーと /api/tts の問い合わせも止める）。冪等。
+  // AudioContext は閉じない（画面で使い回す）
   const stopSpeaking = () => {
     activeTtsIdRef.current = null
     const controller = ttsControllerRef.current
     ttsControllerRef.current = null
     controller?.abort()
-    const audio = audioRef.current
-    audioRef.current = null
-    if (audio) {
-      audio.onended = null
-      audio.onerror = null
-      try { audio.pause() } catch { /* 止める処理の例外は捨てる */ }
+    if (ttsWatchdogRef.current !== null) {
+      clearTimeout(ttsWatchdogRef.current)
+      ttsWatchdogRef.current = null
     }
-    const url = audioUrlRef.current
-    audioUrlRef.current = null
-    if (url) URL.revokeObjectURL(url)
+    const source = ttsSourceRef.current
+    ttsSourceRef.current = null
+    if (source) {
+      source.onended = null
+      try { source.stop() } catch { /* 止める処理の例外は捨てる */ }
+      try { source.disconnect() } catch { /* 外す処理の例外は捨てる */ }
+    }
   }
 
   // 録音の成立（マイク ON）
@@ -408,6 +419,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       void audioSession.abort('error')
       return
     }
+    recordingStartedAtRef.current = nowMs()
     changeStatus('recording')
   }
 
@@ -429,9 +441,27 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     changeStatus('idle')
   }
 
-  // 利用者の停止で、マイク OFF が成立した後に呼ばれる。ここで初めて processing に進み、Backend に送る
+  // 利用者の停止で、録音の最後のデータがそろった後に呼ばれる。ここで初めて processing に進み、Backend に送る。
+  // 音声認識の文字がなく、録音のデータがほとんどないときは送らない（docs/speech-flow.md の「マイクの音が来ないときの検出」）
   const handleRecordingStopped = (blob: Blob) => {
     if (statusRef.current !== 'stopping') return
+    const startedAt = recordingStartedAtRef.current
+    recordingStartedAtRef.current = null
+    const hasTranscript = hasLiveTranscriptRef.current && !!recognizedTextRef.current
+    if (!hasTranscript && blob.size < MIN_INTERPRET_AUDIO_BYTES) {
+      const durationMs = startedAt === null ? 0 : nowMs() - startedAt
+      setRecordingFlagIndex(null)
+      if (durationMs >= 1000) {
+        // 1 秒以上録音したのに中身がない：マイクの音が来ていない
+        audioSession.logEvent(`no_audio_detected:bytes=${blob.size},ms=${durationMs}`)
+        showMessage('microphone_no_audio')
+      } else {
+        // 押してすぐ止めた
+        showMessage('recording_failed')
+      }
+      changeStatus('idle')
+      return
+    }
     setRecordingFlagIndex(null)
     void callInterpretApi(blob)
   }
@@ -466,6 +496,8 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     void audioSession.start(lang.speechCode)
   }
 
+  // 読み上げを AudioContext で鳴らす（docs/speech-flow.md の「読み上げ」）。マイクを開いたまま <audio> で鳴らすと、
+  // 次の録音が壊れるため、<audio> は使わない（失敗しても <audio> に切り替えて鳴らし直さない）
   const handleSpeak = async () => {
     if (statusRef.current !== 'ready') return
     setErrorMessage('')
@@ -474,8 +506,20 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       showMessage('tts_too_long')
       return
     }
-    // マイクを開いている間に <audio> を鳴らさない。ready ではマイク OFF のはずなので、残っていれば異常として記録し、
-    // 片付けが終わるのを待ってから鳴らす（ここで吸収して終わりにせず、片付けの不具合として直すこと）
+    // await の前（タップの処理の中）で resume() を呼ぶ（iPhone では、利用者の操作の中でないと鳴らせないため）。
+    // ここでは待たず、再生を始める直前に結果を確かめる。拒否が未処理にならないよう、catch を付けておく
+    ttsContextRef.current ??= new AudioContext()
+    const ctx = ttsContextRef.current
+    let resumed: Promise<void>
+    try {
+      resumed = ctx.resume()
+    } catch (e) {
+      resumed = Promise.reject(e)
+    }
+    resumed.catch(() => {})
+    // 読み上げの前に録音のセッションが残っていれば、異常として記録し、片付けが終わるのを待ってから鳴らす
+    // （マイクは開いたままが正常で、残っていてはいけないのは録音のセッション。ここで吸収して終わりにせず、
+    // 片付けの不具合として直すこと）
     if (audioSession.hasActiveSession()) {
       audioSession.logEvent('unexpected_active_audio_session_before_tts')
       console.warn('[GoTalk] unexpected_active_audio_session_before_tts')
@@ -505,24 +549,48 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
         const messageKey = code === 'input_too_large' ? 'tts_too_long' : messageKeyForCode(code)
         throw new ApiError(messageKey, '/api/tts', res.status, code)
       }
-      const blob = await res.blob()
+      const data = await res.arrayBuffer()
       if (activeTtsIdRef.current !== ttsId) return
-      const url = URL.createObjectURL(blob)
-      audioUrlRef.current = url
-      const audio = new Audio(url)
-      audioRef.current = audio
-      const finish = () => {
+      const buffer = await ctx.decodeAudioData(data)
+      if (activeTtsIdRef.current !== ttsId) return
+      // resume() の結果を確かめる。拒否されたとき、または running でないときは鳴らさず、読み上げの失敗とする
+      // （文言は出さない）
+      let resumeError: unknown = null
+      try {
+        await resumed
+      } catch (e) {
+        resumeError = e
+      }
+      if (activeTtsIdRef.current !== ttsId) return
+      if (resumeError !== null || ctx.state !== 'running') {
+        audioSession.logEvent(`tts_resume_failed:${ctx.state}`)
+        logApiError('/api/tts', resumeError ?? new Error(`AudioContext is ${ctx.state}`))
+        stopSpeaking()
+        changeStatus('ready')
+        return
+      }
+      const source = ctx.createBufferSource()
+      source.buffer = buffer
+      source.connect(ctx.destination)
+      ttsSourceRef.current = source
+      source.onended = () => {
         if (activeTtsIdRef.current !== ttsId) return
         stopSpeaking()
         changeStatus('ready')
       }
-      audio.onended = finish
-      audio.onerror = finish
-      await audio.play()
+      source.start()
+      // onended が来ないまま speaking に残らないよう（iPhone の割り込みなどで再生が止まったとき）、見張りのタイマーを始める
+      ttsWatchdogRef.current = setTimeout(() => {
+        ttsWatchdogRef.current = null
+        if (activeTtsIdRef.current !== ttsId) return
+        audioSession.logEvent('tts_ended_timeout')
+        stopSpeaking()
+        changeStatus('ready')
+      }, buffer.duration * 1000 + 3000)
     } catch (e) {
       // 止めた読み上げ（hidden、pagehide など）の失敗は、画面に反映しない
       if (activeTtsIdRef.current !== ttsId) return
-      // 表示する文言がないエラー（ネットワークのエラー、timeout など）は、ログにだけ残して何も表示しない
+      // 表示する文言がないエラー（ネットワークのエラー、timeout、decodeAudioData の失敗など）は、ログにだけ残して何も表示しない
       logApiError('/api/tts', e)
       if (e instanceof ApiError && e.messageKey) showMessage(e.messageKey)
       stopSpeaking()
@@ -560,6 +628,12 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       abortTranslationRequest()
       stopSpeaking()
     }
+    // 画面が外れるときは、読み上げ用の AudioContext を閉じる（読み上げの出力用で、マイクではない）
+    if (reason === 'unmount') {
+      const ctx = ttsContextRef.current
+      ttsContextRef.current = null
+      if (ctx) void ctx.close().catch(() => { /* close() の拒否は捨てる */ })
+    }
   }
 
   // bfcache から戻ったとき（persisted）に、pagehide のときに記録した状態に明示的に直す。マイクは開かず、
@@ -571,7 +645,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     const hasLeftover = audioSession.hasActiveSession()
       || activeRequestIdRef.current !== null
       || activeTtsIdRef.current !== null
-      || audioRef.current !== null
+      || ttsSourceRef.current !== null
     if (hasLeftover) {
       audioSession.logEvent('unexpected_active_session_after_pageshow')
       console.warn('[GoTalk] unexpected_active_session_after_pageshow')

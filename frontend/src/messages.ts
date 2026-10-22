@@ -15,6 +15,7 @@ export type MessageKey =
   | 'request_timeout'
   | 'recording_start_failed'
   | 'recording_failed'
+  | 'microphone_no_audio'
 
 // 文言がない言語のときに使う言語
 const FALLBACK_LANGUAGE = 'en'
@@ -140,6 +141,17 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
     'ko':    '녹음하지 못했습니다. 다시 시도해 주세요.',
     'th':    'ไม่สามารถบันทึกเสียงได้ กรุณาลองอีกครั้ง',
     'vi':    'Không thể ghi âm. Vui lòng thử lại.',
+  },
+  // 音声認識の文字がなく、1 秒以上録音したのに、録音のデータがほとんどない場合（マイクの音が来ていない。docs/speech-flow.md）。
+  // ブラウザを終了して開き直すと直ることがあるので、それを案内する
+  microphone_no_audio: {
+    'ja':    'マイクの音を受け取れませんでした。ブラウザを一度終了してから、開き直してください',
+    'en':    'The microphone audio could not be received. Please close the browser completely and open it again.',
+    'zh-CN': '未能接收到麦克风的声音。请完全关闭浏览器后重新打开。',
+    'zh-TW': '無法接收麥克風的聲音。請完全關閉瀏覽器後重新開啟。',
+    'ko':    '마이크 소리를 받지 못했습니다. 브라우저를 완전히 종료한 후 다시 열어 주세요.',
+    'th':    'ไม่ได้รับเสียงจากไมโครโฟน กรุณาปิดเบราว์เซอร์ให้สนิทแล้วเปิดใหม่อีกครั้ง',
+    'vi':    'Không nhận được âm thanh từ micrô. Vui lòng đóng hẳn trình duyệt rồi mở lại.',
   },
 }
 

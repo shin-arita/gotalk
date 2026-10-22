@@ -3,9 +3,12 @@ import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import InterpreterPage from './InterpreterPage'
 import { LANGUAGES } from '../languages'
 import type { AudioSession, AudioSessionCallbacks } from '../hooks/useAudioSession'
+import { MIN_INTERPRET_AUDIO_BYTES } from '../api'
+import { AUDIO_GLOBALS, makeTtsOkResponse, saveGlobals, setupAudioContext, ttsContextOf } from '../test/audioMocks'
+import type { FakeAudioContext } from '../test/audioMocks'
 
 // handleSpeak の守り（3.11-14）。ready で録音のセッションが残ることは正常な経路では起きないため、
-// useAudioSession を差し替えて、セッションが残っている状態を作る
+// 通訳の画面の録音のセッション（useInterpreterAudioSession）を差し替えて、セッションが残っている状態を作る
 
 const fake = vi.hoisted(() => ({
   active: false,
@@ -14,18 +17,18 @@ const fake = vi.hoisted(() => ({
   abortResolved: false,
 }))
 
-vi.mock('../hooks/useAudioSession', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../hooks/useAudioSession')>()
+vi.mock('../hooks/useKeptAudioSession', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/useKeptAudioSession')>()
   return {
     ...actual,
-    useAudioSession: (callbacks: AudioSessionCallbacks) => {
+    useInterpreterAudioSession: (callbacks: AudioSessionCallbacks) => {
       fake.callbacks = callbacks
       if (!fake.session) {
-        const real = actual.createAudioSession(callbacks)
+        const real = actual.createKeptAudioSession(callbacks)
         fake.session = {
           ...real,
           start: vi.fn(async () => { fake.active = true; fake.callbacks?.onRecordingStarted() }),
-          stop: vi.fn(() => { fake.active = false; fake.callbacks?.onRecordingStopped(new Blob(['audio'])) }),
+          stop: vi.fn(() => { fake.active = false; fake.callbacks?.onRecordingStopped(new Blob(['a'.repeat(MIN_INTERPRET_AUDIO_BYTES)])) }),
           abort: vi.fn(async () => {
             await Promise.resolve()
             fake.active = false
@@ -42,23 +45,22 @@ vi.mock('../hooks/useAudioSession', async (importOriginal) => {
 
 const [ja, en] = LANGUAGES
 
+let restoreGlobals: () => void
+let audioContexts: FakeAudioContext[]
+
 beforeEach(() => {
   fake.active = false
   fake.session = null
   fake.abortResolved = false
   vi.spyOn(console, 'warn').mockImplementation(() => {})
-  Object.defineProperty(globalThis, 'Audio', {
-    value: vi.fn(function () { return { play: vi.fn().mockResolvedValue(undefined), pause: vi.fn(), onended: null, onerror: null } }),
-    writable: true,
-    configurable: true,
-  })
-  globalThis.URL.createObjectURL = vi.fn().mockReturnValue('blob:fake')
-  globalThis.URL.revokeObjectURL = vi.fn()
+  restoreGlobals = saveGlobals(AUDIO_GLOBALS)
+  audioContexts = setupAudioContext().instances
 })
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  restoreGlobals()
 })
 
 describe('InterpreterPage handleSpeak guard (3.11-14)', () => {
@@ -72,7 +74,7 @@ describe('InterpreterPage handleSpeak guard (3.11-14)', () => {
     fetchMock.mockImplementationOnce(async () => {
       // /api/tts を呼ぶのは、片付けが終わった後
       expect(fake.abortResolved).toBe(true)
-      return { ok: true, status: 200, blob: () => Promise.resolve(new Blob(['x'])) } as unknown as Response
+      return makeTtsOkResponse()
     })
     render(<InterpreterPage selectedLanguages={[ja, en]} onBack={vi.fn()} />)
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' })) })
@@ -88,7 +90,7 @@ describe('InterpreterPage handleSpeak guard (3.11-14)', () => {
     expect(fake.session!.getDiagnostics().events.map(e => e.type)).toContain('unexpected_active_audio_session_before_tts')
     expect(console.warn).toHaveBeenCalledWith('[GoTalk] unexpected_active_audio_session_before_tts')
     expect(fetchMock).toHaveBeenLastCalledWith('/api/tts', expect.anything())
-    expect(globalThis.Audio).toHaveBeenCalledTimes(1)
+    expect(ttsContextOf(audioContexts)!.bufferSources[0].start).toHaveBeenCalledTimes(1)
   })
 
   it('does not record the guard in the normal path', async () => {
@@ -98,7 +100,7 @@ describe('InterpreterPage handleSpeak guard (3.11-14)', () => {
       status: 200,
       json: () => Promise.resolve({ text: 'Hello', translatedText: 'こんにちは', ttsText: 'こんにちは', backTranslation: '', sourceLanguage: 'en', targetLanguage: 'ja' }),
     } as unknown as Response)
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, blob: () => Promise.resolve(new Blob(['x'])) } as unknown as Response)
+    fetchMock.mockResolvedValueOnce(makeTtsOkResponse())
     render(<InterpreterPage selectedLanguages={[ja, en]} onBack={vi.fn()} />)
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' })) })
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' })) })

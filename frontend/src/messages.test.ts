@@ -75,17 +75,32 @@ describe('getLocalizedMessage', () => {
     })
   })
 
+  it('has the microphone no audio messages (ja without a period, the others with one)', () => {
+    expect(getLocalizedMessage('microphone_no_audio', 'ja', 'en')).toBe(
+      'マイクの音を受け取れませんでした。ブラウザを一度終了してから、開き直してください\n\nThe microphone audio could not be received. Please close the browser completely and open it again.',
+    )
+    expect(MESSAGES.microphone_no_audio).toEqual({
+      'ja':    'マイクの音を受け取れませんでした。ブラウザを一度終了してから、開き直してください',
+      'en':    'The microphone audio could not be received. Please close the browser completely and open it again.',
+      'zh-CN': '未能接收到麦克风的声音。请完全关闭浏览器后重新打开。',
+      'zh-TW': '無法接收麥克風的聲音。請完全關閉瀏覽器後重新開啟。',
+      'ko':    '마이크 소리를 받지 못했습니다. 브라우저를 완전히 종료한 후 다시 열어 주세요.',
+      'th':    'ไม่ได้รับเสียงจากไมโครโฟน กรุณาปิดเบราว์เซอร์ให้สนิทแล้วเปิดใหม่อีกครั้ง',
+      'vi':    'Không nhận được âm thanh từ micrô. Vui lòng đóng hẳn trình duyệt rồi mở lại.',
+    })
+  })
+
   it('keeps the existing language unclear messages', () => {
     expect(getLocalizedMessage('language_unclear', 'ja', 'en')).toBe(
       '言語不明、もう一度お話ください\n\nLanguage unclear. Please speak again.',
     )
   })
 
-  it('has messages in all 7 languages for all 12 keys', () => {
+  it('has messages in all 7 languages for all 13 keys', () => {
     const keys: MessageKey[] = [
       'input_too_large', 'service_unavailable', 'upstream_busy', 'timeout', 'tts_too_long',
       'recording_too_long', 'microphone_denied', 'generic_error', 'language_unclear', 'request_timeout',
-      'recording_start_failed', 'recording_failed',
+      'recording_start_failed', 'recording_failed', 'microphone_no_audio',
     ]
     expect(Object.keys(MESSAGES).sort()).toEqual([...keys].sort())
     const languageIds = LANGUAGES.map(l => l.id)

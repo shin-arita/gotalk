@@ -96,6 +96,11 @@ export function messageKeyForError(endpoint: string, e: unknown): MessageKey {
 // 境界ではない（境界は Backend と nginx の上限）。第2段階で nginx の上限を Backend と合わせるときに見直すこと
 export const MAX_INTERPRET_AUDIO_BYTES = 1_048_576 - 16_384
 
+// 録音のデータがこれより小さく、音声認識の文字がないときは、/api/interpret に送らない（1,024 バイト。docs/speech-flow.md）。
+// 実機の記録で、成功した録音は 74KB 以上、マイクの音が来ていない壊れた録音は 5 バイトだった。1 秒以上の正常な録音は、
+// webm でも mp4 でも数 KB 以上になるので、その間で、正常な録音を誤って止めない余裕を取った値
+export const MIN_INTERPRET_AUDIO_BYTES = 1024
+
 // /api/tts が受け付ける最大の文字数。Backend の上限（backend/limits.go の maxTextRunes）と
 // 同じ値にすること。Frontend の確認は使い勝手のため、費用の防御は Backend の確認が担う
 export const TTS_MAX_CHARS = 500

@@ -84,17 +84,21 @@ Frontend のテストファイルは次のとおりです。
 | --- | --- |
 | `frontend/src/languages.test.ts` | 言語定義 |
 | `frontend/src/api.test.ts` | API の timeout の値、エラーの `code` ごとの文言のキー（`apiErrorFromResponse`）、エラーの文言のキーとログ（`messageKeyForError`）、読み上げの文字数の判定（`isTooLongForTts`）、`/api/interpret` に送る録音の大きさの上限（`MAX_INTERPRET_AUDIO_BYTES`） |
-| `frontend/src/messages.test.ts` | 利用者向けの文言の共通の関数（`getLocalizedMessage`）と、12 の文言の7言語の辞書 |
+| `frontend/src/messages.test.ts` | 利用者向けの文言の共通の関数（`getLocalizedMessage`）と、13 の文言の7言語の辞書 |
 | `frontend/src/pages/LanguageSelectPage.test.tsx` | 言語選択画面 |
 | `frontend/src/pages/InterpreterPage.test.tsx` | 通訳画面、録音、確定翻訳、再翻訳、TTS、読み上げの文字数の上限、状態遷移、エラーの文言を選んだ2つの言語で表示すること |
 | `frontend/src/hooks/useAudioSession.test.ts` | 録音のセッションの hook（`createAudioSession`、`useAudioSession`）：録音の成立と失敗、利用者の停止、中断の片付け、古いセッションの callback、冪等な片付け、診断の情報 |
-| `frontend/src/pages/InterpreterPage.lifecycle.test.tsx` | 通訳画面の録音のライフサイクル：二重のタップ、中断（`hidden`、`pagehide`、戻る、外れる）、古いセッションと古い問い合わせの結果、読み上げの中断、bfcache から戻ったとき |
-| `frontend/src/pages/InterpreterPage.ttsGuard.test.tsx` | `handleSpeak` の守り（`useAudioSession` を差し替えて、`ready` で録音のセッションが残っている状態を作る） |
+| `frontend/src/audio/keptMic.test.ts` | ページ全体で1つのマイク（`keptMic`）：2回目からは `getUserMedia` を呼ばない、`ended` の track があれば古い track を止めて取り直す、同時の `acquire()` で `getUserMedia` は1回、失敗と `pending`、`ended` の listener は track ごとに1回だけ、`endedEvents` |
+| `frontend/src/hooks/useKeptAudioSession.test.ts` | マイクを閉じない録音のセッション（`createKeptAudioSession`、`useKeptAudioSession`、`useInterpreterAudioSession`）：どの経路でも track の `stop()` を呼ばない、使い回しのときは `start()` の同期の処理の中で `MediaRecorder.start()` を呼ぶ、片付けの順番、`getUserMedia` を待つ間の中断、`useAudioSession` と同じ意味の安全策、スイッチによるセッションの選び方 |
+| `frontend/src/pages/InterpreterPage.lifecycle.test.tsx` | 通訳画面の録音のライフサイクル（マイクを閉じないセッション）：二重のタップ、中断（`hidden`、`pagehide`、戻る、外れる）で track を止めず次の録音で使い回すこと、古いセッションと古い問い合わせの結果、読み上げの中断（`AudioBufferSourceNode` の `stop()` と `disconnect()`、外れるときの `AudioContext` の `close()`）、bfcache から戻ったとき |
+| `frontend/src/pages/InterpreterPage.keptMic.test.tsx` | 10 回続けて録音しても（間に読み上げをはさんでも）`getUserMedia` は1回、読み上げの `AudioContext`（`resume()` をタップの中で `fetch` の前に呼ぶ、`resume()` の拒否と `running` でないとき、古い `resume()` の拒否、見張りのタイマー、`decodeAudioData` と `start()` の失敗）、マイクの音が来ないときの検出、`?exp=` のときの「コピー」の JSON、スイッチがあるときは `useAudioSession` を使うこと |
+| `frontend/src/App.keptMic.test.tsx` | 言語の選択の画面に戻り、もう一度選んで録音しても `getUserMedia` を呼ばないこと |
+| `frontend/src/pages/InterpreterPage.ttsGuard.test.tsx` | `handleSpeak` の守り（`useInterpreterAudioSession` を差し替えて、`ready` で録音のセッションが残っている状態を作る） |
 | `frontend/src/pages/MicTestPage.test.tsx` | 開発用のマイクの確認のページ（`#mic-test`） |
 | `frontend/src/experiments.test.ts` | 切り分けの実験のスイッチの指定（`ExperimentConfig`）の読み取りと組み合わせ（[切り分けの実験のスイッチ](#切り分けの実験のスイッチ原因の特定の後に外す)） |
-| `frontend/src/hooks/useAudioSession.callLog.test.ts` | スイッチがないとき（と `?exp=` のとき）に、ブラウザの API の呼び出しの順番と回数が、スイッチを入れる前（`782635e`）と同じであること |
+| `frontend/src/hooks/useAudioSession.callLog.test.ts` | `useAudioSession` に、スイッチがないとき（と `?exp=` のとき）の設定を渡したときに、ブラウザの API の呼び出しの順番と回数が、スイッチを入れる前（`782635e`）と同じであること（PR A から、通訳の画面は、スイッチがないときに `useAudioSession` を使いません） |
 | `frontend/src/hooks/useAudioSession.experiments.test.ts` | `useAudioSession` のスイッチごとの動きと、実験の診断の記録 |
-| `frontend/src/pages/InterpreterPage.experiments.test.tsx` | 通訳の画面のスイッチ（`norecog`、`nolifecycle`、`trace`）と、診断の表示（「更新」「コピー」） |
+| `frontend/src/pages/InterpreterPage.experiments.test.tsx` | 通訳の画面のスイッチ（`norecog`、`nolifecycle`、`trace`）と、診断の表示（「更新」「コピー」。録音ごとの実験の記録を確かめるものは `trace` を付けている） |
 | `frontend/src/pages/ExperimentPanel.test.tsx` | 診断の表示の部品（スナップショットの表示、直近の5回分、クリップボードがないときの表示） |
 | `frontend/src/hooks/useAudioSession.recognitionVariants.test.ts` | 2回目の実験のスイッチ（`recogfirst`、`recogabort`、`recogdelay`、`recogearly`、`recogonce`）ごとの動きと診断の記録、スイッチがないときに待ちやタイマーを作らないこと |
 | `frontend/src/pages/ExperimentPanel.recognitionVariants.test.tsx` | 2回目の実験の診断（`recogfirst` の待ち、`recogearly`、`recogonce`）の表示 |
@@ -183,8 +187,8 @@ npm test
 利用者向けの文言を選んだ2つの言語で表示すること（[ui.md](ui.md)）は、次のテストで確かめます。画面のテストの期待する文言は、既定の日本語と英語の組み合わせでは helper `jaEn` で作ります。エラーのときの `console.warn` は、ログを確かめるテスト以外では `beforeEach` で出力を止めています。
 
 - `getLocalizedMessage` が、2つの言語（`ja` と `en`、`th` と `vi` など）の文言を選んだ順に空行をはさんで連結すること、辞書にない言語では英語になること、選んだ言語が1つだけのときはその言語の文言だけ、1つもないときは英語の文言になること（`messages.test.ts`）
-- 12 の文言のすべてのキーに、7言語の空でない文言がそろっていること。`recording_start_failed` と `recording_failed` の7言語の文言が決めたとおりであること（日本語だけ句点なし）。読み上げの文言の 500 が `TTS_MAX_CHARS` から作られること。`request_timeout` の英語の文言のアポストロフィが U+2019 であること（`messages.test.ts`）
-- 12 の文言のそれぞれが、実際の画面で選んだ2つの言語（主にタイ語とベトナム語。ほかにベトナム語とタイ語の順、韓国語と英語）で表示されること（`InterpreterPage messages in the two selected languages`）
+- 13 の文言のすべてのキーに、7言語の空でない文言がそろっていること。`recording_start_failed`、`recording_failed`、`microphone_no_audio` の7言語の文言が決めたとおりであること（日本語だけ句点なし）。読み上げの文言の 500 が `TTS_MAX_CHARS` から作られること。`request_timeout` の英語の文言のアポストロフィが U+2019 であること（`messages.test.ts`）
+- 13 の文言のそれぞれが、実際の画面で選んだ2つの言語（主にタイ語とベトナム語。ほかにベトナム語とタイ語の順、韓国語と英語）で表示されること（`InterpreterPage messages in the two selected languages`）
 - 対応する文言がない status（502）、ネットワークのエラー（`fetch` の reject）、JSON として読めない応答で汎用のエラーの文言を表示し、`HTTP`、`502`、`Failed to fetch`、Backend の `error` の文字列を表示しないこと
 - Frontend の timeout では「うまく翻訳できませんでした」、Backend の 504 では「処理に時間がかかっています」を表示すること
 - エラーのとき、`console.warn` にエンドポイント、status、エラーの種類（Backend の `code`、`frontend_timeout`、`recording_too_large_before_send`、`TypeError` など）が残り、発話の内容、翻訳の結果、`e.message`、Backend の `error` の文字列が残らないこと（`api.test.ts` と `InterpreterPage.test.tsx`）
@@ -306,7 +310,9 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
   - `frontend/src/App.test.tsx`（`exp` に関わるテストを消した後に残すものがあるかを、外す PR で判断します）
 - 戻すもの
   - `frontend/src/hooks/useAudioSession.ts`：`createAudioSession` と `useAudioSession` の `config` の引数、スイッチの分岐（`norecog`、`legacyrecog`、`nometer`、`nodisconnect`、`awaitclose`、`notrackread`、`noendedlistener`、`trace`、2回目の実験の `recogfirst`、`recogabort`、`recogdelay`、`recogearly`、`recogonce`）、2回目の実験のために足したもの（`RECOGNITION_END_TIMEOUT_MS`、`RECOGNITION_END_DELAY_MS`、`RecognitionEndWait`、`Session.recognitionEndWait`、`stopRecognitionFirst`、`waitRecognitionEnd`、`timeOutRecognitionEndWait`、`settleRecognitionEndWait`、`cancelRecognitionEndWait`、`onceRecognition`、`onceRecognitionRunning`、`recordOnce`、`disposeOnceRecognition`、`abort` を分けた `abortSession`、`SpeechRecognition` の型の `abort()`）、`exp` の記録（`Session.exp`、`expDiag`、`perfNow` と、`if (s.exp)` の行のすべて）、`recordPageEvent`、`markTraceListenerOnly`、`AudioDiagnostics.experiment`、`trace` のための型（`SpeechRecognition` の `onstart`、`onaudiostart`、`onaudioend`）、`experiments` と `experimentTrace` の import。`stop` の後半を分けた `stopRecorder` と `startStopWatchdog` を残すか戻すかは、外す PR で判断します
-  - `frontend/src/pages/InterpreterPage.tsx`：`experiment` の props、`experimentRef`、`useAudioSession` に渡す `experiment`、ページの listener の分岐（`trace` の記録、`nolifecycle`、記録だけの listener）と `audioSessionRef`、`ExperimentPanel` とその import
+  - `frontend/src/hooks/useKeptAudioSession.ts`（PR A）：`useInterpreterAudioSession` の実験のスイッチの分岐（`AUDIO_SESSION_EXPERIMENTS`、`usesAudioSessionExperiment`、`createAudioSession` を使う分岐）。外した後は `useKeptAudioSession` だけを使い、`useAudioSession.ts` は、`useKeptAudioSession.ts` が import している型と `RECORDER_STOP_TIMEOUT_MS` を移してから消します（`useAudioSession` の単体テスト4ファイルも消します）。`recordPageEvent` と `markTraceListenerOnly`（何もしない）も外します
+  - `frontend/src/hooks/useKeptAudioSession.test.ts` と `frontend/src/pages/InterpreterPage.keptMic.test.tsx`（PR A）：スイッチがあるときに `useAudioSession` を使うことを確かめるテスト（`useInterpreterAudioSession`、`lists every useAudioSession switch`、`?exp=trace` を付けたテスト）
+  - `frontend/src/pages/InterpreterPage.tsx`：`experiment` の props、`experimentRef`、`useInterpreterAudioSession` に渡す `experiment`、ページの listener の分岐（`trace` の記録、`nolifecycle`、記録だけの listener）と `audioSessionRef`、`ExperimentPanel` とその import
   - `frontend/src/App.tsx`：`readExperimentConfig` で読む `experiment`、`LegacyInterpreterPage` への切り替えとその import、`InterpreterPage` に渡す `experiment`
   - `frontend/src/test/audioMocks.ts`：2回目の実験で足した、音声認識の代わりの `abort`（`FakeRecognition.abort`）
   - 3回目の実験の `legacykeep` で足したもの（上の「消すファイル」と「消すテストのファイル」に含まれるものも、漏れの確かめのために並べます）
@@ -336,6 +342,30 @@ iPhone（Safari と Chrome）で、2回目からの録音が空（Backend のロ
 - ドキュメント
   - `docs/testing.md`：「3. Frontend テスト」のテストファイルの表の、実験の PR で加えた行（上の「消すテストのファイル」の 14 ファイルの行。表では 14 行）と、この節（「切り分けの実験のスイッチ」）そのもの
   - `docs/speech-flow.md`：6.9（診断の情報）の終わりの、実験のスイッチの段落
+
+#### PR A（マイクを開いたまま使い回す）の後の実機の確認
+
+PR A で、本番の通訳の画面（`?exp` なし）を、マイクを開いたまま使い回し、読み上げを `AudioContext` で鳴らし、マイクの音が来ないときに知らせる形にしました（[speech-flow.md](speech-flow.md) の 6.1、8.1、9）。この確認が成功してから、次の PR（新しい操作の画面。PR B）に進みます。
+
+iPhone の Safari と Chrome のそれぞれで、ブラウザを終了してから開き、次を行います。診断の「コピー」の JSON を取るため、`https://gotalk.chiemaru.com/?exp=`（`exp` は空。実験のスイッチはなしで、本番と同じ新しいセッションを使い、診断の表示だけが出ます）で行います。
+
+1. 10 回話す（毎回「わたしのなまえはありたしんです」）。3回目と7回目の後に読み上げる。毎回、次を書き留める
+   - お知らせ（「マイクへのアクセスが許可されています」）が出たか
+   - 翻訳が出たか
+   - 読み上げがスピーカーからふつうの音量で聞こえたか（3回目と7回目の後）
+2. 言語の選択の画面に戻り、もう一度選んで1回話す
+3. ブラウザを裏に回して 10 秒ほど待ち、戻って1回話す
+4. ページを読み込み直して1回話す
+5. 最後に診断の「コピー」の JSON を取る
+
+成功の条件：
+
+- 1 と 2 で、お知らせは最初の1回だけ、毎回翻訳が出る、「しん」が別の名前にならない、読み上げが最後まで鳴り、直後の録音も成功する
+- 3 と 4 で、録音できたか、できなかったときに `microphone_no_audio`（「マイクの音を受け取れませんでした。ブラウザを一度終了してから、開き直してください」）が出たかを記録する（検出が働くことが条件。録音できるかどうかは iPhone の動きなので条件にしない）
+- 読み上げの音量：ふつうに聞こえることが条件。小さい（受話口から鳴る、など）ときは失敗とし、扱いを利用者が決める（マイクを開いたまま鳴らすと、iPhone が音の出口を変えることがあるため）
+- 診断：「コピー」の JSON の `diagnostics.events` で、正常に鳴り終わった読み上げについて `tts_ended_timeout` が 0 件であること（見張りのタイマーが誤って働いていないこと）。`no_audio_detected` の有無も確かめる
+
+判断の仕方：成功なら PR B に進む。1 か 2 が失敗なら、PR A の動きを見直す（PR B に進まない）。
 
 #### スイッチと診断
 
