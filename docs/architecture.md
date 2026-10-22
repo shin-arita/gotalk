@@ -46,6 +46,7 @@ flowchart LR
 | Backend | `backend/main.go` | API handler、OpenAI API 呼び出し、文字起こし・翻訳・TTS の制御 |
 | Backend | `backend/propnoun.go` | 固有名詞抽出、プレースホルダ保護、復元、検証、リトライ |
 | Runtime | `docker-compose.yml` | frontend / backend / backend-dev の Compose 定義 |
+| Runtime | `docker-compose.staging.yml` | ステージングだけで使う override（`frontend`、`backend` の `mem_limit`） |
 | CI/CD | `.github/workflows/*.yml` | CI、CD、Codex review ラベル運用 |
 
 ## 3. Frontend の責務
@@ -107,7 +108,7 @@ HTTP サーバーは `http.Server` で起動し、`ReadHeaderTimeout` 10 秒、`
 | `backend` | `gotalk-backend` | `./backend` | `127.0.0.1:8080:8080` | Go API server |
 | `backend-dev` | なし | `./backend` + `Dockerfile.dev` | なし | backend 開発用コンテナ（`profiles: ["dev"]`） |
 
-`backend` には `stop_grace_period: 30s` を設定し、graceful shutdown（最大 25 秒）が終わるまで待つようにしています。`frontend` と `backend` の `ports` は host の `127.0.0.1` だけに公開しています。本番の VPS では、HTTPS を終端する nginx が `127.0.0.1:5173` と `127.0.0.1:8080` に転送するため、外からは nginx 経由でだけ届きます（前提は [infrastructure.md の「ポートの公開範囲の前提」](infrastructure.md#ポートの公開範囲の前提) を参照）。`frontend` は `VITE_BACKEND_URL=http://backend:8080` を持ち、Vite proxy 経由で backend service へ接続します。`backend` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます（`DEBUG_TRANSLATION` は渡さないため、翻訳の debug log は出力されません）。Backend のログには発話の内容を出力しません（[infrastructure.md](infrastructure.md) の「Backend のログに出力する情報」を参照）。`backend-dev` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます。`backend-dev` は `profiles: ["dev"]` に属しているため、サービス名を指定しない `docker compose up` では起動せず、`docker compose run --rm backend-dev ...` で使います。
+表のコンテナの名前とポートは既定の値です。`CONTAINER_PREFIX`、`FRONTEND_PORT`、`BACKEND_PORT` で変えられます（本番では変えません。[docker.md](docker.md) の「3.1 コンテナの名前、ポート、自動起動」を参照）。`frontend` と `backend` には `restart: unless-stopped` を設定し、Docker が起動したとき（VPS の再起動の後など）に自動で起動するようにしています。`backend` には `stop_grace_period: 30s` を設定し、graceful shutdown（最大 25 秒）が終わるまで待つようにしています。`frontend` と `backend` の `ports` は host の `127.0.0.1` だけに公開しています。本番の VPS では、HTTPS を終端する nginx が `127.0.0.1:5173` と `127.0.0.1:8080` に転送するため、外からは nginx 経由でだけ届きます（前提は [infrastructure.md の「ポートの公開範囲の前提」](infrastructure.md#ポートの公開範囲の前提) を参照）。`frontend` は `VITE_BACKEND_URL=http://backend:8080` を持ち、Vite proxy 経由で backend service へ接続します。`backend` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます（`DEBUG_TRANSLATION` は渡さないため、翻訳の debug log は出力されません）。Backend のログには発話の内容を出力しません（[infrastructure.md](infrastructure.md) の「Backend のログに出力する情報」を参照）。`backend-dev` には `OPENAI_API_KEY` と `OPENAI_MODEL` が渡されます。`backend-dev` は `profiles: ["dev"]` に属しているため、サービス名を指定しない `docker compose up` では起動せず、`docker compose run --rm backend-dev ...` で使います。
 
 Dockerfile の概要:
 

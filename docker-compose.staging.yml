@@ -1,0 +1,5 @@
+services:
+  frontend:
+    mem_limit: 256m
+  backend:
+    mem_limit: 128m

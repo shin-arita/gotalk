@@ -2,9 +2,10 @@ services:
   frontend:
     build:
       context: ./frontend
-    container_name: gotalk-frontend
+    container_name: ${CONTAINER_PREFIX:-gotalk}-frontend
+    restart: unless-stopped
     ports:
-      - "127.0.0.1:5173:5173"
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:5173"
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -16,11 +17,12 @@ services:
   backend:
     build:
       context: ./backend
-    container_name: gotalk-backend
+    container_name: ${CONTAINER_PREFIX:-gotalk}-backend
+    restart: unless-stopped
     # The backend waits up to 25s for in-flight requests on SIGTERM (graceful shutdown).
     stop_grace_period: 30s
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${BACKEND_PORT:-8080}:8080"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
@@ -32,6 +34,7 @@ services:
       dockerfile: Dockerfile.dev
     volumes:
       - ./backend:/app
+      - ./frontend/src/languages.ts:/frontend/src/languages.ts:ro
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}

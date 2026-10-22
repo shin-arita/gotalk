@@ -10,6 +10,8 @@ GoTalk の Docker 構成は `docker-compose.yml` で定義されています。�
 
 `frontend` は Vite dev server を起動する開発用 Frontend service です。`backend` は Go API server を起動する Backend service です。`backend-dev` は Backend ディレクトリを mount して Go tooling を実行するための開発用 service です。
 
+ステージングでは、`docker-compose.yml` に `docker-compose.staging.yml`（ステージングだけで使う override）を重ねて使います（3.2 を参照）。
+
 通常のアプリケーション実行では `frontend` と `backend` が接続します。`backend-dev` は `profiles: ["dev"]` に属しており、サービス名を指定しない `docker compose up` の対象になりません。通常運用で常時起動する service ではなく、Backend の開発作業で `docker compose run` によりコマンドを指定して使うための service です。
 
 ## 2. 全体構成
@@ -43,13 +45,57 @@ flowchart LR
 
 | Service | profiles | image | build | ports | environment | volumes | network |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `frontend` | 定義なし | 定義なし | `context: ./frontend` | `127.0.0.1:5173:5173` | `VITE_BACKEND_URL=http://backend:8080` | `./frontend:/app`, `/app/node_modules` | Compose default network |
-| `backend` | 定義なし | 定義なし | `context: ./backend` | `127.0.0.1:8080:8080` | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}` | 定義なし | Compose default network |
-| `backend-dev` | `["dev"]` | 定義なし | `context: ./backend`, `dockerfile: Dockerfile.dev` | 定義なし | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}` | `./backend:/app` | Compose default network |
+| `frontend` | 定義なし | 定義なし | `context: ./frontend` | `127.0.0.1:${FRONTEND_PORT:-5173}:5173` | `VITE_BACKEND_URL=http://backend:8080` | `./frontend:/app`, `/app/node_modules` | Compose default network |
+| `backend` | 定義なし | 定義なし | `context: ./backend` | `127.0.0.1:${BACKEND_PORT:-8080}:8080` | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}` | 定義なし | Compose default network |
+| `backend-dev` | `["dev"]` | 定義なし | `context: ./backend`, `dockerfile: Dockerfile.dev` | 定義なし | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}` | `./backend:/app`, `./frontend/src/languages.ts:/frontend/src/languages.ts:ro` | Compose default network |
 
-`frontend` には `depends_on: backend` が設定されています。`backend-dev` には `profiles: ["dev"]` と `entrypoint: [""]` が設定されています。
+`frontend` には `depends_on: backend` が設定されています。`frontend` と `backend` には `container_name` と `restart: unless-stopped` が設定されています（3.1 を参照）。`backend-dev` には `profiles: ["dev"]` と `entrypoint: [""]` が設定されています。
 
 `profiles` を持たない `frontend` と `backend` は常に有効です。`backend-dev` は `dev` profile が有効なときだけ Compose の対象になるため、サービス名を指定しない `docker compose build`、`docker compose up` では `frontend` と `backend` だけが build・起動されます。`docker compose config --services` には `frontend` と `backend` だけが表示され、`docker compose --profile dev config --services` では `backend-dev` も表示されます。
+
+### 3.1 コンテナの名前、ポート、自動起動
+
+`frontend` と `backend` のコンテナの名前と、host 側のポートは、Compose の変数で変えられます。変数を指定しないときの既定は、今の本番の値です。
+
+| 変数 | 使う箇所 | 既定 |
+| --- | --- | --- |
+| `CONTAINER_PREFIX` | `container_name: ${CONTAINER_PREFIX:-gotalk}-frontend`、`${CONTAINER_PREFIX:-gotalk}-backend` | `gotalk`（コンテナの名前は `gotalk-frontend`、`gotalk-backend`） |
+| `FRONTEND_PORT` | `frontend` の `ports` の host 側（`127.0.0.1:${FRONTEND_PORT:-5173}:5173`） | `5173` |
+| `BACKEND_PORT` | `backend` の `ports` の host 側（`127.0.0.1:${BACKEND_PORT:-8080}:8080`） | `8080` |
+
+変えられるのは host 側のポートだけです。コンテナの中のポート（`frontend` の `5173`、`backend` の `8080`）と、`frontend` から Backend への接続先（`http://backend:8080`）は変わりません。どの値でも、ポートは host の `127.0.0.1` だけに公開します。
+
+本番の `.env` にはこの 3 つの変数を書きません（本番の `.env` は変えません）。そのため、本番のコンテナの名前は `gotalk-frontend`、`gotalk-backend`、ポートは `127.0.0.1:5173`、`127.0.0.1:8080` のままです。
+
+`frontend` と `backend` には `restart: unless-stopped` を設定しています。Docker が起動したとき（VPS の再起動の後など）や、コンテナのプロセスが終了したときに、Docker がコンテナを自動で起動します。`docker compose stop` などで止めたコンテナは、Docker が起動し直しても自動では起動しません。`backend-dev` には設定していません。
+
+### 3.2 ステージングの override（`docker-compose.staging.yml`）
+
+`docker-compose.staging.yml` は、ステージングだけで使う override です。本番と開発環境では使いません。
+
+```yaml
+services:
+  frontend:
+    mem_limit: 256m
+  backend:
+    mem_limit: 128m
+```
+
+ステージングは本番と同じ VPS で動かすため、ステージングのコンテナが使うメモリに上限を付けます。
+
+ステージングでは、`.env` に次のキーを書きます。Compose はプロジェクトの `.env` からこれらを読みます。ステージング用の `.env` のうち、秘密の値（`OPENAI_API_KEY`）はこの文書には書きません。それ以外は秘密ではないので、使う値を下の表に書きます。
+
+| キー | 値 | 意味 |
+| --- | --- | --- |
+| `COMPOSE_PROJECT_NAME` | `gotalk-staging` | Compose のプロジェクトの名前。既定のネットワーク（`gotalk-staging_default`）など、Compose が作るものの名前の頭を本番（`gotalk`）と分ける。`docker compose` の操作の対象も本番と分かれる。`frontend` と `backend` は `container_name` でコンテナの名前を明示しているため、`COMPOSE_PROJECT_NAME` だけではコンテナの名前は分かれない |
+| `COMPOSE_FILE` | `docker-compose.yml:docker-compose.staging.yml` | Compose が読むファイル。`docker-compose.yml` に `docker-compose.staging.yml` を重ねる |
+| `CONTAINER_PREFIX` | `gotalk-staging` | `container_name` で明示しているコンテナの名前の頭。コンテナの名前を `gotalk-staging-frontend`、`gotalk-staging-backend` にして、本番と分ける |
+| `FRONTEND_PORT` | `5174` | `frontend` の host 側のポート。本番の `5173` と重ならないようにする |
+| `BACKEND_PORT` | `8081` | `backend` の host 側のポート。本番の `8080` と重ならないようにする |
+| `OPENAI_API_KEY` | （秘密。文書に書かない） | ステージング専用の OpenAI の Project のキー（本番とは別のキー） |
+| `OPENAI_MODEL` | `gpt-4o-mini` | 翻訳とバックトランスレーションに使う model。本番と同じ値にする |
+
+ステージングの全体の構成と deploy の手順は、ステージングの deploy の仕組みとあわせて別の PR で書きます。
 
 ## 4. frontend
 
@@ -66,11 +112,11 @@ flowchart LR
 | exposed port | `5173` |
 | command | `npm run dev -- --host` |
 
-Compose では host の `127.0.0.1:5173` を container の `5173` に bind します。host の loopback アドレス（`127.0.0.1`）だけに公開するため、host の外（LAN やインターネット）からは `5173` に接続できません（前提は [infrastructure.md の「ポートの公開範囲の前提」](infrastructure.md#ポートの公開範囲の前提) を参照）。
+Compose では host の `127.0.0.1:5173`（`FRONTEND_PORT` で変えられる。既定は `5173`）を container の `5173` に bind します。host の loopback アドレス（`127.0.0.1`）だけに公開するため、host の外（LAN やインターネット）からは `5173` に接続できません（前提は [infrastructure.md の「ポートの公開範囲の前提」](infrastructure.md#ポートの公開範囲の前提) を参照）。
 
 ```yaml
 ports:
-  - "127.0.0.1:5173:5173"
+  - "127.0.0.1:${FRONTEND_PORT:-5173}:5173"
 ```
 
 開発中の source は `./frontend:/app` で mount されます。`/app/node_modules` は anonymous volume として定義され、container 内の `node_modules` を使います。
@@ -83,6 +129,18 @@ volumes:
 
 `frontend` には `VITE_BACKEND_URL=http://backend:8080` が渡されます。`frontend/vite.config.ts` により、Vite の開発サーバーは `/api` request を `VITE_BACKEND_URL` に proxy し、未設定の場合は `http://localhost:8080` に proxy します。
 
+Vite の開発サーバーは、知らないホスト名（`Host` ヘッダ）からの接続を断ります。そのため、`frontend/vite.config.ts` の `server.allowedHosts` に、接続を受け付けるホスト名を明示しています。
+
+```ts
+allowedHosts: ['gotalk.chiemaru.com', 'staging.gotalk.chiemaru.com', '.trycloudflare.com'],
+```
+
+| ホスト名 | 用途 |
+| --- | --- |
+| `gotalk.chiemaru.com` | 本番 |
+| `staging.gotalk.chiemaru.com` | ステージング |
+| `.trycloudflare.com` | 開発中の実機での確認（cloudflared の Quick Tunnel。[development.md](development.md) を参照） |
+
 ## 5. backend
 
 `backend` service は `backend/Dockerfile` から build されます。
@@ -94,11 +152,11 @@ volumes:
 | builder | `golang:1.24-alpine` | `go.mod` を copy し、`go mod download` 後に source を copy して `go build -o server .` を実行する |
 | runtime | `alpine:3.22` | builder stage の `/app/server` を copy して `./server` を実行する |
 
-runtime stage の working directory は `/app` です。`EXPOSE 8080` が定義され、Compose では host の `127.0.0.1:8080` を container の `8080` に bind します。`frontend` と同じく、host の外からは `8080` に接続できません（前提は [infrastructure.md の「ポートの公開範囲の前提」](infrastructure.md#ポートの公開範囲の前提) を参照）。
+runtime stage の working directory は `/app` です。`EXPOSE 8080` が定義され、Compose では host の `127.0.0.1:8080`（`BACKEND_PORT` で変えられる。既定は `8080`）を container の `8080` に bind します。`frontend` と同じく、host の外からは `8080` に接続できません（前提は [infrastructure.md の「ポートの公開範囲の前提」](infrastructure.md#ポートの公開範囲の前提) を参照）。
 
 ```yaml
 ports:
-  - "127.0.0.1:8080:8080"
+  - "127.0.0.1:${BACKEND_PORT:-8080}:8080"
 ```
 
 `backend` には OpenAI API 呼び出しに使う環境変数が渡されます。
@@ -129,12 +187,12 @@ Backend は OpenAI Audio Transcriptions API で言語判定と文字起こしを
 | ベースイメージ | `golang:1.24-alpine` |
 | PATH 設定 | `/etc/profile.d/go.sh` に `/go/bin:/usr/local/go/bin:$PATH` を設定 |
 | Working directory | `/app` |
-| volume | `./backend:/app` |
+| volume | `./backend:/app`、`./frontend/src/languages.ts:/frontend/src/languages.ts:ro` |
 | ports | 定義なし |
 | profiles | `["dev"]` |
 | entrypoint | `[""]` |
 
-`backend-dev` は Backend の開発用途の service です。`./backend` を `/app` に mount するため、Backend の source に対して Go command を実行できます。Compose 上では `ports` が定義されておらず、通常運用で常時起動する API server service ではありません。
+`backend-dev` は Backend の開発用途の service です。`./backend` を `/app` に mount するため、Backend の source に対して Go command を実行できます。`./frontend/src/languages.ts` も、読み取りだけで `/frontend/src/languages.ts` に mount します。Backend のテスト（`TestSupportedLanguagesMatchFrontend`）が `../frontend/src/languages.ts` を読み、Backend の対応言語が Frontend の言語の一覧と一致するかを確かめるためです。Compose 上では `ports` が定義されておらず、通常運用で常時起動する API server service ではありません。
 
 `backend-dev` は `profiles: ["dev"]` に属しているため、サービス名を指定しない `docker compose up` では起動しません。`docker compose run` でサービス名を指定すると、`--profile dev` を付けなくても実行できます。
 
@@ -159,6 +217,9 @@ docker compose run --rm backend-dev go test ./...
 | `OPENAI_MODEL` | Compose が `backend`、`backend-dev` に `${OPENAI_MODEL:-gpt-4o-mini}` を渡す（`.env` などで未設定なら `gpt-4o-mini`） | 翻訳とバックトランスレーションに使う model | `gpt-4o-mini` |
 | `DEBUG_TRANSLATION` | Compose では渡さない（`backend`、`backend-dev` とも）。ローカルでの調査のときだけ、ホストで Backend を直接実行するときのシェルの環境変数か、一時的な Compose の override ファイルで渡す | 翻訳 debug log の出力制御。`true` のときだけ出力する。debug log は発話の内容を含むため、本番では有効にしない | debug log を出力しない |
 | `VITE_BACKEND_URL` | Compose が `frontend` に `http://backend:8080` を渡す | Vite proxy の Backend 接続先 | `http://localhost:8080`（`frontend/vite.config.ts`） |
+| `CONTAINER_PREFIX` | Compose の変数置換だけで使う（コンテナには渡さない） | `frontend` と `backend` のコンテナの名前の前半（3.1 を参照） | `gotalk` |
+| `FRONTEND_PORT` | Compose の変数置換だけで使う（コンテナには渡さない） | `frontend` の host 側のポート（3.1 を参照） | `5173` |
+| `BACKEND_PORT` | Compose の変数置換だけで使う（コンテナには渡さない） | `backend` の host 側のポート（3.1 を参照） | `8080` |
 | `OPENAI_TTS_MODEL` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | TTS model | `gpt-4o-mini-tts` |
 | `OPENAI_TTS_VOICE` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | TTS voice | `marin` |
 | `WHISPER_MODEL` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | `/api/interpret` で音声を文字起こしする model | `gpt-4o-transcribe` |
@@ -189,6 +250,8 @@ flowchart LR
 ```
 
 `frontend` と `backend` は Compose default network 上で service 名により接続します。`frontend` から見た Backend の URL は `http://backend:8080` です。
+
+図のコンテナの名前とポートは、`CONTAINER_PREFIX`、`FRONTEND_PORT`、`BACKEND_PORT` を指定しないとき（既定）の値です。
 
 `ports` は `127.0.0.1` だけに公開しているため、host からは `frontend` が `localhost:5173`（`127.0.0.1:5173`）、`backend` が `localhost:8080`（`127.0.0.1:8080`）で到達できます。host の LAN 側のアドレスなど、host の外からは到達できません（前提は [infrastructure.md の「ポートの公開範囲の前提」](infrastructure.md#ポートの公開範囲の前提) を参照）。`backend` は OpenAI API へ outbound 接続します。
 

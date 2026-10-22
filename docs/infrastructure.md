@@ -15,6 +15,7 @@ Backend は OpenAI API キーをサーバー側で扱い、OpenAI Audio Transcri
 ├── backend/
 ├── frontend/
 ├── docker-compose.yml
+├── docker-compose.staging.yml   # ステージングだけで使う override。本番では使わない
 └── .env
 ```
 
@@ -24,6 +25,10 @@ Docker Compose の主な service は次のとおりです。
 | --- | --- | --- | --- |
 | `frontend` | `gotalk-frontend` | `127.0.0.1:5173:5173` | Vite dev server |
 | `backend` | `gotalk-backend` | `127.0.0.1:8080:8080` | Go API server |
+
+コンテナの名前とポートは、`docker-compose.yml` では `CONTAINER_PREFIX`、`FRONTEND_PORT`、`BACKEND_PORT` の変数になっています。本番の `.env` にはこれらを書かないため、上の表の既定の値になります（[docker.md の「3.1 コンテナの名前、ポート、自動起動」](docker.md#31-コンテナの名前ポート自動起動) を参照）。
+
+`frontend` と `backend` には `restart: unless-stopped` を設定しています。VPS の再起動の後に Docker が起動すると、`frontend` と `backend` も自動で起動します。`docker compose stop` などで止めたコンテナは自動では起動しません。
 
 `frontend` と `backend` の `ports` は、VPS の IPv4 の loopback アドレス（`127.0.0.1`）だけに公開しています。すべての IPv4 のアドレス（`0.0.0.0`）にも、IPv6 のアドレス（`[::]` を含む）にも公開しません。そのため、VPS の外から `5173` と `8080` には直接接続できない構成です。ただし、これには Docker Engine のバージョンの前提があります（3 章の「ポートの公開範囲の前提」を参照）。
 
@@ -171,7 +176,7 @@ docker compose ps
 
 「未設定時」の列は、アプリケーションが環境変数を受け取らなかったときの動作です。
 
-VPS 側の `.env` には少なくとも `OPENAI_API_KEY` を設定します。`OPENAI_MODEL` は `docker-compose.yml` で default が定義されています。
+VPS 側の `.env` には少なくとも `OPENAI_API_KEY` を設定します。`OPENAI_MODEL` は `docker-compose.yml` で default が定義されています。本番の `.env` には `CONTAINER_PREFIX`、`FRONTEND_PORT`、`BACKEND_PORT` を書きません（コンテナの名前とポートを既定の値にするため）。これらはステージングの `.env` だけで使います（[docker.md の「3.2 ステージングの override」](docker.md#32-ステージングの-overridedocker-composestagingyml) を参照）。
 
 `.env` を読むのは Docker Compose の変数置換だけで、Backend 自身は `.env` を読み込みません（`backend/main.go` は `os.Getenv` で環境変数を読むだけです）。`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `docker-compose.yml` が backend に渡していないため、`.env` に書いても、どの起動方法でも反映されず、Backend 実装の未設定時の default が使われます。これらはホスト上で Backend を直接実行する場合（開発時）に、シェルの環境変数として渡したときだけ反映されます（[development.md](development.md) を参照）。
 

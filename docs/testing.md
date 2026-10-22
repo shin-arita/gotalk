@@ -579,7 +579,7 @@ Frontend の `npm run build` は `tsc -b && vite build` を実行します。
 
 ## 6. backend-dev
 
-Docker Compose には Backend 開発用の `backend-dev` service があります。`./backend` を `/app` に mount し、Go command を実行できます。`backend-dev` は `profiles: ["dev"]` に属していますが、`docker compose run --rm backend-dev ...` は `--profile` を付けずに実行できます。
+Docker Compose には Backend 開発用の `backend-dev` service があります。`./backend` を `/app` に mount し、Go command を実行できます。`./frontend/src/languages.ts` も、読み取りだけで `/frontend/src/languages.ts` に mount します。Backend のテスト（`TestSupportedLanguagesMatchFrontend`）が `../frontend/src/languages.ts` を読み、Backend の対応言語が Frontend の言語の一覧と一致するかを確かめるためです。`backend-dev` は `profiles: ["dev"]` に属していますが、`docker compose run --rm backend-dev ...` は `--profile` を付けずに実行できます。
 
 Format:
 

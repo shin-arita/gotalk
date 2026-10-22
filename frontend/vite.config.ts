@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: true,
-    allowedHosts: ['.trycloudflare.com'],
+    allowedHosts: ['gotalk.chiemaru.com', 'staging.gotalk.chiemaru.com', '.trycloudflare.com'],
     proxy: {
       '/api': {
         target: process.env.VITE_BACKEND_URL || 'http://localhost:8080',
