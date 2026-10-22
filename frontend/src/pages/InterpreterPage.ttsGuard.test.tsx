@@ -108,4 +108,46 @@ describe('InterpreterPage handleSpeak guard (3.11-14)', () => {
     expect(fake.session!.abort).not.toHaveBeenCalledWith('error')
     expect(console.warn).not.toHaveBeenCalled()
   })
+
+  it('records and cleans up the leftover session before returning when the AudioContext cannot be created (QQ1)', async () => {
+    const nodeProcess = (globalThis as unknown as { process: { on: (type: string, f: () => void) => void; off: (type: string, f: () => void) => void } }).process
+    const unhandled = vi.fn()
+    nodeProcess.on('unhandledRejection', unhandled)
+    try {
+      setupAudioContext({ throwOnCreate: true })
+      const AudioCtor = vi.fn()
+      Object.defineProperty(globalThis, 'Audio', { value: AudioCtor, writable: true, configurable: true })
+      const fetchMock = vi.spyOn(globalThis, 'fetch')
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ text: 'Hello', translatedText: 'こんにちは', ttsText: 'こんにちは', backTranslation: '', sourceLanguage: 'en', targetLanguage: 'ja' }),
+      } as unknown as Response)
+      render(<InterpreterPage selectedLanguages={[ja, en]} onBack={vi.fn()} />)
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' })) })
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' })) })
+      expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
+
+      // ready なのに、録音のセッションが残っている（片付けの不具合）。そのうえで AudioContext も作れない
+      fake.active = true
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: '発声する' })) })
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+
+      expect(fake.session!.logEvent).toHaveBeenCalledWith('unexpected_active_audio_session_before_tts')
+      expect(fake.session!.getDiagnostics().events.map(e => e.type)).toEqual(expect.arrayContaining([
+        'tts_context_create_failed:Error', 'unexpected_active_audio_session_before_tts',
+      ]))
+      expect(console.warn).toHaveBeenCalledWith('[GoTalk] unexpected_active_audio_session_before_tts')
+      expect(fake.session!.abort).toHaveBeenCalledWith('error')
+      expect(fake.abortResolved).toBe(true)
+      expect(fake.active).toBe(false)
+      expect(fetchMock).not.toHaveBeenCalledWith('/api/tts', expect.anything())
+      expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(AudioCtor).not.toHaveBeenCalled()
+      expect(unhandled).not.toHaveBeenCalled()
+    } finally {
+      nodeProcess.off('unhandledRejection', unhandled)
+    }
+  })
 })

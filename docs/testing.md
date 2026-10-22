@@ -142,7 +142,7 @@ npm test
 - 再翻訳で `/api/translate` が 422 `language_mismatch` を返した場合のエラー表示
 - 再翻訳で `/api/translate` が 500 を返した場合に汎用のエラーの文言を表示することと、直前の翻訳文と読み上げボタンが残ること
 - `/api/tts` に `ttsText` を送ること
-- TTS fetch 中の button disabled、audio `onended` 後の復帰、TTS 失敗後の復帰
+- TTS fetch 中の button disabled、読み上げの `AudioBufferSourceNode` の `onended` 後の復帰、TTS 失敗後の復帰
 - `recording` 中は翻訳カードを隠し、録音終了後に表示すること
 - すべての `fetch`（`/api/interpret`、リアルタイム翻訳と再翻訳の `/api/translate`、`/api/tts`）に `AbortSignal` が渡され、Backend が受け付けるフィールドだけを送ること
 - `/api/interpret` は 65 秒、`/api/translate` と `/api/tts` は 30 秒で `fetch` が abort されること。`/api/interpret` と再翻訳の `/api/translate` の abort では「うまく翻訳できませんでした」の文言を表示すること
@@ -156,32 +156,32 @@ npm test
 - `/api/translate` と `/api/tts` の 413 の表示は変わらないこと
 - 録音が長すぎる文言を表示した後の画面の状態（録音していない、両方の国旗が押せる、読み上げボタンがない、翻訳カードが処理中でない、履歴が増えない）が、`/api/interpret` のほかのエラー（502）のときと同じであること
 
-録音のライフサイクル（[speech-flow.md](speech-flow.md) の「6. 録音のライフサイクル」）は、次のテストで確かめます。`getUserMedia`、`MediaRecorder`、`SpeechRecognition`、`AudioContext`、`requestAnimationFrame` の代わりは `frontend/src/test/audioMocks.ts` にまとめています。`getUserMedia` と `fetch` は、テストが resolve や reject をするまで終わらず、`MediaRecorder` の `ondataavailable` と `onstop` はテストが起こします。
+録音のライフサイクル（[speech-flow.md](speech-flow.md) の「6. 録音のライフサイクル」）は、次のテストで確かめます。通訳の画面のテスト（`InterpreterPage.lifecycle.test.tsx` など）は、実験のスイッチがないときの新しいセッション（`useKeptAudioSession`。マイクを閉じない）の期待です。実験のスイッチがあるときの `useAudioSession`（録音のたびに `getUserMedia` を呼び、録音の後と中断のときに track を `stop()` する）の期待は、`useAudioSession` の単体テストで確かめます。`getUserMedia`、`MediaRecorder`、`SpeechRecognition`、`AudioContext`、`requestAnimationFrame` の代わりは `frontend/src/test/audioMocks.ts` にまとめています。`getUserMedia` と `fetch` は、テストが resolve や reject をするまで終わらず、`MediaRecorder` の `ondataavailable` と `onstop` はテストが起こします。
 
 - `starting` の間にもう一度タップしても、`getUserMedia` は1回だけであること
-- `getUserMedia` を待っている間に、`hidden`、`pagehide`、戻る、外れるが起きたら、後から成功した stream の track を `stop()` し、録音を始めないこと
-- `getUserMedia` の成功の後に、`MediaRecorder` の作成や `start()` が失敗した場合、audio track がない場合、track が `live` でない場合に、track を `stop()` し、`recording_start_failed` を2つの言語で表示し、`idle` に戻ること。`getUserMedia` の失敗は `microphone_denied` のままであること
+- `getUserMedia` を待っている間に、`hidden`、`pagehide`、戻る、外れるが起きたら、録音を始めず、後から成功した stream は閉じずに `keptMic` が持ち、次の録音で `getUserMedia` を呼ばずに使うこと（待っている間の2回目の開始は、同じ `getUserMedia` を待つこと）
+- `getUserMedia` の成功の後に、`MediaRecorder` の作成や `start()` が失敗した場合、audio track がない場合、track が `live` でない場合に、track を止めずに、`recording_start_failed` を2つの言語で表示し、`idle` に戻ること。`ended` の track があれば、次の録音の開始で止めてから取り直すこと。`getUserMedia` の失敗は `microphone_denied` のままであること
 - 音量の取得や音声認識が失敗しても、録音は成立し、利用者の停止で Backend に送ること
-- 利用者の停止で、最後の `ondataavailable` の後に送ること。track の `stop()` が送るより先であること
-- 片付けの順番（[speech-flow.md](speech-flow.md) の 6.4 の「片付けの順番」）。利用者の停止では、`MediaStreamAudioSourceNode` の `disconnect()` と `AudioContext` の `close()` が、`MediaRecorder` の `stop()` より先であること。中断（`hidden`、`pagehide`、戻る、外れる、`error`）と失敗（`MediaRecorder` の `onerror`、`MediaRecorder` が自分で止まった）の片付けでは、track の `stop()` より先であること
-- 録音中や `stopping` の間に `hidden` になったら、Backend に送らず、track を `stop()` し、`idle` に戻ること。後から来た `onstop` が何もしないこと。`visible` に戻っても自動でマイクを開かないこと
+- 利用者の停止で、最後の `ondataavailable` の後に送ること。track は `stop()` しないこと
+- 片付けの順番（[speech-flow.md](speech-flow.md) の 6.4 の「片付けの順番」）。音声認識の停止、`requestAnimationFrame` の取り消し、`MediaStreamAudioSourceNode` の `disconnect()`、`AudioContext` の `close()` の開始が、`MediaRecorder` の `stop()` より先であること（`useKeptAudioSession.test.ts`）。どの経路（利用者の停止、`onstop` の後、`hidden`、`pagehide`、戻る、外れる、`error`、`recording_start_failed`、`MediaRecorder` が自分で止まった、`onerror`、見張りのタイマー、`stop()` の例外）でも track の `stop()` を呼ばないこと
+- 録音中や `stopping` の間に `hidden` になったら、Backend に送らず、track を止めずに録音の資源を片付け、`idle` に戻ること。後から来た `onstop` が何もしないこと。`visible` に戻っても自動で録音を始めないこと
 - 音声認識の `onend` で、止める指示の後や、無効なセッションでは始め直さないこと
 - 片付けを2回、3回と続けて呼んでも、例外や二重の `stop()` が出ないこと。`AudioContext` の `close()` の拒否や、音声認識の `stop()` の例外を捨てること
 - 利用者の停止の後（`stopping` の間）に中断した場合、`abort` の Promise は、利用者の停止で始めた `AudioContext` の `close()` が終わるまで解決しないこと。`close()` が拒否されても `abort` の Promise は解決し、未処理の拒否が出ないこと。`close()` と `disconnect()` は1回だけであること（KK1）
-- 止める指示と音量の取得の片付けの後に音量の取得を始めようとしても、`AudioContext` を作らず、`requestAnimationFrame` も頼まないこと（KK4）。今の画面からは起きない経路なので、テストでは録音の成立の callback（`onRecordingStarted`）の中で利用者の停止を呼んで作ります。その後の `onstop` で track を止め、マイク OFF になること
-- 止める指示の後に音声認識を始めようとしても、音声認識の constructor も `start()` も呼ばないこと（KK5）。KK4 と同じく、テストでは録音の成立の callback（`onRecordingStarted`）の中で利用者の停止を呼んで作ります。その後の `onstop` で track を止め、マイク OFF になること
+- 止める指示と音量の取得の片付けの後に音量の取得を始めようとしても、`AudioContext` を作らず、`requestAnimationFrame` も頼まないこと（KK4）。今の画面からは起きない経路なので、テストでは録音の成立の callback（`onRecordingStarted`）の中で利用者の停止を呼んで作ります。その後の `onstop` で track を止め、マイク OFF になること（`useAudioSession` の単体テスト。新しいセッションでは、録音の成立の callback の中の中断で、音量の取得と音声認識を始めないことを確かめます）
+- 止める指示の後に音声認識を始めようとしても、音声認識の constructor も `start()` も呼ばないこと（KK5）。KK4 と同じく、テストでは録音の成立の callback（`onRecordingStarted`）の中で利用者の停止を呼んで作ります。その後の `onstop` で track を止め、マイク OFF になること（`useAudioSession` の単体テスト）
 - 録音の途中の `MediaRecorder` の `onerror` で片付けて、`recording_failed` を表示すること（録音の成立の前の失敗は `recording_start_failed` のまま）
 - 利用者の停止で `MediaRecorder` がすでに `inactive`（`onstop` が未着）のときは、`onstop` を待ち、最後のデータを含めて送ること。`onstop` が利用者の停止の前に届いていたときは送らないこと
-- 利用者の停止で `MediaRecorder` の `stop()` が例外を出したときは、Backend に送らず、track を `stop()` し、`recording_failed` を2つの言語で表示し、`idle` に戻ること。診断のログに `recorder_stop_failed:<name>` が残ること
-- 利用者の停止の後、`onstop` が見張りの時間（`RECORDER_STOP_TIMEOUT_MS`、10 秒）届かないと、track を `stop()` し、`recording_failed` を表示し、`idle` に戻ること（`recorder_stop_timeout`）。テストは時間を数字で書かず、定数を参照します。9 秒台で `onstop` が届いた場合は、録音の失敗にならずに送ること。待っている間に中断した場合、古いセッションのタイマーの場合は、タイマーが何もしないこと
+- 利用者の停止で `MediaRecorder` の `stop()` が例外を出したときは、Backend に送らず、track を止めずに、`recording_failed` を2つの言語で表示し、`idle` に戻ること。診断のログに `recorder_stop_failed:<name>` が残ること
+- 利用者の停止の後、`onstop` が見張りの時間（`RECORDER_STOP_TIMEOUT_MS`、10 秒）届かないと、track を止めずに、`recording_failed` を表示し、`idle` に戻ること（`recorder_stop_timeout`）。テストは時間を数字で書かず、定数を参照します。9 秒台で `onstop` が届いた場合は、録音の失敗にならずに送ること。待っている間に中断した場合、古いセッションのタイマーの場合は、タイマーが何もしないこと
 - 診断の情報に、`stop()` から `onstop` までの時間（`stopLatencyMs`。`MediaRecorder` がすでに `inactive` のときは、止める指示を記録してから）が残ること。見張りのタイマーで片付けた場合は、`stopTimedOut` と待った時間（`stopWaitedMs`）が残り、後から届いた `onstop` までの時間も残ること
-- 録音の途中で track が `ended` になり、`MediaRecorder` が自分で止まると、`recording_failed` を表示して `idle` に戻り、track を `stop()` し、Backend に送らないこと。診断のログに `track_ended` と `recorder_stopped_unexpectedly` が残ること。利用者の停止の後の `ended` と、古いセッションの `ended` では何もしないこと
-- `ready` 以外では読み上げを押せないこと。読み上げの途中に `hidden` や `pagehide` になったら、`<audio>` を止めてオブジェクト URL を解放し、`ready` に戻ること。`/api/tts` を待っている間に止めた場合は、後から来た音声を再生しないこと
+- 録音の途中で track が `ended` になり、`MediaRecorder` が自分で止まると、`recording_failed` を表示して `idle` に戻り、Backend に送らないこと。診断のログに `recorder_stopped_unexpectedly` が残ること。次の録音の開始で、`ended` の track を止めてから `getUserMedia` で取り直すこと。`ended` は `keptMic` の `endedEvents` に記録され、録音のセッションは track に listener を付けないこと（`useAudioSession` の単体テストでは、今までどおり `track_ended` が残り、利用者の停止の後の `ended` と、古いセッションの `ended` では何もしないこと）
+- `ready` 以外では読み上げを押せないこと。読み上げの途中に `hidden`、`pagehide`、戻る、外れる、編集が起きたら、今鳴らしている `AudioBufferSourceNode` の `stop()` と `disconnect()` を呼び、後から来た `onended` が画面を変えないこと（`hidden` と `pagehide` では `ready` に戻ること。外れるときは読み上げの `AudioContext` を `close()` すること）。`/api/tts` を待っている間に止めた場合は、後から来た音声を `decodeAudioData` せず、再生しないこと。`<audio>` を使わないこと
 - 古いセッションの callback（`getUserMedia` の完了、`ondataavailable`、`onstop`、`onerror`、音声認識の `onresult` と `onend`、`requestAnimationFrame`）が新しいセッションを壊さないこと
 - `processing` の間に `hidden` になっても状態は `processing` のままで、国旗を押せず、結果が来たら `ready` になること。戻るや `pagehide` のときは問い合わせを止め、後から結果や失敗が来ても画面に反映しないこと
 - 止めた問い合わせ1の結果が遅れて戻っても、画面には問い合わせ2の結果だけが出ること
-- `handleSpeak` の守りが働いたときに、`unexpected_active_audio_session_before_tts` が診断のログに残り、片付けが終わってから `/api/tts` を呼ぶこと
-- bfcache から戻ったとき（`pagehide` と `pageshow` の `persisted: true`）に、`starting`、`recording`、`stopping`、`processing` は `idle` に、`ready` と `speaking` は `ready` に直り、マイクを開かず、問い合わせも送らないこと。`pageshow` のときに画面がまだ `processing` でも、記録した状態に直すこと。`persisted: false` の `pageshow` では何もしないこと。bfcache から戻った後に始めたセッション2が、セッション1の古い callback の影響を受けないこと
+- `handleSpeak` の守りが働いたときに、`unexpected_active_audio_session_before_tts` が診断のログに残り、片付けが終わってから `/api/tts` を呼ぶこと。読み上げの `AudioContext` を作れないときも、戻る前に同じ記録と片付けをし、`/api/tts` を呼ばないこと（QQ1）
+- bfcache から戻ったとき（`pagehide` と `pageshow` の `persisted: true`）に、`starting`、`recording`、`stopping`、`processing` は `idle` に、`ready` と `speaking` は `ready` に直り、録音を始めず（`getUserMedia` も呼ばず）、問い合わせも送らないこと。`pageshow` のときに画面がまだ `processing` でも、記録した状態に直すこと。`persisted: false` の `pageshow` では何もしないこと。bfcache から戻った後に始めたセッション2が、セッション1の古い callback の影響を受けず、同じマイクを使い回すこと
 - 診断の情報に、録音ごとの数値（`getUserMedia` の時刻、track の状態、録音の大きさ、音量、音声認識の文字数など）が残り、会話の本文が残らないこと
 
 利用者向けの文言を選んだ2つの言語で表示すること（[ui.md](ui.md)）は、次のテストで確かめます。画面のテストの期待する文言は、既定の日本語と英語の組み合わせでは helper `jaEn` で作ります。エラーのときの `console.warn` は、ログを確かめるテスト以外では `beforeEach` で出力を止めています。
@@ -370,11 +370,12 @@ iPhone の Safari と Chrome のそれぞれで、ブラウザを終了してか
 #### スイッチと診断
 
 - 指定：URL の query の `exp` で指定します（例：`?exp=norecog`、`?exp=nometer,norecog`）。hash は使いません（`#mic-test` などと衝突させないため）。画面を読み込んだときに一度だけ読み取り、途中で URL を変えても反映しません。`?exp=` の空の指定でも、実験のモードになります。名前は小文字で書きます（知らない名前は無視し、診断の表示に出します）
-- **スイッチがないとき（URL に `exp` がないとき）の動きは、今の本番と同じです。** ブラウザの API の呼び出しの順番と回数を変えず、診断の表示を描画せず、`performance.now()` を使った実験の記録もしません（`useAudioSession.callLog.test.ts` で確かめています）。各スイッチの分岐は、今のコードをそのまま条件の中に置く形にしています
+- **`useAudioSession` のスイッチがないとき（URL に `exp` がないときと、`?exp=` の空の指定のとき）は、PR A の新しいセッション（`useKeptAudioSession`。マイクを閉じない）を使います。** `useAudioSession` のスイッチ（下の表の `norecog` から `recogonce` まで）が1つでもあるときは、PR A の前の `useAudioSession` を使います（`useInterpreterAudioSession`）。`exp` がないときは、診断の表示を描画せず、`performance.now()` を使った実験の記録もしません
+- `useAudioSession.callLog.test.ts` は、`useAudioSession` に、スイッチがないときの設定を渡したときに、ブラウザの API の呼び出しの順番と回数がスイッチを入れる前（`782635e`）と同じであることを確かめるもので、本番の経路（新しいセッション）は確かめていません。`useAudioSession` の中の各スイッチの分岐は、前のコードをそのまま条件の中に置く形にしています
 
 | 名前 | 動き |
 | --- | --- |
-| （空。`?exp=`） | 今の本番と同じ動き。passive の診断を出す |
+| （空。`?exp=`） | `exp` がないときと同じ動き（新しいセッション。`useKeptAudioSession`）。診断の表示を出す。「コピー」の JSON には、`diagnostics.sessions`、`diagnostics.events`、`diagnostics.keptMic` が入り、`diagnostics.experiment`（下の passive の診断）は入らない。PR A の後の実機の確認は、この指定で行う |
 | `legacy` | PR #26 の前（`07f06f0`）の通訳の画面を、別の部品（`LegacyInterpreterPage`）としてそのまま使う。`useAudioSession` は使わない |
 | `legacykeep` | （3回目の実験）`legacy` と同じ部品（`LegacyInterpreterPage`）で、マイク（`MediaStream` と track）だけを閉じずに使い回す。録音の開始で、持っている stream に track が1つ以上あり、どれも `ended` でなければ、`getUserMedia` を呼ばずにその stream を使う。持っていないとき、track がないとき、`ended` の track があるときは、古い track をすべて `stop()` してから `getUserMedia` を呼ぶ（判定に使うのは `readyState` だけで、`muted` と `enabled` は記録だけ）。`getUserMedia` を待つ間の2回目の操作では何もしない。待つ間に画面が外れたときは、解けた stream の track をすべて止め、録音を始めない。録音の停止の後（`onstop`）は、track の `stop()` を呼ばず、stream も手放さない。画面が外れるとき（言語の選択の画面に戻るときなど）は、今までどおり track を止める。**画面が隠れても（ほかのアプリやタブに切り替えても）、画面が外れるまでマイクを持ち続ける**（ページの出来事の扱いは `legacy` と同じで、見直しは成功の後に行う）。`MediaRecorder`、音声認識、音量の取得の `AudioContext` は、今までどおり録音ごとに作って止める（`AudioContext` は使い回す stream から作る）。翻訳、固有名詞の保護、読み上げ（`<audio>`）、ページの出来事の扱いは `legacy` と同じ |
 | `legacymute` | （4回目の実験）`legacykeep` に、`onstop` での track の無効と、録音の開始のときの有効を加えたもの（`legacyKeep` も true になり、`legacykeep` のすべての動きを使う）。`MediaRecorder` が最後のデータを出し終わった後（`onstop` の中。利用者の停止でない `onstop` でも）に、持っている stream の track をすべて `enabled = false` にする（`stop()` はせず、stream も手放さない。`MediaRecorder.stop()` の前には無効にしない）。次の録音の開始で使い回すと決めた直後、`MediaRecorder` を作る前に、track をすべて `enabled = true` に戻す（`await` は挟まない）。`getUserMedia` を呼んだときは、新しい track は有効のまま。使い回すかの判定は `legacykeep` と同じく `readyState` だけで、`enabled` が false であることを理由に `getUserMedia` をやり直さない。有効に戻した後に開始の途中で失敗した（`startRecording` の `catch` に入った）ときは、その開始で始めた `MediaRecorder` を止め（翻訳には送らない）、波紋とその開始で作った `AudioContext` を片付け（`audioContextRef` に入れる前の例外の後でも閉じる）、track を無効に戻す。画面が外れるときは、今までどおり track を `stop()` する。読み上げ（`<audio>`）の再生の仕方は変えず、記録だけを足す |
@@ -411,7 +412,7 @@ iPhone の Safari と Chrome のそれぞれで、ブラウザを終了してか
 
 診断：
 
-- passive（`exp` があるとき）：新しい listener を足さず、自分のコードの中の時刻と、もともとある出来事の handler の中の値だけを記録します。`getDiagnostics()` の値（`notrackread` のときは track の状態を含めない）、スイッチの指定（`raw`、`requested`、`ignored`、`inactive`、`effective`）、`AudioContext` の作成、`createMediaStreamSource` と `connect`、`disconnect`、`close()` を呼んだ時刻と完了の時刻、`getUserMedia` を呼んだ時刻、`MediaRecorder` の `start()` と `stop()` を呼んだ時刻、`ondataavailable` の時刻と大きさ（回ごと）、`onstop` の時刻、最終の `Blob` の大きさ、音量の最初の値と最初の 0 でない値の時刻、音声認識の `start()` と `stop()` を呼んだ時刻と `onresult`（文字数だけ）、`onerror`（エラーの文字列）、`onend` の時刻です。認識した本文は記録しません
+- passive（`useAudioSession` のスイッチがあるとき。`?exp=` の空の指定では新しいセッションを使うので、この記録はなく、`diagnostics.experiment` は入りません）：新しい listener を足さず、自分のコードの中の時刻と、もともとある出来事の handler の中の値だけを記録します。`getDiagnostics()` の値（`notrackread` のときは track の状態を含めない）、スイッチの指定（`raw`、`requested`、`ignored`、`inactive`、`effective`）、`AudioContext` の作成、`createMediaStreamSource` と `connect`、`disconnect`、`close()` を呼んだ時刻と完了の時刻、`getUserMedia` を呼んだ時刻、`MediaRecorder` の `start()` と `stop()` を呼んだ時刻、`ondataavailable` の時刻と大きさ（回ごと）、`onstop` の時刻、最終の `Blob` の大きさ、音量の最初の値と最初の 0 でない値の時刻、音声認識の `start()` と `stop()` を呼んだ時刻と `onresult`（文字数だけ）、`onerror`（エラーの文字列）、`onend` の時刻です。認識した本文は記録しません
 - 時刻は、新しく足すものはすべて `performance.now()` です（`requestAnimationFrame` の timestamp と同じ基準）。既存の診断の時刻（`Date.now()`）は変えず、セッションの開始のときに `Date.now()` と `performance.now()` の組を1つだけ残します
 - extended（`trace` のとき）：もともと handler があるもの（track の `ended`、`visibilitychange`、`pagehide`、`pageshow`）は、既存の handler の中で記録します。新しい listener を付けるのは、今の版にない出来事（track の `mute` と `unmute`、`MediaRecorder` の `onstart`、音声認識の `onstart`、`onaudiostart`、`onaudioend`）だけです。`nolifecycle` と一緒のときは、記録のためだけの listener を付け（中断の片付けなどはしない）、`traceListenerOnly: true` を残します。`noendedlistener` と一緒のときは、`ended` を記録せず、`endedNotRecorded` にその旨を残します
 - 2回目の実験の passive の診断（新しい listener は足さない）：

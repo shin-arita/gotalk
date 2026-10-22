@@ -150,4 +150,51 @@ describe('keptMic', () => {
     expect(gum.getUserMedia).toHaveBeenCalledTimes(3)
     expect(stream.tracks[0].stop).toHaveBeenCalledTimes(1)
   })
+
+  it('ignores an acquire() started before resetKeptMicForTest() that succeeds after it (QQ3)', async () => {
+    const old = acquire()
+    resetKeptMicForTest()
+    const stream = makeFakeStream()
+    await gum.calls[0].resolve(stream)
+    await old
+    expect(peekLive()).toBeNull()
+    expect(getUserMediaCalls()).toBe(0)
+    endTrack(stream.tracks[0])
+    expect(endedEvents()).toEqual([])
+    expect(stream.tracks[0].stop).not.toHaveBeenCalled()
+  })
+
+  it('does not let a failure of an acquire() started before the reset touch the new pending (QQ3)', async () => {
+    const old = acquire()
+    const rejected = expect(old).rejects.toBeDefined()
+    resetKeptMicForTest()
+    const next = acquire()
+    await gum.calls[0].reject(new DOMException('denied', 'NotAllowedError'))
+    await rejected
+    // reset の後に始めた取得を待っている間なので、同じ Promise を返す
+    expect(acquire()).toBe(next)
+    const stream = makeFakeStream()
+    await gum.calls[1].resolve(stream)
+    expect(await next).toBe(stream)
+    expect(peekLive()).toBe(stream)
+  })
+
+  it('does not record ended of a track watched before the reset (QQ3)', async () => {
+    const stream = makeFakeStream()
+    await acquireWith(0, stream)
+    resetKeptMicForTest()
+    endTrack(stream.tracks[0])
+    expect(endedEvents()).toEqual([])
+  })
+
+  it('puts the stream of an acquire() started after the reset into held as before (QQ3)', async () => {
+    void acquire()
+    resetKeptMicForTest()
+    const stream = makeFakeStream()
+    expect(await acquireWith(1, stream)).toBe(stream)
+    expect(peekLive()).toBe(stream)
+    expect(getUserMediaCalls()).toBe(1)
+    endTrack(stream.tracks[0])
+    expect(endedEvents()).toHaveLength(1)
+  })
 })

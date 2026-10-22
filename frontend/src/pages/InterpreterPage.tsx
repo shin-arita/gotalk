@@ -501,6 +501,14 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     void audioSession.start(lang.speechCode)
   }
 
+  // 読み上げの前に残っている録音のセッションを、異常として記録してから片付ける（hasActiveSession() のときに呼ぶ。
+  // 呼ぶ側で確かめるのは、残っていない正常な経路で await を挟まないため）
+  const abortLeftoverSessionBeforeTts = (): Promise<void> => {
+    audioSession.logEvent('unexpected_active_audio_session_before_tts')
+    console.warn('[GoTalk] unexpected_active_audio_session_before_tts')
+    return audioSession.abort('error')
+  }
+
   // 読み上げを AudioContext で鳴らす（docs/speech-flow.md の「読み上げ」）。マイクを開いたまま <audio> で鳴らすと、
   // 次の録音が壊れるため、<audio> は使わない（失敗しても <audio> に切り替えて鳴らし直さない）
   const handleSpeak = async () => {
@@ -521,6 +529,8 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       } catch (e) {
         audioSession.logEvent(`tts_context_create_failed:${errorName(e)}`)
         logApiError('/api/tts', e)
+        // 戻る前に、下の守りと同じく、残っている録音のセッションを記録して片付ける
+        if (audioSession.hasActiveSession()) await abortLeftoverSessionBeforeTts()
         return
       }
     }
@@ -536,9 +546,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     // （マイクは開いたままが正常で、残っていてはいけないのは録音のセッション。ここで吸収して終わりにせず、
     // 片付けの不具合として直すこと）
     if (audioSession.hasActiveSession()) {
-      audioSession.logEvent('unexpected_active_audio_session_before_tts')
-      console.warn('[GoTalk] unexpected_active_audio_session_before_tts')
-      await audioSession.abort('error')
+      await abortLeftoverSessionBeforeTts()
       if (statusRef.current !== 'ready') return
     }
     changeStatus('speaking')

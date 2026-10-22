@@ -19,6 +19,9 @@ let getUserMediaCallCount = 0
 let endedEventList: KeptMicEndedEvent[] = []
 // ended の listener を付けた track（同じ track に2回付けない）
 let watchedTracks = new WeakSet<MediaStreamTrack>()
+// resetKeptMicForTest() で増やす世代の番号。reset の前に始めた取得の完了と、reset の前に付けた listener の出来事を、
+// reset の後の状態に反映しないために使う（本番では reset を呼ばないので、ずっと 0 のまま）
+let generation = 0
 
 // 持っている stream に track が1つ以上あり、どれも ended でなければ、その stream を返す（同期）。それ以外は null
 export function peekLive(): MediaStream | null {
@@ -31,10 +34,12 @@ export function peekLive(): MediaStream | null {
 // ended の見張りは、ここだけが持つ。track は止めず、記録だけを残す（次の peekLive() が null になるので、
 // 次の録音の開始で acquire() が取り直す）
 const watchEnded = (stream: MediaStream) => {
+  const watchedGeneration = generation
   stream.getTracks().forEach((track, i) => {
     if (watchedTracks.has(track)) return
     watchedTracks.add(track)
     track.addEventListener('ended', () => {
+      if (generation !== watchedGeneration) return
       endedEventList.push({ at: Date.now(), track: i })
       if (endedEventList.length > MAX_ENDED_EVENTS) endedEventList.shift()
     })
@@ -54,13 +59,17 @@ export function acquire(): Promise<MediaStream> {
     held = null
   }
   getUserMediaCallCount += 1
+  const requestGeneration = generation
   const request = navigator.mediaDevices.getUserMedia({ audio: true })
     .then((stream) => {
+      // reset の後に届いた取得は、held に入れず、見張りもしない（テストの中だけの話なので、stream は止めない）
+      if (generation !== requestGeneration) return stream
       held = stream
       watchEnded(stream)
       return stream
     })
     .finally(() => {
+      if (generation !== requestGeneration) return
       if (pending === request) pending = null
     })
   pending = request
@@ -84,4 +93,5 @@ export function resetKeptMicForTest(): void {
   getUserMediaCallCount = 0
   endedEventList = []
   watchedTracks = new WeakSet()
+  generation += 1
 }

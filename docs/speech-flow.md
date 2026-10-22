@@ -14,7 +14,7 @@ GoTalk の音声処理は、利用者が国旗ボタンから開始した発話�
 - OpenAI Audio Speech API
 - Frontend の `AudioContext` での再生（`<audio>` は使いません）
 
-`SpeechRecognition` は録音と並行して動き、認識テキストを表示とリアルタイム翻訳に使います。録音終了時は、認識テキストの有無にかかわらず録音音声を `/api/interpret` に送ります。認識テキストが得られている場合は `transcript` として同じリクエストに添え、Backend はそのテキストを翻訳します。認識テキストがない場合は、Backend が OpenAI の音声文字起こし API で言語判定と文字起こしを行います。
+`SpeechRecognition` は録音と並行して動き、認識テキストを表示とリアルタイム翻訳に使います。録音終了時は、録音音声を `/api/interpret` に送ります。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは、マイクの音が来ていない（または押してすぐ止めた）ものとして送りません（[8.1](#81-マイクの音が来ないときの検出)）。認識テキストが得られている場合は `transcript` として同じリクエストに添え、Backend はそのテキストを翻訳します。認識テキストがない場合は、Backend が OpenAI の音声文字起こし API で言語判定と文字起こしを行います。
 
 ## 2. 全体フロー
 
@@ -114,7 +114,7 @@ Frontend の音声処理は、画面の `frontend/src/pages/InterpreterPage.tsx`
 | 状態 | 意味 | 国旗のタップ |
 | --- | --- | --- |
 | `idle` | 何もしていない（最初、またはエラーの後） | 録音を始める |
-| `starting` | マイクを開いて録音を始めている途中（`getUserMedia` から録音の成立まで） | 受け付けない |
+| `starting` | 録音を始めている途中（タップから録音の成立まで。持っているマイクを使えないときは `getUserMedia` を待つ） | 受け付けない |
 | `recording` | 録音の成立の後、話している。`SpeechRecognition` が認識テキストを更新し、リアルタイム翻訳が動きます | 同じ国旗なら止める。もう一方は受け付けない |
 | `stopping` | 利用者が止めて、録音の最後のデータ（`MediaRecorder` の `onstop`）を待っている | 受け付けない |
 | `processing` | 録音終了後に `/api/interpret` で確定翻訳を実行している状態、または原文編集後に `/api/translate` で再翻訳している状態。翻訳中メッセージを表示します | 受け付けない |
@@ -277,7 +277,7 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 | `error` | `idle` |
 
 - `pageshow` では、録音のセッションの資源、翻訳の問い合わせ、読み上げ（`/api/tts` の問い合わせと、今鳴らしている音）が残っていないことも確かめ、残っていれば中断の片付けをして、`unexpected_active_session_after_pageshow` を診断のログと `console.warn` に残します
-- `pageshow` では、自動でマイクを開いたり、問い合わせをやり直したりしません。メッセージも出しません（`processing` の間に離れた場合、話した内容の翻訳は失われますが、利用者がページを離れた結果なので、知らせません）
+- `pageshow` では、自動で録音を始めたり（`getUserMedia` も呼びません）、問い合わせをやり直したりしません。メッセージも出しません（`processing` の間に離れた場合、話した内容の翻訳は失われますが、利用者がページを離れた結果なので、知らせません）
 - `event.persisted === false` の `pageshow`（ふつうの読み込み）では何もしません
 
 ### 6.8 冪等な片付け
@@ -296,7 +296,7 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 - `requestAnimationFrame` の番号が空なら取り消しません
 - 音声認識が空なら何もしません。`stop()` の例外は捨てます
 
-`handleSpeak` の最初には、「有効な録音のセッションが残っていれば、中断の片付けが終わるのを待ってから鳴らす」守りがあります（マイクは開いたままが正常で、残っていてはいけないのは録音のセッションです）。これは正常な経路では起きない異常の検知で、`unexpected_active_audio_session_before_tts` を診断のログと `console.warn` に残します。これが出た場合は、片付けの不具合として直します。
+`handleSpeak` の最初には、「有効な録音のセッションが残っていれば、中断の片付けが終わるのを待ってから鳴らす」守りがあります（マイクは開いたままが正常で、残っていてはいけないのは録音のセッションです）。読み上げ用の `AudioContext` を作れずに戻るとき（[9. TTS](#9-tts)）も、戻る前に同じ記録と片付けをします。これは正常な経路では起きない異常の検知で、`unexpected_active_audio_session_before_tts` を診断のログと `console.warn` に残します。これが出た場合は、片付けの不具合として直します。
 
 ### 6.9 診断の情報
 
@@ -404,7 +404,7 @@ TTS model は `OPENAI_TTS_MODEL` を使い、未設定時は `gpt-4o-mini-tts` �
 
 Frontend は、読み上げを `AudioContext` で鳴らします。マイクを開いたまま `<audio>` で鳴らすと、次の録音が壊れるためです。`<audio>`（`new Audio()`、オブジェクト URL）は使わず、失敗しても `<audio>` に切り替えて鳴らし直すことはしません。
 
-1. 読み上げ用の `AudioContext` を、画面で1つ持ちます（`ttsContextRef`）。最初の読み上げのタップのときに作り、画面が外れるまで使い回します。作れないとき（`new AudioContext()` の例外。`AudioContext` がない、作れる数の上限など）は、読み上げの失敗として、ログ（`logApiError` と診断の出来事 `tts_context_create_failed:<例外の name>`）を残し、文言は出さず、`ready` のまま戻ります。鳴らせないので `/api/tts` は呼ばず、`speaking` にもしません。`ttsContextRef` は空のままにし、次の読み上げのタップでもう一度作るのを試します
+1. 読み上げ用の `AudioContext` を、画面で1つ持ちます（`ttsContextRef`）。最初の読み上げのタップのときに作り、画面が外れるまで使い回します。作れないとき（`new AudioContext()` の例外。`AudioContext` がない、作れる数の上限など）は、読み上げの失敗として、ログ（`logApiError` と診断の出来事 `tts_context_create_failed:<例外の name>`）を残し、文言は出さず、`ready` のまま戻ります。鳴らせないので `/api/tts` は呼ばず、`speaking` にもしません。`ttsContextRef` は空のままにし、次の読み上げのタップでもう一度作るのを試します。戻る前に、録音のセッションが残っていれば、`unexpected_active_audio_session_before_tts` を残して片付けます（[6.8](#68-冪等な片付け) の守りと同じ処理）
 2. タップの処理の中（`await` の前）で `resume()` を呼び、Promise を持っておきます（ここでは待ちません。iPhone では、利用者の操作の中でないと鳴らせないためです）。`resume()` が同期の例外を出したときは、拒否された Promise と同じに扱います
 3. `/api/tts` の結果を `arrayBuffer()` で受け取り、`decodeAudioData` で `AudioBuffer` にします
 4. 再生を始める直前に `resume()` の結果を確かめます。拒否されたとき、または解決しても `state` が `running` でないときは、再生を始めず、読み上げの失敗として扱います（文言は出さず、診断のログに、拒否されたとき（同期の例外を含む）は `tts_resume_rejected:<例外の name>` を、解決したが `running` でないときは `tts_resume_not_running:<state>` を残し、`ready` に戻します）
