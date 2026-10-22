@@ -47,7 +47,7 @@ flowchart LR
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `frontend` | 定義なし | 定義なし | `context: ./frontend` | `127.0.0.1:${FRONTEND_PORT:-5173}:5173` | `VITE_BACKEND_URL=http://backend:8080` | `./frontend:/app`, `/app/node_modules` | Compose default network |
 | `backend` | 定義なし | 定義なし | `context: ./backend` | `127.0.0.1:${BACKEND_PORT:-8080}:8080` | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}` | 定義なし | Compose default network |
-| `backend-dev` | `["dev"]` | 定義なし | `context: ./backend`, `dockerfile: Dockerfile.dev` | 定義なし | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}` | `./backend:/app` | Compose default network |
+| `backend-dev` | `["dev"]` | 定義なし | `context: ./backend`, `dockerfile: Dockerfile.dev` | 定義なし | `OPENAI_API_KEY=${OPENAI_API_KEY}`, `OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}` | `./backend:/app`, `./frontend/src/languages.ts:/frontend/src/languages.ts:ro` | Compose default network |
 
 `frontend` には `depends_on: backend` が設定されています。`frontend` と `backend` には `container_name` と `restart: unless-stopped` が設定されています（3.1 を参照）。`backend-dev` には `profiles: ["dev"]` と `entrypoint: [""]` が設定されています。
 
@@ -83,17 +83,17 @@ services:
 
 ステージングは本番と同じ VPS で動かすため、ステージングのコンテナが使うメモリに上限を付けます。
 
-ステージングでは、`.env` に次のキーを書きます（値はこの文書には書きません）。Compose はプロジェクトの `.env` からこれらを読みます。
+ステージングでは、`.env` に次のキーを書きます。Compose はプロジェクトの `.env` からこれらを読みます。ステージング用の `.env` のうち、秘密の値（`OPENAI_API_KEY`）はこの文書には書きません。それ以外は秘密ではないので、使う値を下の表に書きます。
 
-| キー | 意味 |
-| --- | --- |
-| `COMPOSE_PROJECT_NAME` | Compose のプロジェクトの名前。`gotalk-staging` にして、本番（`gotalk`）とコンテナやネットワークを分ける |
-| `COMPOSE_FILE` | Compose が読むファイル。`docker-compose.yml:docker-compose.staging.yml` にして、`docker-compose.staging.yml` を重ねる |
-| `CONTAINER_PREFIX` | コンテナの名前の前半。`gotalk-staging` にして、コンテナの名前を `gotalk-staging-frontend`、`gotalk-staging-backend` にする |
-| `FRONTEND_PORT` | `frontend` の host 側のポート。本番の `5173` と重ならない `5174` にする |
-| `BACKEND_PORT` | `backend` の host 側のポート。本番の `8080` と重ならない `8081` にする |
-| `OPENAI_API_KEY` | ステージング用の OpenAI API キー（本番とは別のキー） |
-| `OPENAI_MODEL` | 翻訳とバックトランスレーションに使う model。本番と同じ値にする |
+| キー | 値 | 意味 |
+| --- | --- | --- |
+| `COMPOSE_PROJECT_NAME` | `gotalk-staging` | Compose のプロジェクトの名前。既定のネットワーク（`gotalk-staging_default`）など、Compose が作るものの名前の頭を本番（`gotalk`）と分ける。`docker compose` の操作の対象も本番と分かれる。`frontend` と `backend` は `container_name` でコンテナの名前を明示しているため、`COMPOSE_PROJECT_NAME` だけではコンテナの名前は分かれない |
+| `COMPOSE_FILE` | `docker-compose.yml:docker-compose.staging.yml` | Compose が読むファイル。`docker-compose.yml` に `docker-compose.staging.yml` を重ねる |
+| `CONTAINER_PREFIX` | `gotalk-staging` | `container_name` で明示しているコンテナの名前の頭。コンテナの名前を `gotalk-staging-frontend`、`gotalk-staging-backend` にして、本番と分ける |
+| `FRONTEND_PORT` | `5174` | `frontend` の host 側のポート。本番の `5173` と重ならないようにする |
+| `BACKEND_PORT` | `8081` | `backend` の host 側のポート。本番の `8080` と重ならないようにする |
+| `OPENAI_API_KEY` | （秘密。文書に書かない） | ステージング専用の OpenAI の Project のキー（本番とは別のキー） |
+| `OPENAI_MODEL` | `gpt-4o-mini` | 翻訳とバックトランスレーションに使う model。本番と同じ値にする |
 
 ステージングの全体の構成と deploy の手順は、ステージングの deploy の仕組みとあわせて別の PR で書きます。
 
@@ -187,12 +187,12 @@ Backend は OpenAI Audio Transcriptions API で言語判定と文字起こしを
 | ベースイメージ | `golang:1.24-alpine` |
 | PATH 設定 | `/etc/profile.d/go.sh` に `/go/bin:/usr/local/go/bin:$PATH` を設定 |
 | Working directory | `/app` |
-| volume | `./backend:/app` |
+| volume | `./backend:/app`、`./frontend/src/languages.ts:/frontend/src/languages.ts:ro` |
 | ports | 定義なし |
 | profiles | `["dev"]` |
 | entrypoint | `[""]` |
 
-`backend-dev` は Backend の開発用途の service です。`./backend` を `/app` に mount するため、Backend の source に対して Go command を実行できます。Compose 上では `ports` が定義されておらず、通常運用で常時起動する API server service ではありません。
+`backend-dev` は Backend の開発用途の service です。`./backend` を `/app` に mount するため、Backend の source に対して Go command を実行できます。`./frontend/src/languages.ts` も、読み取りだけで `/frontend/src/languages.ts` に mount します。Backend のテスト（`TestSupportedLanguagesMatchFrontend`）が `../frontend/src/languages.ts` を読み、Backend の対応言語が Frontend の言語の一覧と一致するかを確かめるためです。Compose 上では `ports` が定義されておらず、通常運用で常時起動する API server service ではありません。
 
 `backend-dev` は `profiles: ["dev"]` に属しているため、サービス名を指定しない `docker compose up` では起動しません。`docker compose run` でサービス名を指定すると、`--profile dev` を付けなくても実行できます。
 

@@ -130,7 +130,7 @@ docker compose logs -f
 
 ### backend-dev 利用
 
-`backend-dev` は Backend 開発コマンド用です。`./backend` が container の `/app` に mount されます。`backend-dev` は `profiles: ["dev"]` に属していますが、`docker compose run` でサービス名を指定すれば `--profile` を付けずに実行できます。
+`backend-dev` は Backend 開発コマンド用です。`./backend` が container の `/app` に mount されます。`./frontend/src/languages.ts` も、読み取りだけで `/frontend/src/languages.ts` に mount します。Backend のテスト（`TestSupportedLanguagesMatchFrontend`）が `../frontend/src/languages.ts` を読み、Backend の対応言語が Frontend の言語の一覧と一致するかを確かめるためです。`backend-dev` は `profiles: ["dev"]` に属していますが、`docker compose run` でサービス名を指定すれば `--profile` を付けずに実行できます。
 
 `backend-dev` は既定のコマンドを持たないため、`docker compose run` では必ず実行するコマンドを指定してください。`docker compose up` では使えません（`--profile dev` を付けた場合や `COMPOSE_PROFILES=dev` を設定した場合も含めて失敗します）。理由と失敗する操作の詳細は [docker.md](docker.md) の「6. backend-dev」を参照してください。
 
