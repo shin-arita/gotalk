@@ -38,7 +38,7 @@ sequenceDiagram
   SR-->>FE: 認識テキスト
   FE->>TR: リアルタイム翻訳 text + languages
   TR-->>FE: live translated text
-  User->>FE: 同じ国旗ボタンをタップして録音終了
+  User->>FE: 録音中の画面（グレーの画面）のどこか、または ■ のボタンをタップして録音終了
   FE->>SR: stop
   FE->>MR: stop
   MR-->>FE: onstop

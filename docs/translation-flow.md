@@ -30,7 +30,7 @@ sequenceDiagram
 
   User->>FE: 国旗をタップして録音開始
   FE->>FE: MediaRecorder で録音、SpeechRecognition で認識
-  User->>FE: 同じ国旗をタップして録音終了
+  User->>FE: 録音中の画面（グレーの画面）のどこか、または ■ のボタンをタップして録音終了
   FE->>IN: audio + myLanguage + theirLanguage + speaker + transcript（認識テキストがある場合）
   alt transcript あり
     IN->>IN: speaker から翻訳方向を決定
