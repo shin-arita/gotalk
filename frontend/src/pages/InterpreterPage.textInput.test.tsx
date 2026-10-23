@@ -9,8 +9,8 @@ import { getLocalizedMessage } from '../messages'
 import { LANGUAGES } from '../languages'
 import type { Language } from '../languages'
 import {
-  AUDIO_GLOBALS, makeTtsOkResponse, saveGlobals, setupAudioContext, setupDeferredGetUserMedia, setupMediaRecorder,
-  setupSpeechRecognition,
+  AUDIO_GLOBALS, firePageTransition, makeTtsOkResponse, saveGlobals, setupAudioContext, setupDeferredGetUserMedia, setupMediaRecorder,
+  setupSpeechRecognition, setVisibility,
 } from '../test/audioMocks'
 
 // 通訳の画面で、話さなくても最初から文字を入力して翻訳する（GOTALK-6、docs/ui.md）。
@@ -57,6 +57,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  delete (document as unknown as Record<string, unknown>).activeElement
   cleanup()
   vi.restoreAllMocks()
   restoreGlobals()
@@ -64,8 +65,14 @@ afterEach(() => {
 
 function renderPage() {
   const onBack = vi.fn()
-  render(<InterpreterPage selectedLanguages={[ja, en]} onBack={onBack} />)
-  return { onBack }
+  const { unmount } = render(<InterpreterPage selectedLanguages={[ja, en]} onBack={onBack} />)
+  return { onBack, unmount }
+}
+
+// textarea に blur の出来事を出さずに、フォーカスがない状態（document.activeElement が textarea でない）にする
+// （iPhone が focus() を受け付けなかったとき、裏に回して戻ったときなど）。afterEach で元に戻す
+function loseFocusWithoutBlur() {
+  Object.defineProperty(document, 'activeElement', { get: () => document.body, configurable: true })
 }
 
 const editButton = () => document.querySelector<HTMLButtonElement>('.source-card__edit')!
@@ -210,6 +217,8 @@ describe('InterpreterPage text input: confirm (GOTALK-6 5.8)', () => {
     await type('えき')
     await act(async () => { fireEvent.keyDown(textarea()!, { key: 'Enter', isComposing: true }) })
     await act(async () => { fireEvent.keyDown(textarea()!, { key: 'Enter', keyCode: 229 }) })
+    // Shift+Enter でも確定しない（UU4）
+    await act(async () => { fireEvent.keyDown(textarea()!, { key: 'Enter', shiftKey: true }) })
     expect(textarea()).not.toBeNull()
     expect(translateCalls()).toHaveLength(0)
     await type('駅')
@@ -300,5 +309,128 @@ describe('InterpreterPage text input: states (GOTALK-6 5.8)', () => {
     expect(screen.getByRole('alert').textContent).toBe(getLocalizedMessage('language_unclear', 'ja', 'en'))
     expect(translationText()).toBe('')
     expect(editButton()).not.toBeDisabled()
+  })
+})
+
+describe('InterpreterPage text input: confirm without the focus (PR #37 UU1)', () => {
+  it('confirms by a shield tap when the textarea has lost the focus without blur', async () => {
+    renderPage()
+    await startEdit()
+    await type('駅はどこですか')
+    loseFocusWithoutBlur()
+    await tap(editShield()!)
+    expect(textarea()).toBeNull()
+    expect(editShield()).toBeNull()
+    expect(translateCalls()).toHaveLength(1)
+    expect(translationText()).toBe('訳:駅はどこですか')
+  })
+
+  it('closes without /api/translate when the text is empty', async () => {
+    renderPage()
+    await startEdit()
+    loseFocusWithoutBlur()
+    await tap(editShield()!)
+    expect(textarea()).toBeNull()
+    expect(editShield()).toBeNull()
+    expect(translateCalls()).toHaveLength(0)
+  })
+
+  it('confirms by a tap on the pencil button position of the source card when the textarea has lost the focus', async () => {
+    renderPage()
+    await startEdit()
+    await type('駅はどこですか')
+    loseFocusWithoutBlur()
+    await tap(sourceCard())
+    expect(textarea()).toBeNull()
+    expect(editShield()).toBeNull()
+    expect(translateCalls()).toHaveLength(1)
+  })
+
+  it('calls /api/translate only once for a shield tap with the focus (blur and the direct call do not overlap)', async () => {
+    renderPage()
+    await startEdit()
+    expect(document.activeElement).toBe(textarea())
+    const blur = vi.spyOn(textarea()!, 'blur')
+    await type('駅はどこですか')
+    await tap(editShield()!)
+    expect(blur).toHaveBeenCalledTimes(1)
+    expect(textarea()).toBeNull()
+    expect(translateCalls()).toHaveLength(1)
+  })
+})
+
+describe('InterpreterPage text input: interruptions (PR #37 UU2)', () => {
+  it('keeps editing while hidden, and confirms by a shield tap after coming back', async () => {
+    renderPage()
+    await startEdit()
+    await type('駅は')
+    await act(async () => { setVisibility('hidden') })
+    await act(async () => { setVisibility('visible') })
+    expect(textarea()).not.toBeNull()
+    expect(editShield()).not.toBeNull()
+    expect(translateCalls()).toHaveLength(0)
+    // もう一度打てる
+    await type('駅はどこですか')
+    expect(textarea()!.value).toBe('駅はどこですか')
+    // 戻った後にフォーカスがなくても、覆いのタップで確定する
+    loseFocusWithoutBlur()
+    await tap(editShield()!)
+    expect(textarea()).toBeNull()
+    expect(translateCalls()).toHaveLength(1)
+    expect(translationText()).toBe('訳:駅はどこですか')
+  })
+
+  it('cancels editing without /api/translate on pagehide, and nothing is left after pageshow', async () => {
+    renderPage()
+    await startEdit()
+    await type('駅はどこですか')
+    await act(async () => { firePageTransition('pagehide', true) })
+    expect(textarea()).toBeNull()
+    expect(editShield()).toBeNull()
+    await act(async () => { firePageTransition('pageshow', true) })
+    expect(textarea()).toBeNull()
+    expect(editShield()).toBeNull()
+    expect(translateCalls()).toHaveLength(0)
+    expect(sourceText()?.textContent).toBe('')
+    expect(editButton()).not.toBeDisabled()
+  })
+
+  it('cancels editing left over at pageshow (persisted)', async () => {
+    renderPage()
+    await startEdit()
+    await type('駅はどこですか')
+    // pagehide が来ないまま bfcache から戻った場合の守り
+    await act(async () => { firePageTransition('pageshow', true) })
+    expect(textarea()).toBeNull()
+    expect(editShield()).toBeNull()
+    expect(translateCalls()).toHaveLength(0)
+  })
+
+  it('leaves no editing state when the screen is unmounted', async () => {
+    const { unmount } = renderPage()
+    await startEdit()
+    await type('駅はどこですか')
+    await act(async () => { unmount() })
+    expect(document.querySelector('.source-card__textarea')).toBeNull()
+    expect(editShield()).toBeNull()
+    expect(translateCalls()).toHaveLength(0)
+  })
+
+  it('stops speaking and keeps editing when hidden while editing during speaking', async () => {
+    renderPage()
+    await reachReadyByRecording()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '発声する' })) })
+    const speakButton = screen.getByRole('button', { name: '発声する' })
+    expect(speakButton).toHaveClass('speak-icon-button--speaking')
+    // speaking の間に編集を始める（読み上げは確定まで止めない）
+    await startEdit()
+    expect(speakButton).toHaveClass('speak-icon-button--speaking')
+    await act(async () => { setVisibility('hidden') })
+    // 読み上げは止まって ready になり、編集は続いている
+    expect(speakButton).not.toHaveClass('speak-icon-button--speaking')
+    expect(speakButton).not.toBeDisabled()
+    expect(textarea()).not.toBeNull()
+    expect(editShield()).not.toBeNull()
+    expect(textarea()!.value).toBe('こんにちは')
   })
 })

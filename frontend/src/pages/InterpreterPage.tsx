@@ -184,6 +184,8 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   // pagehide のときに記録する、bfcache から戻ったときにするべき状態
   const pagehideRecoveryStatusRef = useRef<InterpreterStatus | null>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
+  // 原文の入力と編集の間か（中断の片付けなど、非同期の listener から最新の値を読むため）
+  const isEditingRef = useRef(false)
   const recordingLangRef = useRef<Language | null>(null)
   const hasLiveTranscriptRef = useRef(false)
   const recognizedTextRef = useRef('')
@@ -227,6 +229,12 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     onRecorderError: () => handleRecorderError(),
     isRecordingStatus: () => statusRef.current === 'recording',
   }, experiment)
+
+  // 原文の入力と編集の状態を変える（isEditingRef は、非同期の listener から最新の値を読むため）
+  const changeEditing = (next: boolean) => {
+    isEditingRef.current = next
+    setIsEditing(next)
+  }
 
   // 画面の状態を変える。状態は画面だけが持つ（statusRef は、非同期の callback から最新の値を読むため）
   const changeStatus = (next: InterpreterStatus) => {
@@ -685,6 +693,9 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     const leavingScreen = reason === 'back' || reason === 'unmount'
     if (reason === 'pagehide') pagehideRecoveryStatusRef.current = PAGESHOW_RECOVERY_STATUS[current]
     resetTextFlow()
+    // 原文の入力と編集：裏に回すだけ（hidden）なら続ける（別のアプリで調べて戻る使い方のため）。
+    // ページや画面を離れるときは、訳さずに取り消して閉じる
+    if (reason !== 'hidden' && isEditingRef.current) changeEditing(false)
 
     if (current === 'starting' || current === 'recording' || current === 'stopping' || current === 'error') {
       void audioSession.abort(reason)
@@ -721,6 +732,8 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   // 問い合わせもやり直さず、メッセージも出さない。ふつうの読み込み（persisted でない）では何もしない
   const handlePageShow = (persisted: boolean) => {
     if (!persisted) return
+    // pagehide で閉じているはずだが、編集の状態が残っていれば、訳さずに取り消して閉じる
+    if (isEditingRef.current) changeEditing(false)
     let recovery = pagehideRecoveryStatusRef.current
     pagehideRecoveryStatusRef.current = null
     const hasLeftover = audioSession.hasActiveSession()
@@ -808,7 +821,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   const handleEditStart = () => {
     flushSync(() => {
       setEditValue(recognizedText)
-      setIsEditing(true)
+      changeEditing(true)
     })
     const el = editRef.current
     if (!el) return
@@ -819,7 +832,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
 
   const handleEditConfirm = () => {
     if (!isEditing) return
-    setIsEditing(false)
+    changeEditing(false)
     const trimmed = editValue.trim()
     if (!trimmed || trimmed === recognizedText) return
     // 編集できるのは idle、ready、speaking のときだけ（録音や問い合わせの途中は受け付けない）
@@ -838,7 +851,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     // 日本語の入力の変換を確定する Enter では、文を確定しない
     if (e.nativeEvent.isComposing || e.keyCode === 229) return
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEditConfirm() }
-    if (e.key === 'Escape') setIsEditing(false)
+    if (e.key === 'Escape') changeEditing(false)
   }
 
   // 編集の間の透明な覆いのタップ。確定（blur の handler の handleEditConfirm）のほかに何も起こさない。
@@ -851,13 +864,21 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   const handleEditShieldTap = (e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    editRef.current?.blur()
+    confirmEditFromTap()
   }
 
   // 編集の間に、原文のカードの textarea の外（余白と鉛筆のボタンの位置）をタップしたときも確定する
   const handleSourceCardTap = (e: React.MouseEvent) => {
     if (!isEditing || e.target === editRef.current) return
-    editRef.current?.blur()
+    confirmEditFromTap()
+  }
+
+  // タップで確定する。textarea にフォーカスがあれば blur し（blur の handler の handleEditConfirm で確定）、
+  // なければ（focus() を受け付けなかった、裏に回して戻ったなど）blur は出来事を出さないので、直接確定する
+  const confirmEditFromTap = () => {
+    const el = editRef.current
+    if (el && document.activeElement === el) el.blur()
+    else handleEditConfirm()
   }
 
   const canEdit = !isEditing && (status === 'idle' || status === 'ready' || status === 'speaking')

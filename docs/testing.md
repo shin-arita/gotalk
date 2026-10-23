@@ -94,7 +94,7 @@ Frontend のテストファイルは次のとおりです。
 | `frontend/src/pages/InterpreterPage.keptMic.test.tsx` | 10 回続けて録音しても（間に読み上げをはさんでも）`getUserMedia` は1回、読み上げの `AudioContext`（`resume()` をタップの中で `fetch` の前に呼ぶ、`resume()` の拒否と `running` でないとき、古い `resume()` の拒否、見張りのタイマー、`decodeAudioData` と `start()` の失敗）、マイクの音が来ないときの検出、`?exp=` のときの「コピー」の JSON、スイッチがあるときは `useAudioSession` を使うこと |
 | `frontend/src/App.keptMic.test.tsx` | 言語の選択の画面に戻り、もう一度選んで録音しても `getUserMedia` を呼ばないこと |
 | `frontend/src/pages/InterpreterPage.recordingOverlay.test.tsx` | 録音中の画面（PR B）：押した国旗の言語の1言語の案内と、下のボタン（starting は × とキャンセル、recording は ■ と停止）、画面のどこをタップしても1回だけ止めること、starting の間の本体のタップは何もしないこと、× の取り消し（`abort('cancel')`）、click shield（消えた後の 400ms はタップを受け止める。jsdom は hit test と `inert` をしないので、テストの `tapAt()` で一番上に重なる要素に click を届ける）、話した文字と入力中の翻訳、末尾へのスクロール、棒グラフ、中断と失敗で消えること、`inert` とフォーカス、読み上げの時間の記録（`tts_tap` から `tts_started` まで） |
-| `frontend/src/pages/InterpreterPage.textInput.test.tsx` | 原文の入力と編集（GOTALK-6）：原文が空でも押せること（`aria-label` は「入力」）、タップの処理の中でのフォーカス、透明な覆い（`edit-confirm-shield`）のタップで確定し、そのタップで国旗、題名、読み上げが動かないこと（テストの `tapAt()` で、原文のカードの外へのタップを覆いに届ける）、原文のカードの余白と鉛筆のボタンの位置のタップ、Enter と日本語の入力の変換の Enter、Escape、`blur`、録音中と翻訳中に押せないこと、`language_mismatch` |
+| `frontend/src/pages/InterpreterPage.textInput.test.tsx` | 原文の入力と編集（GOTALK-6）：原文が空でも押せること（`aria-label` は「入力」）、タップの処理の中でのフォーカス、透明な覆い（`edit-confirm-shield`）のタップで確定し、そのタップで国旗、題名、読み上げが動かないこと（テストの `tapAt()` で、原文のカードの外へのタップを覆いに届ける）、原文のカードの余白と鉛筆のボタンの位置のタップ、Enter と日本語の入力の変換の Enter、Escape、`blur`、録音中と翻訳中に押せないこと、`language_mismatch`。フォーカスがないまま編集の状態になったときの確定（PR #37 の UU1）、中断のときの編集の扱い（`hidden` では続け、`pagehide`、`pageshow`、`unmount` では取り消す。UU2） |
 | `frontend/src/pages/InterpreterPage.ttsGuard.test.tsx` | `handleSpeak` の守り（`useInterpreterAudioSession` を差し替えて、`ready` で録音のセッションが残っている状態を作る） |
 | `frontend/src/pages/MicTestPage.test.tsx` | 開発用のマイクの確認のページ（`#mic-test`） |
 | `frontend/src/experiments.test.ts` | 切り分けの実験のスイッチの指定（`ExperimentConfig`）の読み取りと組み合わせ（[切り分けの実験のスイッチ](#切り分けの実験のスイッチ原因の特定の後に外す)） |
@@ -412,6 +412,12 @@ GOTALK-6 で、原文のカードの鉛筆のボタンを最初から押せる�
    - 続けて画面の何もないところをタップする。期待値：確定して翻訳が出る
 7. 鉛筆のボタンをタップして文字を打ち、もう一度、鉛筆のボタンの位置をタップする
    - 期待値：確定して翻訳が出る
+8. 翻訳が出た後に、鉛筆のボタンで文字を打ち、読み上げのボタンの上をタップする
+   - 期待値：確定して翻訳が出る。読み上げは鳴らない
+9. 鉛筆のボタンで文字を打ち、上の「GoTalk」の題名の上をタップする
+   - 期待値：確定して翻訳が出る。言語の選択には戻らない
+10. `?exp=` を付けて開き（`https://staging.gotalk.chiemaru.com/?exp=`）、鉛筆のボタンで文字を打ち、画面の下の「コピー」の上をタップする
+    - 期待値：確定して翻訳が出る。コピーは起きない
 
 #### スイッチと診断
 
