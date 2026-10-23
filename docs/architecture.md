@@ -180,7 +180,7 @@ sequenceDiagram
   FE->>BE: POST /api/translate text + languages (real-time translation)
   BE-->>FE: live translated text
 
-  User->>FE: tap same flag to stop
+  User->>FE: tap the recording overlay (or ■) to stop
   FE->>Browser: stop SpeechRecognition
   FE->>MR: stop recording
   MR-->>FE: onstop (audio blob)
