@@ -434,3 +434,69 @@ describe('InterpreterPage text input: interruptions (PR #37 UU2)', () => {
     expect(textarea()!.value).toBe('こんにちは')
   })
 })
+
+describe('InterpreterPage text input: a late blur after the cancel (PR #37 UU5)', () => {
+  it('does not translate when a pagehide listener registered after the screen blurs the textarea', async () => {
+    renderPage()
+    await reachReadyByRecording()
+    await startEdit()
+    await type('駅はどこですか')
+    const el = textarea()!
+    expect(document.activeElement).toBe(el)
+    // 画面の listener の後に呼ばれる listener で、描画し直す前に blur を届ける
+    const lateBlur = () => el.blur()
+    window.addEventListener('pagehide', lateBlur)
+    await act(async () => { firePageTransition('pagehide', true) })
+    window.removeEventListener('pagehide', lateBlur)
+    expect(textarea()).toBeNull()
+    expect(editShield()).toBeNull()
+    expect(translateCalls()).toHaveLength(0)
+    expect(sourceText()?.textContent).toBe('こんにちは')
+    expect(translationText()).toBe('Hello')
+  })
+
+  it('does not translate when a blur arrives right after pageshow (persisted) cancelled the editing left over', async () => {
+    renderPage()
+    await startEdit()
+    await type('駅はどこですか')
+    const el = textarea()!
+    const lateBlur = () => el.blur()
+    window.addEventListener('pageshow', lateBlur)
+    await act(async () => { firePageTransition('pageshow', true) })
+    window.removeEventListener('pageshow', lateBlur)
+    expect(textarea()).toBeNull()
+    expect(editShield()).toBeNull()
+    expect(translateCalls()).toHaveLength(0)
+    expect(sourceText()?.textContent).toBe('')
+  })
+
+  it('does not translate when a blur arrives right after Escape', async () => {
+    renderPage()
+    await reachReadyByRecording()
+    await startEdit()
+    await type('駅はどこですか')
+    const el = textarea()!
+    // Escape と blur を、描画し直す前に続けて届ける
+    await act(async () => {
+      fireEvent.keyDown(el, { key: 'Escape' })
+      el.blur()
+    })
+    expect(textarea()).toBeNull()
+    expect(translateCalls()).toHaveLength(0)
+    expect(sourceText()?.textContent).toBe('こんにちは')
+  })
+
+  it('translates only once when a blur arrives right after Enter confirmed', async () => {
+    renderPage()
+    await startEdit()
+    await type('駅はどこですか')
+    const el = textarea()!
+    await act(async () => {
+      fireEvent.keyDown(el, { key: 'Enter' })
+      el.blur()
+    })
+    expect(textarea()).toBeNull()
+    expect(translateCalls()).toHaveLength(1)
+    expect(translationText()).toBe('訳:駅はどこですか')
+  })
+})

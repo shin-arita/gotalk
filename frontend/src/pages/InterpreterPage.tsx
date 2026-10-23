@@ -831,7 +831,9 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   }
 
   const handleEditConfirm = () => {
-    if (!isEditing) return
+    // 描画が閉じ込めた isEditing ではなく ref で見る。中断（pagehide など）や Escape で取り消した後、描画し直す前に
+    // 遅れて届いた blur で、確定しないようにするため
+    if (!isEditingRef.current) return
     changeEditing(false)
     const trimmed = editValue.trim()
     if (!trimmed || trimmed === recognizedText) return
