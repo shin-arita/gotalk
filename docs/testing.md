@@ -93,6 +93,7 @@ Frontend のテストファイルは次のとおりです。
 | `frontend/src/pages/InterpreterPage.lifecycle.test.tsx` | 通訳画面の録音のライフサイクル（マイクを閉じないセッション）：二重のタップ、中断（`hidden`、`pagehide`、戻る、外れる）で track を止めず次の録音で使い回すこと、古いセッションと古い問い合わせの結果、読み上げの中断（`AudioBufferSourceNode` の `stop()` と `disconnect()`、外れるときの `AudioContext` の `close()`）、bfcache から戻ったとき |
 | `frontend/src/pages/InterpreterPage.keptMic.test.tsx` | 10 回続けて録音しても（間に読み上げをはさんでも）`getUserMedia` は1回、読み上げの `AudioContext`（`resume()` をタップの中で `fetch` の前に呼ぶ、`resume()` の拒否と `running` でないとき、古い `resume()` の拒否、見張りのタイマー、`decodeAudioData` と `start()` の失敗）、マイクの音が来ないときの検出、`?exp=` のときの「コピー」の JSON、スイッチがあるときは `useAudioSession` を使うこと |
 | `frontend/src/App.keptMic.test.tsx` | 言語の選択の画面に戻り、もう一度選んで録音しても `getUserMedia` を呼ばないこと |
+| `frontend/src/pages/InterpreterPage.recordingOverlay.test.tsx` | 録音中の画面（PR B）：押した国旗の言語の1言語の案内と、下のボタン（starting は × とキャンセル、recording は ■ と停止）、画面のどこをタップしても1回だけ止めること、starting の間の本体のタップは何もしないこと、× の取り消し（`abort('cancel')`）、click shield（消えた後の 400ms はタップを受け止める。jsdom は hit test と `inert` をしないので、テストの `tapAt()` で一番上に重なる要素に click を届ける）、話した文字と入力中の翻訳、末尾へのスクロール、棒グラフ、中断と失敗で消えること、`inert` とフォーカス、読み上げの時間の記録（`tts_tap` から `tts_started` まで） |
 | `frontend/src/pages/InterpreterPage.ttsGuard.test.tsx` | `handleSpeak` の守り（`useInterpreterAudioSession` を差し替えて、`ready` で録音のセッションが残っている状態を作る） |
 | `frontend/src/pages/MicTestPage.test.tsx` | 開発用のマイクの確認のページ（`#mic-test`） |
 | `frontend/src/experiments.test.ts` | 切り分けの実験のスイッチの指定（`ExperimentConfig`）の読み取りと組み合わせ（[切り分けの実験のスイッチ](#切り分けの実験のスイッチ原因の特定の後に外す)） |
@@ -195,7 +196,7 @@ npm test
 - ログの `reason` に入る `code` が `^[a-z0-9_]{1,64}$` に一致しない場合（大文字、空白、65 文字、日本語、改行、空文字）は `invalid` になり、元の文字列がログに出ないこと。一致する場合（`upstream_busy`、許可リストにない `some_new_code`、64 文字）はそのまま出ること。表示の判定は変わらないこと（`api.test.ts`。`/api/tts` は `InterpreterPage.test.tsx`）
 - 読み上げで表示する文言がない場合（502、ネットワークのエラー）に、何も表示しないこと
 
-`/api/interpret` の結果表示やエラー処理のテストは、`MediaRecorder` と `navigator.mediaDevices.getUserMedia` を mock し、実際の操作と同じく国旗をタップして録音を開始し、同じ国旗をタップして停止することで `/api/interpret` を呼びます（共通の手順は helper `renderAndInterpret` にまとめています）。これらのテストでは `SpeechRecognition` を mock していないため、`transcript` は送られません。`transcript` の送信は、`SpeechRecognition` を mock した国旗タップのテスト 1 件で検証します。
+`/api/interpret` の結果表示やエラー処理のテストは、`MediaRecorder` と `navigator.mediaDevices.getUserMedia` を mock し、国旗をタップして録音を開始し、同じ国旗をタップして停止することで `/api/interpret` を呼びます（停止は `handleFlagTap` の `recording` の分岐を通ります。録音中の画面のタップと同じ `stopRecording()` を呼ぶ守りの分岐で、実際の操作の停止（録音中の画面のタップ）は `InterpreterPage.recordingOverlay.test.tsx` で確かめます）（共通の手順は helper `renderAndInterpret` にまとめています）。これらのテストでは `SpeechRecognition` を mock していないため、`transcript` は送られません。`transcript` の送信は、`SpeechRecognition` を mock した国旗タップのテスト 1 件で検証します。
 
 通訳の画面の TTS のテストでは、`frontend/src/test/audioMocks.ts` の `setupAudioContext()` で、`AudioContext` の `resume()`、`decodeAudioData()`、`createBufferSource()`、`destination`、`close()` と、`createBufferSource()` が返す `AudioBufferSourceNode` の `connect()`、`start()`、`stop()`、`disconnect()`、`onended` を差し替え、`/api/tts` の応答は `arrayBuffer()` で返します（`makeTtsOkResponse()`）。`Audio` を置くテスト（`InterpreterPage.lifecycle.test.tsx`、`InterpreterPage.keptMic.test.tsx`、`InterpreterPage.ttsGuard.test.tsx` の QQ1 のテスト）では、`Audio` は再生に使う mock ではなく、`<audio>` の経路に戻っていないこと（呼ばれないこと）を確かめるための spy です。通訳の画面の TTS のテストでは object URL（`URL.createObjectURL`、`URL.revokeObjectURL`）は使いません（object URL と `<audio>` を使うのは、開発用の `MicTestPage` と、実験の `LegacyInterpreterPage` のテストです）。`navigator.mediaDevices`、`AudioContext`、`Audio` などは各テストの前の状態を `beforeEach` で保存し、`afterEach` で元に戻します。`MediaRecorder` と `window.SpeechRecognition` は `afterEach` で削除します。API 呼び出しは `fetch` mock で検証します。
 
@@ -366,6 +367,30 @@ iPhone の Safari と Chrome のそれぞれで、ブラウザを終了してか
 - 診断：「コピー」の JSON の `diagnostics.events` で、正常に鳴り終わった読み上げについて `tts_ended_timeout` が 0 件であること（見張りのタイマーが誤って働いていないこと）。`no_audio_detected` の有無も確かめる
 
 判断の仕方：成功なら PR B に進む。1 か 2 が失敗なら、PR A の動きを見直す（PR B に進まない）。
+
+#### PR B（録音中の画面）の実機の確認
+
+PR B で、録音中にグレーの画面（録音中の画面。[ui.md](ui.md) の「録音中の画面」）を出し、画面のタップで話し終われるようにしました。読み上げの時間の記録（[speech-flow.md](speech-flow.md) の「9. TTS」の「読み上げの時間の記録」）も足しました。マージの前に、ステージング（`https://staging.gotalk.chiemaru.com/?exp=`）で、iPhone の Safari で確かめます。手順ごとに、期待値を先に伝えてから行います。
+
+1. Safari を終了してから開き、国旗をタップする
+   - 期待値：すぐにグレーの画面が出て、押した国旗の言語で案内の文言（日本語なら「話し終わったら画面をタップしてください」）、下に × のボタンが出る。マイクの準備ができると ■ に変わる。マイクのお知らせは最初の1回だけ
+2. 話す
+   - 期待値：話した文字がグレーの画面の上に出て、文字が増えている間だけ棒グラフが動く。黙ると1秒ほどで棒が止まる。長く話すと、文字が下に流れて最新の文字が見え続ける。国旗のまわりは動かない
+3. 画面の真ん中をタップする
+   - 期待値：グレーの画面が消え、「ただいま翻訳中です」の後に翻訳が出る。言語の選択に戻らない
+4. もう一度話して、■ をタップする
+   - 期待値：3 と同じ
+5. もう一度話して、透けて見えている「GoTalk」の題名の上をタップする
+   - 期待値：録音が終わって翻訳が出る。言語の選択には戻らない
+6. 国旗をタップしてすぐ（■ に変わる前に）× をタップする
+   - 期待値：グレーの画面が消え、何も出ずに元の画面に戻る（× が見えている時間は短いので、間に合わなければ省いてよい）
+7. 翻訳が出た後に読み上げを押す
+   - 期待値：鳴る。押してから鳴るまでの体感の秒数を覚えておく
+8. ここで診断の「コピー」の JSON を取る
+   - **言語の選択に戻る前に取る**（診断は通訳の画面ごとに作られ、言語の選択に戻ると空から始まるため）
+   - `diagnostics.events` の `tts_tap`、`tts_response:status=…`、`tts_downloaded:bytes=…`、`tts_decoded:ms=…`、`tts_started` の `at` の差で、押してから応答まで（OpenAI と通信）、ダウンロード、変換、再生の開始までの時間を分ける。同じ時刻の Backend のログの `tts: runes=… bytes=… openai_ms=…` と合わせて、OpenAI の時間と通信の時間を分ける
+
+棒グラフの仕様：棒グラフは、音声認識の途中の文字が更新されている間だけ動きます。声そのものを検知しているのではないので、話していても認識の文字が更新されなければ止まります（音声認識が遅れたとき、聞き取れなかったときなど）。2 で棒が止まっても、文字が更新されていなければ期待どおりです。
 
 #### スイッチと診断
 

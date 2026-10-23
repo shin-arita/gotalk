@@ -54,7 +54,7 @@ flowchart LR
 Frontend はブラウザ上の会話 UI と、Backend API へのリクエスト生成を担当します。
 
 - 2 つの利用言語を選択する
-- 選択した言語ごとの国旗ボタンで録音を開始・停止する
+- 選択した言語ごとの国旗ボタンで録音を開始し、録音中の画面（グレーの画面）のタップ（■ のボタンを含む）で停止する。開始の途中（マイクの準備の間）は × のボタンで取り消せる
 - マイクをページ全体で1つ持ち（最初の録音と、track が `ended` のときだけ `getUserMedia` で取得し、閉じない）、その音声を `MediaRecorder` で録音する
 - 録音と並行して `SpeechRecognition` / `webkitSpeechRecognition` を動かし、認識テキストを表示する
 - 録音中の認識テキストを使って `/api/translate` へリアルタイム翻訳を投げる
@@ -180,7 +180,7 @@ sequenceDiagram
   FE->>BE: POST /api/translate text + languages (real-time translation)
   BE-->>FE: live translated text
 
-  User->>FE: tap same flag to stop
+  User->>FE: tap the recording overlay (or ■) to stop
   FE->>Browser: stop SpeechRecognition
   FE->>MR: stop recording
   MR-->>FE: onstop (audio blob)
@@ -195,7 +195,7 @@ sequenceDiagram
   FE->>FE: play audio with AudioContext
 ```
 
-マイクはページ全体で1つ持ちます（`frontend/src/audio/keptMic.ts`）。最初の録音と、track が `ended` になった後の録音のときだけ `getUserMedia({ audio: true })` でマイク入力を取得し、録音の後も中断のときも閉じずに、次の録音で使い回します。録音は `MediaRecorder` で行い、録音ごとに作る `AudioContext` / `AnalyserNode` で入力中の波紋表示を制御します（録音の資源は `frontend/src/hooks/useKeptAudioSession.ts`。URL の `exp` に切り分けの実験のスイッチがあるときだけ、録音のたびにマイクを開いて閉じる前の版の `useAudioSession.ts` を使います）。録音と並行してブラウザの `SpeechRecognition` を動かし、認識テキストを表示とリアルタイム翻訳に使います。録音終了時は、録音音声を `/api/interpret` に送ります。認識テキストがある場合は `transcript` として添え、ない場合は Backend が音声から文字起こしします。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは送りません（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。読み上げは `AudioContext` で鳴らします（[speech-flow.md](speech-flow.md) の「9. TTS」）。
+マイクはページ全体で1つ持ちます（`frontend/src/audio/keptMic.ts`）。最初の録音と、track が `ended` になった後の録音のときだけ `getUserMedia({ audio: true })` でマイク入力を取得し、録音の後も中断のときも閉じずに、次の録音で使い回します。録音は `MediaRecorder` で行い、録音ごとに作る `AudioContext` / `AnalyserNode` で音量（RMS）を測ります。通訳の画面は音量を表示には使わず（`onLevel` は何もしません）、診断の `level` にだけ残します。録音中の画面の棒グラフは、音量ではなく音声認識の途中の文字の更新で動きます（[ui.md](ui.md) の「6.1 棒グラフ」）（録音の資源は `frontend/src/hooks/useKeptAudioSession.ts`。URL の `exp` に切り分けの実験のスイッチがあるときだけ、録音のたびにマイクを開いて閉じる前の版の `useAudioSession.ts` を使います）。録音と並行してブラウザの `SpeechRecognition` を動かし、認識テキストを表示とリアルタイム翻訳に使います。録音終了時は、録音音声を `/api/interpret` に送ります。認識テキストがある場合は `transcript` として添え、ない場合は Backend が音声から文字起こしします。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは送りません（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。読み上げは `AudioContext` で鳴らします（[speech-flow.md](speech-flow.md) の「9. TTS」）。
 
 ## 9. 固有名詞保護の概要
 

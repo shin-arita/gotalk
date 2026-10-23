@@ -112,6 +112,12 @@
   50%       { box-shadow: 0 0 0 3px #dc2626, 0 4px 32px rgba(220, 38, 38, 0.7); }
 }
 
+/* 通訳の画面（InterpreterPage）の録音中の国旗。赤い縁取りだけで、動かさない
+   （lang-flags-bar__btn--recording は LegacyInterpreterPage が使う） */
+.lang-flags-bar__btn--recording-static {
+  box-shadow: 0 0 0 3px #dc2626;
+}
+
 .flag-ripple {
   position: absolute;
   inset: 0;
@@ -550,4 +556,128 @@
 
 .stt-log__empty {
   color: #999;
+}
+
+/* ── 録音中の画面（オーバーレイ） ── */
+
+.recording-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: calc(32px + env(safe-area-inset-top)) var(--spacing) calc(24px + env(safe-area-inset-bottom));
+  background-color: rgba(40, 40, 48, 0.72);
+  color: #ffffff;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.recording-overlay__guide {
+  width: 100%;
+  max-width: 480px;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+  color: #ffffff;
+}
+
+/* 話した文字と入力中の翻訳。長くなったら、この領域だけが縦にスクロールする */
+.recording-overlay__text {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+  max-width: 480px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.recording-overlay__source {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: #ffffff;
+  word-break: break-word;
+}
+
+.recording-overlay__live-translation {
+  margin: 12px 0 0;
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.7);
+  word-break: break-word;
+}
+
+/* 棒グラフ。音声認識の途中の文字が届いている間（--flowing）だけ動く */
+.recording-overlay__bars {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 40px;
+  flex-shrink: 0;
+}
+
+.recording-overlay__bar {
+  width: 6px;
+  height: 8px;
+  border-radius: 3px;
+  background-color: rgba(255, 255, 255, 0.45);
+}
+
+.recording-overlay__bars--flowing .recording-overlay__bar {
+  background-color: #ffffff;
+  animation: recording-bar 0.9s ease-in-out infinite;
+}
+
+.recording-overlay__bars--flowing .recording-overlay__bar:nth-child(2) { animation-delay: 0.15s; }
+.recording-overlay__bars--flowing .recording-overlay__bar:nth-child(3) { animation-delay: 0.3s; }
+.recording-overlay__bars--flowing .recording-overlay__bar:nth-child(4) { animation-delay: 0.45s; }
+.recording-overlay__bars--flowing .recording-overlay__bar:nth-child(5) { animation-delay: 0.6s; }
+
+@keyframes recording-bar {
+  0%, 100% { height: 8px; }
+  50%       { height: 36px; }
+}
+
+/* 動きを減らす設定のときは、棒を動かさず、動いているときに色を濃くするだけにする */
+@media (prefers-reduced-motion: reduce) {
+  .recording-overlay__bars--flowing .recording-overlay__bar {
+    animation: none;
+  }
+}
+
+/* 下のボタン（recording は ■ で停止、starting は × で取り消し） */
+.recording-overlay__button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 3px solid #ffffff;
+  background-color: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.recording-overlay__button:active {
+  transform: scale(0.94);
+}
+
+/* 録音中の画面が消えた後の短い間、タップの通り抜け（ghost click）を受け止める透明な盾 */
+.recording-click-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: transparent;
 }

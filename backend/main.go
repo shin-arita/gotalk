@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -168,12 +169,15 @@ func ttsHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	ctx = withCallBudget(ctx, maxTTSRequestCalls)
 
+	// OpenAI への呼び出しから音声の本体を読み終わるまでの時間を記録する（読み上げの本文は出さない）
+	openAIStart := time.Now()
 	audio, err := callOpenAITTS(ctx, apiKey, model, voice, req.Text)
 	if err != nil {
 		log.Printf("TTS error: %v", err)
 		writeUpstreamError(w, ctx, endpoint, err, "tts failed")
 		return
 	}
+	log.Printf("tts: runes=%d bytes=%d openai_ms=%d", utf8.RuneCountInString(req.Text), len(audio), time.Since(openAIStart).Milliseconds())
 
 	w.Header().Set("Content-Type", "audio/mpeg")
 	w.Write(audio)
