@@ -150,19 +150,28 @@
 
 /* ── 原文カード ── */
 
+/* 右の余白は、鉛筆のボタン（44px、右から 8px）が文字に重ならない幅 */
 .source-card {
   position: relative;
   background-color: var(--color-surface);
-  padding: 20px 52px 20px 20px;
+  padding: 20px 56px 20px 20px;
   border-bottom: 1px solid var(--color-border);
 }
 
+/* 編集の間は、透明な覆い（edit-confirm-shield）より上に出す */
+.source-card--editing {
+  z-index: 11;
+}
+
+/* 原文が空のときも1行分の高さ（24px × 1.45）を保ち、空のときと1行のときでカードの高さを変えない。
+   空のときの --placeholder は 15px なので、em ではなく px で決める */
 .source-card__text {
   font-size: 24px;
   font-weight: 600;
   color: var(--color-text);
   line-height: 1.45;
   margin: 0;
+  min-height: 34.8px;
   word-break: break-word;
 }
 
@@ -172,12 +181,14 @@
   color: var(--color-text-secondary);
 }
 
+/* 鉛筆のボタン。押せる範囲は 44px 角で、原文のカードの縦の中心に置く */
 .source-card__edit {
   position: absolute;
-  top: 14px;
-  right: 12px;
-  width: 36px;
-  height: 36px;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -197,6 +208,11 @@
 .source-card__edit:disabled {
   opacity: 0.3;
   cursor: default;
+}
+
+/* 編集の間は、タップの対象から外し、下の原文のカードにタップを届ける（カードのタップで確定する） */
+.source-card__edit--editing {
+  pointer-events: none;
 }
 
 .source-card__textarea {
@@ -679,5 +695,14 @@
   position: fixed;
   inset: 0;
   z-index: 1000;
+  background: transparent;
+}
+
+/* 編集の間だけ画面全体に出す透明な覆い。どこをタップしても、確定だけをする。
+   画面の普通の要素より上で、録音中の画面と click shield（z-index: 1000）より下 */
+.edit-confirm-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
   background: transparent;
 }

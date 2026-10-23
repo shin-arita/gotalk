@@ -94,6 +94,7 @@ Frontend のテストファイルは次のとおりです。
 | `frontend/src/pages/InterpreterPage.keptMic.test.tsx` | 10 回続けて録音しても（間に読み上げをはさんでも）`getUserMedia` は1回、読み上げの `AudioContext`（`resume()` をタップの中で `fetch` の前に呼ぶ、`resume()` の拒否と `running` でないとき、古い `resume()` の拒否、見張りのタイマー、`decodeAudioData` と `start()` の失敗）、マイクの音が来ないときの検出、`?exp=` のときの「コピー」の JSON、スイッチがあるときは `useAudioSession` を使うこと |
 | `frontend/src/App.keptMic.test.tsx` | 言語の選択の画面に戻り、もう一度選んで録音しても `getUserMedia` を呼ばないこと |
 | `frontend/src/pages/InterpreterPage.recordingOverlay.test.tsx` | 録音中の画面（PR B）：押した国旗の言語の1言語の案内と、下のボタン（starting は × とキャンセル、recording は ■ と停止）、画面のどこをタップしても1回だけ止めること、starting の間の本体のタップは何もしないこと、× の取り消し（`abort('cancel')`）、click shield（消えた後の 400ms はタップを受け止める。jsdom は hit test と `inert` をしないので、テストの `tapAt()` で一番上に重なる要素に click を届ける）、話した文字と入力中の翻訳、末尾へのスクロール、棒グラフ、中断と失敗で消えること、`inert` とフォーカス、読み上げの時間の記録（`tts_tap` から `tts_started` まで） |
+| `frontend/src/pages/InterpreterPage.textInput.test.tsx` | 原文の入力と編集（GOTALK-6）：原文が空でも押せること（`aria-label` は「入力」）、タップの処理の中でのフォーカス、透明な覆い（`edit-confirm-shield`）のタップで確定し、そのタップで国旗、題名、読み上げが動かないこと（テストの `tapAt()` で、原文のカードの外へのタップを覆いに届ける）、原文のカードの余白と鉛筆のボタンの位置のタップ、Enter と日本語の入力の変換の Enter、Escape、`blur`、録音中と翻訳中に押せないこと、`language_mismatch`。フォーカスがないまま編集の状態になったときの確定（PR #37 の UU1）、中断のときの編集の扱い（`hidden` では続け、`pagehide`、`pageshow`、`unmount` では取り消す。UU2） |
 | `frontend/src/pages/InterpreterPage.ttsGuard.test.tsx` | `handleSpeak` の守り（`useInterpreterAudioSession` を差し替えて、`ready` で録音のセッションが残っている状態を作る） |
 | `frontend/src/pages/MicTestPage.test.tsx` | 開発用のマイクの確認のページ（`#mic-test`） |
 | `frontend/src/experiments.test.ts` | 切り分けの実験のスイッチの指定（`ExperimentConfig`）の読み取りと組み合わせ（[切り分けの実験のスイッチ](#切り分けの実験のスイッチ原因の特定の後に外す)） |
@@ -141,7 +142,7 @@ npm test
 - 履歴は展開ボタンなしで全件を表示すること
 - `/api/interpret` が 500 を返した場合に、汎用のエラーの文言を表示すること
 - 再翻訳で `/api/translate` が 422 `language_mismatch` を返した場合のエラー表示
-- 再翻訳で `/api/translate` が 500 を返した場合に汎用のエラーの文言を表示することと、直前の翻訳文と読み上げボタンが残ること
+- 再翻訳で `/api/translate` が 500 を返した場合に汎用のエラーの文言を表示することと、直前の翻訳文と読み上げボタンが消えて `idle` になること（再翻訳を始めるときに前の翻訳を消すため）
 - `/api/tts` に `ttsText` を送ること
 - TTS fetch 中の button disabled、読み上げの `AudioBufferSourceNode` の `onended` 後の復帰、TTS 失敗後の復帰
 - `recording` 中は翻訳カードを隠し、録音終了後に表示すること
@@ -391,6 +392,32 @@ PR B で、録音中にグレーの画面（録音中の画面。[ui.md](ui.md) 
    - `diagnostics.events` の `tts_tap`、`tts_response:status=…`、`tts_downloaded:bytes=…`、`tts_decoded:ms=…`、`tts_started` の `at` の差で、押してから応答まで（OpenAI と通信）、ダウンロード、変換、再生の開始までの時間を分ける。同じ時刻の Backend のログの `tts: runes=… bytes=… openai_ms=…` と合わせて、OpenAI の時間と通信の時間を分ける
 
 棒グラフの仕様：棒グラフは、音声認識の途中の文字が更新されている間だけ動きます。声そのものを検知しているのではないので、話していても認識の文字が更新されなければ止まります（音声認識が遅れたとき、聞き取れなかったときなど）。2 で棒が止まっても、文字が更新されていなければ期待どおりです。
+
+#### GOTALK-6（話さなくても文字を入力して翻訳する）の実機の確認
+
+GOTALK-6 で、原文のカードの鉛筆のボタンを最初から押せるようにし、話さなくても文字を打って翻訳できるようにしました（[ui.md](ui.md) の「原文の入力と編集」）。マージの前に、ステージング（`https://staging.gotalk.chiemaru.com/`）で、iPhone の Safari と Chrome のそれぞれで確かめます。手順ごとに、期待値を先に伝えてから行います。
+
+1. 言語を選んで通訳の画面を開き、話さずに右の鉛筆のボタンをタップする
+   - 期待値：キーボードが出て、原文のカードで文字を打てる
+2. 「駅はどこですか」と打ち、画面の何もないところをタップする
+   - 期待値：キーボードが閉じ、「ただいま翻訳中です」の後に、選んだ相手の言語の翻訳と逆翻訳が出る
+3. 鉛筆のボタンをタップし、文を消して、相手の言語（例：英語の「Where is the station?」）で打ち、国旗の上をタップする
+   - 期待値：確定して日本語に訳される。そのタップでは録音は始まらない
+4. 国旗をタップして話す
+   - 期待値：今までどおり録音できる
+5. 鉛筆のボタンの大きさと位置を見る
+   - 期待値：原文の行の高さに収まり、押しやすい
+6. 鉛筆のボタンをタップし、日本語のキーボードで「えきはどこですか」と打ち、変換の候補から「駅」を選ぶ（変換を確定する）
+   - 期待値：変換が確定するだけで、翻訳は始まらない
+   - 続けて画面の何もないところをタップする。期待値：確定して翻訳が出る
+7. 鉛筆のボタンをタップして文字を打ち、もう一度、鉛筆のボタンの位置をタップする
+   - 期待値：確定して翻訳が出る
+8. 翻訳が出た後に、鉛筆のボタンで文字を打ち、読み上げのボタンの上をタップする
+   - 期待値：確定して翻訳が出る。読み上げは鳴らない
+9. 鉛筆のボタンで文字を打ち、上の「GoTalk」の題名の上をタップする
+   - 期待値：確定して翻訳が出る。言語の選択には戻らない
+10. `?exp=` を付けて開き（`https://staging.gotalk.chiemaru.com/?exp=`）、鉛筆のボタンで文字を打ち、画面の下の「コピー」の上をタップする
+    - 期待値：確定して翻訳が出る。コピーは起きない
 
 #### スイッチと診断
 

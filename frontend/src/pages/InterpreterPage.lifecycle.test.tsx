@@ -491,13 +491,12 @@ describe('InterpreterPage audio lifecycle: TTS', () => {
     expect(speakButton()).not.toBeInTheDocument()
     await reachReady()
     expect(speakButton()).not.toBeDisabled()
-    // processing（編集した文の再翻訳）の間は押せない
+    // processing（編集した文の再翻訳）の間は押せない（訳し直しを始めるときに前の翻訳を消すので、ボタンは出ない）
     await editAndRetranslate('Edited')
     expect(isProcessing()).toBe(true)
-    expect(speakButton()).toBeDisabled()
-    // 前の翻訳の結果が残る失敗では、ready に戻って押せる
-    await resolveFetch(1, errorResponse(500, {}))
-    expect(alertText()).toBe(jaEn('generic_error'))
+    expect(speakButton()).not.toBeInTheDocument()
+    // 訳し直しが成功すると ready に戻って押せる
+    await resolveFetch(1, okResponse({ translatedText: 'Edited の訳', ttsText: 'Edited の訳', backTranslation: '(Edited)', sourceLanguage: 'en', targetLanguage: 'ja' }))
     expect(speakButton()).not.toBeDisabled()
     // speaking の間は押せない
     await act(async () => { fireEvent.click(speakButton()!) })

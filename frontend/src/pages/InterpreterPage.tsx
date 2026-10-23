@@ -1,4 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef } from 'react'
+import { flushSync } from 'react-dom'
 import type { Language } from '../languages'
 import { API_TIMEOUT_MS, ApiError, MAX_INTERPRET_AUDIO_BYTES, MIN_INTERPRET_AUDIO_BYTES, apiErrorCode, apiErrorFromResponse, isTooLongForTts, logApiError, messageKeyForCode, messageKeyForError } from '../api'
 import { getLocalizedMessage } from '../messages'
@@ -183,6 +184,8 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   // pagehide のときに記録する、bfcache から戻ったときにするべき状態
   const pagehideRecoveryStatusRef = useRef<InterpreterStatus | null>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
+  // 原文の入力と編集の間か（中断の片付けなど、非同期の listener から最新の値を読むため）
+  const isEditingRef = useRef(false)
   const recordingLangRef = useRef<Language | null>(null)
   const hasLiveTranscriptRef = useRef(false)
   const recognizedTextRef = useRef('')
@@ -227,21 +230,18 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     isRecordingStatus: () => statusRef.current === 'recording',
   }, experiment)
 
+  // 原文の入力と編集の状態を変える（isEditingRef は、非同期の listener から最新の値を読むため）
+  const changeEditing = (next: boolean) => {
+    isEditingRef.current = next
+    setIsEditing(next)
+  }
+
   // 画面の状態を変える。状態は画面だけが持つ（statusRef は、非同期の callback から最新の値を読むため）
   const changeStatus = (next: InterpreterStatus) => {
     statusRef.current = next
     setStatus(next)
     audioSession.logEvent(`status:${next}`)
   }
-
-  useEffect(() => {
-    if (!isEditing || !editRef.current) return
-    const el = editRef.current
-    el.style.height = 'auto'
-    el.style.height = `${el.scrollHeight}px`
-    el.focus()
-    el.setSelectionRange(el.value.length, el.value.length)
-  }, [isEditing])
 
   const addHistoryEntry = (source: string, translation: string, bt: string, srcId: string, tgtId: string) => {
     const now = new Date()
@@ -360,8 +360,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   const callTranslateApi = async (text: string) => {
     // 読み上げの途中に編集した場合は、読み上げを止める
     stopSpeaking()
-    // 失敗したときに、前の翻訳の結果が残っていれば、読み上げを押せる ready に戻す
-    const hadTranslation = !!ttsText
     changeStatus('processing')
     setErrorMessage('')
     const srcLang = recordingLangRef.current ?? selectedLanguages[0]
@@ -393,7 +391,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     } catch (e) {
       if (!isActiveRequest(id)) return
       showMessage(messageKeyForError('/api/translate', e))
-      changeStatus(hadTranslation ? 'ready' : 'idle')
+      changeStatus('idle')
     } finally {
       clearTimeout(timer)
       endRequest(id)
@@ -693,6 +691,9 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     const leavingScreen = reason === 'back' || reason === 'unmount'
     if (reason === 'pagehide') pagehideRecoveryStatusRef.current = PAGESHOW_RECOVERY_STATUS[current]
     resetTextFlow()
+    // 原文の入力と編集：裏に回すだけ（hidden）なら続ける（別のアプリで調べて戻る使い方のため）。
+    // ページや画面を離れるときは、訳さずに取り消して閉じる
+    if (reason !== 'hidden' && isEditingRef.current) changeEditing(false)
 
     if (current === 'starting' || current === 'recording' || current === 'stopping' || current === 'error') {
       void audioSession.abort(reason)
@@ -729,6 +730,8 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   // 問い合わせもやり直さず、メッセージも出さない。ふつうの読み込み（persisted でない）では何もしない
   const handlePageShow = (persisted: boolean) => {
     if (!persisted) return
+    // pagehide で閉じているはずだが、編集の状態が残っていれば、訳さずに取り消して閉じる
+    if (isEditingRef.current) changeEditing(false)
     let recovery = pagehideRecoveryStatusRef.current
     pagehideRecoveryStatusRef.current = null
     const hasLeftover = audioSession.hasActiveSession()
@@ -810,36 +813,81 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     }
   }, [])
 
+  // 原文の入力と編集を始める。原文があればその文字を入れた状態で（話した文の手直し）、空なら空の状態で始める。
+  // iPhone では、タップの処理の中で focus() を呼ばないとキーボードが出ないことがあるので、flushSync で textarea を
+  // 描画してから、同じ処理の中でフォーカスを移す（docs/ui.md）
   const handleEditStart = () => {
-    if (!recognizedText) return
-    setEditValue(recognizedText)
-    setIsEditing(true)
+    flushSync(() => {
+      setEditValue(recognizedText)
+      changeEditing(true)
+    })
+    const el = editRef.current
+    if (!el) return
+    fitEditHeight(el)
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
   }
 
   const handleEditConfirm = () => {
-    if (!isEditing) return
-    setIsEditing(false)
+    // 描画が閉じ込めた isEditing ではなく ref で見る。中断（pagehide など）や Escape で取り消した後、描画し直す前に
+    // 遅れて届いた blur で、確定しないようにするため
+    if (!isEditingRef.current) return
+    changeEditing(false)
     const trimmed = editValue.trim()
-    if (!trimmed || trimmed === recognizedText) return
+    if (!trimmed) return
+    // 同じ文字でも、翻訳が出ていなければ（訳し直しの失敗、中断、language_mismatch の後）訳し直す
+    if (trimmed === recognizedText && translatedText) return
     // 編集できるのは idle、ready、speaking のときだけ（録音や問い合わせの途中は受け付けない）
     if (!['idle', 'ready', 'speaking'].includes(statusRef.current)) return
     recognizedTextRef.current = trimmed
     setRecognizedText(trimmed)
+    // 前の原文の翻訳を、新しい原文の翻訳のように並べて残さない（失敗や中断のときも）。読み上げのボタンも消える
+    setTranslatedText('')
+    setTtsText('')
+    setBackTranslation('')
     void callTranslateApi(trimmed)
   }
 
   const handleEditChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setEditValue(e.target.value)
-    e.target.style.height = 'auto'
-    e.target.style.height = `${e.target.scrollHeight}px`
+    fitEditHeight(e.target)
   }
 
   const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // 日本語の入力の変換を確定する Enter では、文を確定しない
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEditConfirm() }
-    if (e.key === 'Escape') setIsEditing(false)
+    if (e.key === 'Escape') changeEditing(false)
   }
 
-  const canEdit = !!recognizedText && !isEditing && (status === 'idle' || status === 'ready' || status === 'speaking')
+  // 編集の間の透明な覆いのタップ。確定（blur の handler の handleEditConfirm）のほかに何も起こさない。
+  // mousedown の既定の動き（フォーカスの移動）を止めるのは、click の前に blur で覆いが消えて、
+  // click が下の要素（国旗など）に届かないようにするため
+  const handleEditShieldMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+  }
+
+  const handleEditShieldTap = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    confirmEditFromTap()
+  }
+
+  // 編集の間に、原文のカードの textarea の外（余白と鉛筆のボタンの位置）をタップしたときも確定する
+  const handleSourceCardTap = (e: React.MouseEvent) => {
+    if (!isEditing || e.target === editRef.current) return
+    confirmEditFromTap()
+  }
+
+  // タップで確定する。textarea にフォーカスがあれば blur し（blur の handler の handleEditConfirm で確定）、
+  // なければ（focus() を受け付けなかった、裏に回して戻ったなど）blur は出来事を出さないので、直接確定する
+  const confirmEditFromTap = () => {
+    const el = editRef.current
+    if (el && document.activeElement === el) el.blur()
+    else handleEditConfirm()
+  }
+
+  const canEdit = !isEditing && (status === 'idle' || status === 'ready' || status === 'speaking')
 
   const canTapFlag = (i: 0 | 1): boolean => {
     if (status === 'recording') return recordingFlagIndex === i
@@ -947,7 +995,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       )}
 
       <div className="page-content" inert={underlayInert}>
-        <div className="source-card">
+        <div className={`source-card${isEditing ? ' source-card--editing' : ''}`} onClick={handleSourceCardTap}>
           {isEditing ? (
             <textarea
               ref={editRef}
@@ -966,10 +1014,10 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
           )}
           <button
             type="button"
-            className="source-card__edit"
+            className={`source-card__edit${isEditing ? ' source-card__edit--editing' : ''}`}
             onClick={handleEditStart}
             disabled={!canEdit}
-            aria-label="編集"
+            aria-label={recognizedText ? '編集' : '入力'}
           >
             <EditIcon />
           </button>
@@ -1056,6 +1104,10 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
         />
       </div>}
 
+      {isEditing && (
+        <div className="edit-confirm-shield" onMouseDown={handleEditShieldMouseDown} onClick={handleEditShieldTap} aria-hidden="true" />
+      )}
+
       {overlayVisible && (
         <div
           className="recording-overlay"
@@ -1098,11 +1150,17 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
 
 function EditIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
+}
+
+// textarea の高さを中の文字に合わせる
+function fitEditHeight(el: HTMLTextAreaElement) {
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
 }
 
 function ChevronIcon() {
