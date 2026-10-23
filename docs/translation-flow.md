@@ -15,7 +15,7 @@ GoTalk の翻訳処理は、2 つの選択言語の間で会話を成立させ�
 
 確定翻訳では、Frontend は録音音声、タップされた国旗の言語（`myLanguage`、`speaker`）、もう一方の言語（`theirLanguage`）、認識テキストがあれば `transcript` を `/api/interpret` に送信します。Backend は翻訳方向を決定し、必要な場合は固有名詞保護を適用してから OpenAI Responses API で翻訳とバックトランスレーションを実行します。
 
-翻訳結果は Frontend に表示されます。読み上げ時は Backend の `/api/tts` に `ttsText` を送信し、Backend が OpenAI Audio Speech API で生成した `audio/mpeg` を Frontend が `AudioContext` で再生します。
+翻訳結果は Frontend に表示されます。読み上げ時は Backend の `/api/tts` に `ttsText` を送信し、Backend が OpenAI Audio Speech API で生成した `audio/mpeg` を Frontend が `AudioContext` で再生します。同じ文字の2回目からは、`/api/tts` を呼ばずに、取っておいた音声を鳴らします（[8. TTS](#8-tts)）。
 
 ## 2. 全体フロー
 
@@ -50,10 +50,15 @@ sequenceDiagram
   IN-->>FE: text + translatedText + backTranslation + ttsText
   FE->>FE: 表示
   User->>FE: 読み上げボタンをタップ
-  FE->>TTSAPI: text = ttsText
-  TTSAPI->>Speech: 音声合成
-  Speech-->>TTSAPI: audio/mpeg
-  TTSAPI-->>FE: audio/mpeg
+  alt 取っておいた音声の文字と ttsText が同じ
+    FE->>FE: 取っておいた AudioBuffer を使う（/api/tts と decodeAudioData は呼ばない）
+  else 違う、または取っておいた音声がない
+    FE->>TTSAPI: text = ttsText
+    TTSAPI->>Speech: 音声合成
+    Speech-->>TTSAPI: audio/mpeg
+    TTSAPI-->>FE: audio/mpeg
+    FE->>FE: decodeAudioData で AudioBuffer にし、{ text, buffer } を取っておく
+  end
   FE-->>User: AudioContext で再生
 ```
 
@@ -83,7 +88,7 @@ Frontend の翻訳処理は `frontend/src/pages/InterpreterPage.tsx` に実装�
 
 `processing` 中の翻訳カードには、話者側と相手側の両言語の「翻訳中」と「お待ちください」のメッセージを 1.2 秒ごとに切り替えて表示します。
 
-読み上げは `handleSpeak` が担当します。Frontend は `/api/tts` に `{ text: ttsText }` を送信し、返却された `audio/mpeg` を `AudioContext` で再生します（`<audio>` は使いません。[speech-flow.md](speech-flow.md) の「9. TTS」）。
+読み上げは `handleSpeak` が担当します。Frontend は `/api/tts` に `{ text: ttsText }` を送信し、返却された `audio/mpeg` を `AudioContext` で再生します（`<audio>` は使いません。[speech-flow.md](speech-flow.md) の「9. TTS」）。読み上げる文字が取っておいた音声の文字と同じときは、`/api/tts` と `decodeAudioData()` を呼ばずに、取っておいた `AudioBuffer` を再生します（[8. TTS](#8-tts)）。
 
 ## 4. Backend の処理
 
@@ -152,9 +157,11 @@ Backend は条件に合う場合、固有名詞をプレースホルダに置き
 
 `ttsText` は読み上げに使うテキストです。保護なし経路では `translatedText` と同じ文字列です。固有名詞保護が有効な場合は、翻訳結果のプレースホルダを読み上げ向けに復元した文字列になります。
 
-Frontend は読み上げボタンが押されたときに `/api/tts` へ `{ text: ttsText }` を送信します。Backend の `/api/tts` は `POST` のみ受け付け、`OPENAI_API_KEY`、TTS model、voice を使って OpenAI Audio Speech API を呼び出します。TTS model は `OPENAI_TTS_MODEL`、未設定時は `gpt-4o-mini-tts` です。voice は `OPENAI_TTS_VOICE`、未設定時は `marin` です。
+Frontend は読み上げボタンが押されたときに、読み上げる文字が取っておいた音声の文字と違えば（取っておいた音声がなければ）、`/api/tts` へ `{ text: ttsText }` を送信します。同じなら `/api/tts` を呼びません。Backend の `/api/tts` は `POST` のみ受け付け、`OPENAI_API_KEY`、TTS model、voice を使って OpenAI Audio Speech API を呼び出します。TTS model は `OPENAI_TTS_MODEL`、未設定時は `gpt-4o-mini-tts` です。voice は `OPENAI_TTS_VOICE`、未設定時は `marin` です。
 
-OpenAI Audio Speech API から返った音声は Backend から `audio/mpeg` として Frontend に返されます。Frontend はその音声を `AudioContext` で再生し、再生終了、再生の失敗、`onended` が来ないときの見張りのタイマーで状態を `ready` に戻します。
+OpenAI Audio Speech API から返った音声は Backend から `audio/mpeg` として Frontend に返されます。Frontend はその音声を `AudioContext` で再生し、再生終了、再生の失敗、`onended` が来ないときの見張りのタイマーで状態を `ready` に戻します。取っておいた音声を再生するときも、同じく `ready` に戻します。
+
+読み上げの音声を取っておく仕組み：Frontend は、デコード済みの `AudioBuffer` と、その元の文字（読み上げる `ttsText`）の組 `{ text, buffer }` を1組だけ持ちます。読み上げる文字が取っておいた組の文字と同じなら、`/api/tts`、`arrayBuffer()`、`decodeAudioData()` を呼ばずに、その `AudioBuffer` を鳴らします。違えば `/api/tts` を呼び、`decodeAudioData()` の後の読み上げの番号の確認を通ったときだけ取っておきます（前の組は捨てます）。取っておいた後に鳴らせなかったとき（`resume()` の拒否、`running` でない、`start()` の失敗）や、読み上げを中断したとき（`hidden`、`pagehide`、原文の編集の確定など）も捨てず、画面が外れるときに捨てます。詳しくは [speech-flow.md](speech-flow.md) の「9. TTS」を参照してください。
 
 ## 9. エラー処理
 
@@ -164,7 +171,7 @@ OpenAI Audio Speech API から返った音声は Backend から `audio/mpeg` と
 
 `/api/translate` では、入力検証エラー、API キー未設定、OpenAI Responses API の失敗、翻訳元言語の不一致、固有名詞保護の失敗が JSON エラーとして返されます。代表的なエラーは `language_mismatch`、`translation failed`、`proper_noun_protection_failed` です。
 
-Frontend は `/api/interpret` と `/api/translate`（再翻訳）のどちらでも、HTTP 422 でエラーが `language_mismatch` の場合は同じ扱いをします。「言語不明、もう一度お話ください」を表示し、翻訳文とバックトランスレーションを空にして `idle` に戻します。それ以外の失敗では、Frontend のタイムアウトの場合は「うまく翻訳できませんでした。もう一度お願いします。」を表示します。エラーの応答の `code` が `input_too_large`、`service_unavailable`、`upstream_busy`、`timeout` の場合は、それぞれ「入力が長すぎます。短くしてもう一度お試しください」「現在サービスを利用できません」「混み合っています。しばらくしてからお試しください」「処理に時間がかかっています。もう一度お試しください」を表示します（[api.md](api.md) の「9. Frontend からの利用」）。それ以外（対応する `code` がない status、ネットワークのエラーなど）は「エラーが発生しました。もう一度お試しください。」を表示し、状態を `idle` に戻します。これらの文言は、選んだ2つの言語で表示し、status やエラーの文字列は表示しません（[ui.md](ui.md)）。リアルタイム翻訳の失敗は表示しません。
+Frontend は `/api/interpret` と `/api/translate`（文字の入力と原文の編集を確定したときの翻訳）のどちらでも、HTTP 422 でエラーが `language_mismatch` の場合は同じ扱いをします。「言語不明、もう一度お話ください」を表示し、翻訳文とバックトランスレーションを空にして `idle` に戻します。それ以外の失敗では、Frontend のタイムアウトの場合は「うまく翻訳できませんでした。もう一度お願いします。」を表示します。エラーの応答の `code` が `input_too_large`、`service_unavailable`、`upstream_busy`、`timeout` の場合は、それぞれ「入力が長すぎます。短くしてもう一度お試しください」「現在サービスを利用できません」「混み合っています。しばらくしてからお試しください」「処理に時間がかかっています。もう一度お試しください」を表示します（[api.md](api.md) の「9. Frontend からの利用」）。それ以外（対応する `code` がない status、ネットワークのエラーなど）は「エラーが発生しました。もう一度お試しください。」を表示し、状態を `idle` に戻します。これらの文言は、選んだ2つの言語で表示し、status やエラーの文字列は表示しません（[ui.md](ui.md)）。本番の通訳の画面（`InterpreterPage`）では録音中のリアルタイム翻訳をしません。Legacy の実験の経路（`LegacyInterpreterPage`）では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残り、その失敗は表示しません。
 
 `/api/tts` では、入力検証エラー、API キー未設定、OpenAI Audio Speech API の失敗が扱われます。OpenAI Audio Speech API の呼び出しに失敗した場合、Backend は `tts failed` を返します。Frontend の読み上げ処理は TTS 失敗時に状態を `ready` に戻します。
 

@@ -8,7 +8,7 @@ import {
   AUDIO_GLOBALS, firePageTransition, makeTtsOkResponse, saveGlobals, setupAudioContext, setupDeferredGetUserMedia, setupMediaRecorder,
   setupSpeechRecognition, setVisibility, ttsContextOf,
 } from '../test/audioMocks'
-import type { FakeAudioContext } from '../test/audioMocks'
+import type { FakeAudioContext, FakeBufferSource } from '../test/audioMocks'
 import type { AudioSession } from '../hooks/useAudioSession'
 
 // 読み上げの音声を取っておく（GOTALK-2、docs/speech-flow.md の「読み上げ」）。デコード済みの AudioBuffer と、その元の文字の組を
@@ -440,6 +440,84 @@ describe('InterpreterPage tts cache: kept after the audio is decoded (GOTALK-2)'
     expect(ttsCalls()).toHaveLength(1)
     expect(lastSource().start).toHaveBeenCalledTimes(1)
     expect(countEvents('tts_cache_hit')).toBe(2)
+  })
+})
+
+describe('InterpreterPage tts cache: kept after start() fails, an edit or bfcache (GOTALK-2 VV2)', () => {
+  it('uses the kept audio on the next tap when start() threw the first time', async () => {
+    let respond: (res: Response) => void = () => {}
+    ttsResponse = () => new Promise<Response>(resolve => { respond = resolve })
+    renderPage()
+    await recordAndTranslate()
+    await tapSpeak()
+    // 読み上げの AudioContext ができた後に、1回目に作る AudioBufferSourceNode の start() だけを失敗させる
+    const createSource = ttsContext().createBufferSource.getMockImplementation() as () => FakeBufferSource
+    ttsContext().createBufferSource.mockImplementationOnce(() => {
+      const node = createSource()
+      node.start.mockImplementation(() => { throw new DOMException('cannot start', 'InvalidStateError') })
+      return node
+    })
+    await act(async () => { respond(makeTtsOkResponse()) })
+    await flush()
+    // 1回目は /api/tts と変換が成功したが、start() が例外を出して鳴らずに ready に戻る
+    expect(ttsContext().bufferSources).toHaveLength(1)
+    expect(lastSource().start).toHaveBeenCalledTimes(1)
+    expect(eventTypes()).not.toContain('tts_started')
+    expect(lastStatus()).toBe('status:ready')
+    ttsResponse = makeTtsOkResponse
+    await tapSpeak()
+    expect(ttsCalls()).toHaveLength(1)
+    expect(ttsContext().decodeAudioData).toHaveBeenCalledTimes(1)
+    expect(countEvents('tts_cache_hit')).toBe(1)
+    expect(ttsContext().bufferSources).toHaveLength(2)
+    expect(lastSource().start).toHaveBeenCalledTimes(1)
+    expect(lastStatus()).toBe('status:speaking')
+    endPlayback()
+  })
+
+  it('uses the kept audio after the source is edited while speaking and the retranslation returns the same ttsText', async () => {
+    renderPage()
+    await recordAndTranslate()
+    await tapSpeak()
+    const source = lastSource()
+    expect(lastStatus()).toBe('status:speaking')
+    // 読み上げの途中に原文の編集を確定すると、読み上げを止める。訳し直しの読み上げる文字は同じ
+    translateTts = () => 'Hello'
+    await typeAndTranslate('こんにちは！')
+    expect(source.stop).toHaveBeenCalledTimes(1)
+    expect(source.disconnect).toHaveBeenCalledTimes(1)
+    expect(translateCalls()).toHaveLength(1)
+    expect(lastStatus()).toBe('status:ready')
+    await tapSpeak()
+    expect(ttsCalls()).toHaveLength(1)
+    expect(ttsContext().decodeAudioData).toHaveBeenCalledTimes(1)
+    expect(countEvents('tts_cache_hit')).toBe(1)
+    expect(ttsContext().bufferSources).toHaveLength(2)
+    expect(lastSource().start).toHaveBeenCalledTimes(1)
+    expect(lastStatus()).toBe('status:speaking')
+    endPlayback()
+  })
+
+  it('uses the kept audio after pagehide and pageshow (persisted) while speaking', async () => {
+    renderPage()
+    await recordAndTranslate()
+    await tapSpeak()
+    const source = lastSource()
+    expect(lastStatus()).toBe('status:speaking')
+    // 読み上げの途中に bfcache に入り、戻る
+    await act(async () => { firePageTransition('pagehide', true) })
+    expect(source.stop).toHaveBeenCalledTimes(1)
+    await act(async () => { firePageTransition('pageshow', true) })
+    expect(lastStatus()).toBe('status:ready')
+    expect(speakButton()).not.toBeDisabled()
+    await tapSpeak()
+    expect(ttsCalls()).toHaveLength(1)
+    expect(ttsContext().decodeAudioData).toHaveBeenCalledTimes(1)
+    expect(countEvents('tts_cache_hit')).toBe(1)
+    expect(ttsContext().bufferSources).toHaveLength(2)
+    expect(lastSource().start).toHaveBeenCalledTimes(1)
+    expect(lastStatus()).toBe('status:speaking')
+    endPlayback()
   })
 })
 

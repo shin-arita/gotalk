@@ -45,11 +45,17 @@ sequenceDiagram
   IN-->>FE: text + translatedText + backTranslation + ttsText
   User->>FE: 読み上げボタンをタップ
   FE->>Audio: resume（タップの処理の中）
-  FE->>TTSAPI: text = ttsText
-  TTSAPI->>Speech: 音声合成
-  Speech-->>TTSAPI: audio/mpeg
-  TTSAPI-->>FE: audio/mpeg
-  FE->>Audio: decodeAudioData、createBufferSource().start()
+  alt 取っておいた音声の文字と ttsText が同じ
+    FE->>FE: 取っておいた AudioBuffer を使う（/api/tts と decodeAudioData は呼ばない）
+  else 違う、または取っておいた音声がない
+    FE->>TTSAPI: text = ttsText
+    TTSAPI->>Speech: 音声合成
+    Speech-->>TTSAPI: audio/mpeg
+    TTSAPI-->>FE: audio/mpeg
+    FE->>Audio: decodeAudioData
+    FE->>FE: { text, buffer } を取っておく
+  end
+  FE->>Audio: createBufferSource().start()
   Audio-->>User: 音声再生
 ```
 
@@ -116,7 +122,7 @@ Frontend の音声処理は、画面の `frontend/src/pages/InterpreterPage.tsx`
 | `stopping` | 利用者が止めて、録音の最後のデータ（`MediaRecorder` の `onstop`）を待っている | 受け付けない |
 | `processing` | 録音終了後に `/api/interpret` で確定翻訳を実行している状態、または原文編集後に `/api/translate` で再翻訳している状態。翻訳中メッセージを表示します | 受け付けない |
 | `ready` | 翻訳文、バックトランスレーション、`ttsText` が取得済みの状態。読み上げを押せるのは、この状態のときだけです | 録音を始める |
-| `speaking` | `/api/tts` の結果を `AudioContext` で再生している状態。再生終了、再生の失敗、見張りのタイマーで `ready` に戻ります。原文の編集はできます（編集すると読み上げを止めます） | 受け付けない |
+| `speaking` | `/api/tts` の結果（同じ文字の2回目からは取っておいた音声）を `AudioContext` で再生している状態。再生終了、再生の失敗、見張りのタイマーで `ready` に戻ります。原文の編集はできます（編集すると読み上げを止めます） | 受け付けない |
 | `error` | 失敗の後の片付けの途中（短い間）。片付けて `idle` に戻ります | 受け付けない |
 
 主な状態遷移は以下です。
@@ -379,7 +385,7 @@ URL の `exp` の実験のスイッチのときに使う `LegacyInterpreterPage`
 
 TTS は、確定翻訳（`/api/interpret`）、または文字の入力と原文の編集を確定した後の翻訳（`/api/translate`）が成功した後に、翻訳カードの読み上げボタンから実行されます。
 
-Frontend は `handleSpeak` で、`status` が `ready` であることを確かめてから `speaking` にし、Backend の `/api/tts` に以下を送信します。
+Frontend は `handleSpeak` で、`status` が `ready` であることを確かめてから `speaking` にし、読み上げる文字が取っておいた音声の文字と違えば（取っておいた音声がなければ）、Backend の `/api/tts` に以下を送信します（同じなら送りません。下の「読み上げの音声を取っておく」）。
 
 ```json
 {

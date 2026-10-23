@@ -343,7 +343,7 @@ Response 例:
 
 ### ttsText
 
-`ttsText` は Frontend が読み上げ時に `/api/tts` へ送る文字列です。保護なし経路では `translatedText` と同じです。固有名詞保護が有効な場合は、翻訳結果の raw text を TTS 用に復元した文字列になります。
+`ttsText` は Frontend が読み上げ時に `/api/tts` へ送る文字列です（同じ文字の2回目からは、取っておいた音声を鳴らし、送りません）。保護なし経路では `translatedText` と同じです。固有名詞保護が有効な場合は、翻訳結果の raw text を TTS 用に復元した文字列になります。
 
 ### 固有名詞保護との関係
 
@@ -505,7 +505,7 @@ Frontend の API 呼び出しは `frontend/src/pages/InterpreterPage.tsx` に実
 | `upstream_busy` | `upstream_busy` | 混み合っています。しばらくしてからお試しください |
 | `timeout` | `timeout` | 処理に時間がかかっています。もう一度お試しください |
 
-TTS 再生は読み上げボタンから実行されます。Frontend は `/api/tts` の `audio/mpeg` response を `arrayBuffer()` で受け取り、`AudioContext` の `decodeAudioData` と `AudioBufferSourceNode` で再生します（`<audio>` は使いません。[speech-flow.md](speech-flow.md) の「9. TTS」）。
+TTS 再生は読み上げボタンから実行されます。Frontend は `/api/tts` の `audio/mpeg` response を `arrayBuffer()` で受け取り、`AudioContext` の `decodeAudioData` と `AudioBufferSourceNode` で再生します（`<audio>` は使いません。[speech-flow.md](speech-flow.md) の「9. TTS」）。読み上げる文字が取っておいた音声の文字と同じときは、`/api/tts` と `decodeAudioData` を呼ばずに、取っておいた `AudioBuffer` を再生します。
 
 `/api/tts` の 500 文字の上限は、読み上げる翻訳の結果（`ttsText`）に掛かります。500 文字を超える翻訳の結果も、画面には全文を表示しますが、読み上げはできません。Frontend は読み上げボタンが押されたときに `ttsText` の文字数を数え、500 文字を超える場合は `/api/tts` を呼ばずに「この翻訳は長いため、読み上げできません（500文字まで）」（`tts_too_long`）を選んだ2つの言語で表示します。数え方は Backend と同じく、前後の空白を除かずに Unicode のコードポイント単位です（`frontend/src/api.ts` の `isTooLongForTts`。上限の値 `TTS_MAX_CHARS` は Backend の `maxTextRunes` と同じ値にする必要があります）。Backend の上限は費用を守るためのもので、Frontend の確認があっても残します。`/api/tts` が `input_too_large` を返した場合も、同じ文言を表示します。
 
