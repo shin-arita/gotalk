@@ -9,6 +9,26 @@ import { MIN_INTERPRET_AUDIO_BYTES } from '../api'
 import { resetKeptMicForTest } from '../audio/keptMic'
 import { makeTtsOkResponse, setupAudioContext } from '../test/audioMocks'
 import type { FakeAudioContext } from '../test/audioMocks'
+import type { AudioSession } from '../hooks/useAudioSession'
+
+// 画面の状態（idle と ready など、画面の見た目では区別できないもの）を、録音のセッションの診断の出来事（status:…）で確かめる。
+// 録音のセッションは本物を使い、画面で使うものを取っておく（InterpreterPage.recordingOverlay.test.tsx と同じ）
+const captured = vi.hoisted(() => ({ session: null as AudioSession | null }))
+
+vi.mock('../hooks/useKeptAudioSession', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/useKeptAudioSession')>()
+  return {
+    ...actual,
+    useInterpreterAudioSession: (...args: Parameters<typeof actual.useInterpreterAudioSession>) => {
+      const session = actual.useInterpreterAudioSession(...args)
+      captured.session = session
+      return session
+    },
+  }
+})
+
+// 最後に記録された画面の状態
+const lastStatus = () => captured.session!.getDiagnostics().events.map(e => e.type).filter(t => t.startsWith('status:')).at(-1)
 
 // --- Shared fixtures ---
 
@@ -462,7 +482,7 @@ describe('InterpreterPage translate API 500', () => {
     expect(screen.getByRole('alert').textContent).toBe(jaEn('generic_error'))
   })
 
-  it('retains previous translatedText and keeps speak button accessible after 500', async () => {
+  it('clears previous translatedText and the speak button after 500', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     fetchMock.mockResolvedValueOnce(
       makeOkResponse(makeInterpretResponse({ translatedText: 'こんにちは' })),
@@ -482,10 +502,13 @@ describe('InterpreterPage translate API 500', () => {
     })
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    expect(screen.getByRole('alert').textContent).toBe(jaEn('generic_error'))
+    // 訳し直しを始めるときに前の翻訳を消すので、失敗しても前の翻訳と読み上げのボタンは出ず、idle になる
     expect(
-      screen.getByText('こんにちは', { selector: '.translation-card__text' }),
-    ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
+      screen.queryByText('こんにちは', { selector: '.translation-card__text' }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '発声する' })).not.toBeInTheDocument()
+    expect(lastStatus()).toBe('status:idle')
   })
 })
 

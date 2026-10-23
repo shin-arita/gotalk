@@ -142,7 +142,7 @@ npm test
 - 履歴は展開ボタンなしで全件を表示すること
 - `/api/interpret` が 500 を返した場合に、汎用のエラーの文言を表示すること
 - 再翻訳で `/api/translate` が 422 `language_mismatch` を返した場合のエラー表示
-- 再翻訳で `/api/translate` が 500 を返した場合に汎用のエラーの文言を表示することと、直前の翻訳文と読み上げボタンが残ること
+- 再翻訳で `/api/translate` が 500 を返した場合に汎用のエラーの文言を表示することと、直前の翻訳文と読み上げボタンが消えて `idle` になること（再翻訳を始めるときに前の翻訳を消すため）
 - `/api/tts` に `ttsText` を送ること
 - TTS fetch 中の button disabled、読み上げの `AudioBufferSourceNode` の `onended` 後の復帰、TTS 失敗後の復帰
 - `recording` 中は翻訳カードを隠し、録音終了後に表示すること

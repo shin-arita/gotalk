@@ -12,6 +12,26 @@ import {
   AUDIO_GLOBALS, firePageTransition, makeTtsOkResponse, saveGlobals, setupAudioContext, setupDeferredGetUserMedia, setupMediaRecorder,
   setupSpeechRecognition, setVisibility,
 } from '../test/audioMocks'
+import type { AudioSession } from '../hooks/useAudioSession'
+
+// 画面の状態（idle と ready など、画面の見た目では区別できないもの）を、録音のセッションの診断の出来事（status:…）で確かめる。
+// 録音のセッションは本物を使い、画面で使うものを取っておく（InterpreterPage.recordingOverlay.test.tsx と同じ）
+const captured = vi.hoisted(() => ({ session: null as AudioSession | null }))
+
+vi.mock('../hooks/useKeptAudioSession', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/useKeptAudioSession')>()
+  return {
+    ...actual,
+    useInterpreterAudioSession: (...args: Parameters<typeof actual.useInterpreterAudioSession>) => {
+      const session = actual.useInterpreterAudioSession(...args)
+      captured.session = session
+      return session
+    },
+  }
+})
+
+// 最後に記録された画面の状態
+const lastStatus = () => captured.session!.getDiagnostics().events.map(e => e.type).filter(t => t.startsWith('status:')).at(-1)
 
 // 通訳の画面で、話さなくても最初から文字を入力して翻訳する（GOTALK-6、docs/ui.md）。
 // 番号は、GOTALK-6 の設計の 5.8 のテストの番号。
@@ -498,5 +518,83 @@ describe('InterpreterPage text input: a late blur after the cancel (PR #37 UU5)'
     expect(textarea()).toBeNull()
     expect(translateCalls()).toHaveLength(1)
     expect(translationText()).toBe('訳:駅はどこですか')
+  })
+})
+
+describe('InterpreterPage text input: the previous translation is not left with a new source (PR #37 UU6)', () => {
+  const speakButton = () => screen.queryByRole('button', { name: '発声する' })
+  // 前の翻訳（Hello）と逆翻訳は、履歴には残るので、翻訳のカードの中だけを見る
+  const translationCardText = () => document.querySelector('.translation-card')?.textContent ?? ''
+
+  it('clears the previous translation as soon as the new source is confirmed', async () => {
+    translateResponse = null
+    renderPage()
+    await reachReadyByRecording()
+    expect(translationText()).toBe('Hello')
+    await startEdit()
+    await type('駅はどこですか')
+    await tap(editShield()!)
+    // 応答が届く前（processing）に、前の翻訳、逆翻訳、読み上げのボタンが消えている
+    expect(sourceText()?.textContent).toBe('駅はどこですか')
+    expect(translationText()).toContain('ただいま翻訳中です')
+    expect(document.querySelector('.back-translation-text')).toBeNull()
+    expect(speakButton()).toBeNull()
+  })
+
+  it('does not pair the new source with the previous translation after blur, pagehide and pageshow', async () => {
+    translateResponse = null
+    renderPage()
+    await reachReadyByRecording()
+    await startEdit()
+    await type('駅はどこですか')
+    const el = textarea()!
+    // 同じ処理の中で、blur（確定して訳し直しを始める）→ pagehide（問い合わせを止めて idle）
+    await act(async () => {
+      el.blur()
+      firePageTransition('pagehide', true)
+    })
+    await act(async () => { firePageTransition('pageshow', true) })
+    expect(translateCalls()).toHaveLength(1)
+    expect(sourceText()?.textContent).toBe('駅はどこですか')
+    expect(translationText()).toBe('')
+    expect(translationCardText()).not.toContain('Hello')
+    expect(translationCardText()).not.toContain('(こんにちは)')
+    expect(speakButton()).toBeNull()
+    // 状態は idle（ready ではない）
+    expect(lastStatus()).toBe('status:idle')
+  })
+
+  it.each([
+    ['a network error', () => Promise.reject(new TypeError('Failed to fetch')) as unknown as Response, 'generic_error'],
+    ['503 upstream_busy', () => ({ ok: false, status: 503, json: () => Promise.resolve({ code: 'upstream_busy' }) }) as unknown as Response, 'upstream_busy'],
+    ['500', () => ({ ok: false, status: 500, json: () => Promise.resolve({}) }) as unknown as Response, 'generic_error'],
+  ] as const)('does not show the previous translation after the retranslation fails with %s', async (_name, response, messageKey) => {
+    translateResponse = response
+    renderPage()
+    await reachReadyByRecording()
+    await startEdit()
+    await type('駅はどこですか')
+    await tap(editShield()!)
+    expect(translateCalls()).toHaveLength(1)
+    expect(screen.getByRole('alert').textContent).toBe(getLocalizedMessage(messageKey, 'ja', 'en'))
+    expect(sourceText()?.textContent).toBe('駅はどこですか')
+    expect(translationText()).toBe('')
+    expect(translationCardText()).not.toContain('Hello')
+    expect(translationCardText()).not.toContain('(こんにちは)')
+    expect(speakButton()).toBeNull()
+    // 状態は idle（ready ではない）
+    expect(lastStatus()).toBe('status:idle')
+  })
+
+  it('shows the new translation, back translation and speak button on success', async () => {
+    renderPage()
+    await reachReadyByRecording()
+    await startEdit()
+    await type('駅はどこですか')
+    await tap(editShield()!)
+    expect(translationText()).toBe('訳:駅はどこですか')
+    expect(screen.getByText('逆:駅はどこですか')).toBeInTheDocument()
+    expect(speakButton()).not.toBeDisabled()
+    expect(translationCardText()).not.toContain('Hello')
   })
 })

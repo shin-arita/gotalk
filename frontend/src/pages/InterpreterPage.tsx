@@ -360,8 +360,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   const callTranslateApi = async (text: string) => {
     // 読み上げの途中に編集した場合は、読み上げを止める
     stopSpeaking()
-    // 失敗したときに、前の翻訳の結果が残っていれば、読み上げを押せる ready に戻す
-    const hadTranslation = !!ttsText
     changeStatus('processing')
     setErrorMessage('')
     const srcLang = recordingLangRef.current ?? selectedLanguages[0]
@@ -393,7 +391,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     } catch (e) {
       if (!isActiveRequest(id)) return
       showMessage(messageKeyForError('/api/translate', e))
-      changeStatus(hadTranslation ? 'ready' : 'idle')
+      changeStatus('idle')
     } finally {
       clearTimeout(timer)
       endRequest(id)
@@ -841,6 +839,10 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     if (!['idle', 'ready', 'speaking'].includes(statusRef.current)) return
     recognizedTextRef.current = trimmed
     setRecognizedText(trimmed)
+    // 前の原文の翻訳を、新しい原文の翻訳のように並べて残さない（失敗や中断のときも）。読み上げのボタンも消える
+    setTranslatedText('')
+    setTtsText('')
+    setBackTranslation('')
     void callTranslateApi(trimmed)
   }
 
