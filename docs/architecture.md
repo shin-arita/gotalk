@@ -6,9 +6,9 @@ GoTalk は、異なる言語を話す 2 人がブラウザ上で会話するた�
 
 現在の GoTalk は、国旗ボタンで開始した発話を `MediaRecorder` で録音し、録音終了時に音声を Backend の `/api/interpret` に送って確定翻訳とバックトランスレーションを取得します（認識テキストがなく、録音のデータがほとんどないときは送りません）。マイクはページ全体で1つ持ち、録音のたびに開き直しません。録音と並行してブラウザの `SpeechRecognition` も動かし、認識テキストが得られた場合はそのテキストを `transcript` として同じリクエストに添えます。Backend は `transcript` があればそれを翻訳し、なければ OpenAI の音声文字起こし API で言語判定と文字起こしを行ってから翻訳します。翻訳文は Frontend に表示され、必要に応じて `/api/tts` で音声合成して `AudioContext` で再生します。
 
-録音中は `SpeechRecognition` の認識テキストを `/api/translate` に送ってリアルタイム翻訳を表示します。原文を編集した後の再翻訳も `/api/translate` で行います。
+録音中は `SpeechRecognition` の認識テキストを表示するだけで、訳はしません（本番の通訳の画面（`InterpreterPage`）では、録音中のリアルタイム翻訳はしません。Legacy の実験の経路（`LegacyInterpreterPage`）では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残ります）。`/api/translate` は、文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳に使います。
 
-Frontend は React / TypeScript / Vite で実装され、言語選択、録音、`SpeechRecognition`、リアルタイム翻訳、翻訳結果表示、バックトランスレーション表示、TTS 再生、会話履歴表示を担当します。Backend は Go の `net/http` で実装され、OpenAI API キーをサーバー側で扱い、文字起こし、翻訳、バックトランスレーション、固有名詞保護、TTS を実行します。
+Frontend は React / TypeScript / Vite で実装され、言語選択、録音、`SpeechRecognition`、文字の入力と原文の編集、翻訳結果表示、バックトランスレーション表示、TTS 再生、会話履歴表示を担当します。Backend は Go の `net/http` で実装され、OpenAI API キーをサーバー側で扱い、文字起こし、翻訳、バックトランスレーション、固有名詞保護、TTS を実行します。
 
 この文書は GoTalk のシステム設計の入口です。翻訳処理、音声処理、固有名詞保護、API 詳細は個別ドキュメントにまとめています。ここでは現在の実装に基づく全体像を整理します。
 
@@ -57,11 +57,10 @@ Frontend はブラウザ上の会話 UI と、Backend API へのリクエスト�
 - 選択した言語ごとの国旗ボタンで録音を開始し、録音中の画面（グレーの画面）のタップ（■ のボタンを含む）で停止する。開始の途中（マイクの準備の間）は × のボタンで取り消せる
 - マイクをページ全体で1つ持ち（最初の録音と、track が `ended` のときだけ `getUserMedia` で取得し、閉じない）、その音声を `MediaRecorder` で録音する
 - 録音と並行して `SpeechRecognition` / `webkitSpeechRecognition` を動かし、認識テキストを表示する
-- 録音中の認識テキストを使って `/api/translate` へリアルタイム翻訳を投げる
 - 録音終了時に音声を `/api/interpret` へ送り、確定翻訳とバックトランスレーションを取得する。タップされた国旗の言語を `myLanguage` と `speaker`、もう一方を `theirLanguage` として送り、認識テキストがあれば `transcript` として添える。認識テキストがなく、録音のデータが 1024 バイト未満のときは送らずに知らせる
 - 原文、翻訳文、バックトランスレーションを表示する
-- 原文の編集後、`/api/translate` で再翻訳する
-- `/api/tts` から返る `audio/mpeg` を `AudioContext` で再生する（マイクを開いたまま `<audio>` で鳴らすと次の録音が壊れるため、`<audio>` は使わない）
+- 文字の入力（原文が空の状態からの入力と、原文の編集）を確定したとき、`/api/translate` で翻訳する
+- `/api/tts` から返る `audio/mpeg` を `AudioContext` で再生する（マイクを開いたまま `<audio>` で鳴らすと次の録音が壊れるため、`<audio>` は使わない）。デコード済みの音声を1組取っておき、同じ文字の2回目からは `/api/tts` を呼ばずに鳴らす
 - 画面内に会話履歴を保持して表示する
 
 Vite の開発サーバーでは `frontend/vite.config.ts` の proxy により、`/api` リクエストを `VITE_BACKEND_URL` または `http://localhost:8080` へ転送します。
@@ -159,7 +158,7 @@ sequenceDiagram
 
 `/api/interpret` は、`transcript` がある場合は `speaker` に一致する言語を翻訳元、もう一方を翻訳先にします。`transcript` がない場合は `whisper-1` の判定言語が `myLanguage`、`theirLanguage` のどちらに一致するかで翻訳方向を決め、どちらにも一致しない場合は `language_mismatch` を返します。
 
-`/api/translate` は、録音中のリアルタイム翻訳と原文編集後の再翻訳で使います。保護経路では入力文字種や名前表現と選択言語から翻訳方向を決め、保護なし経路では OpenAI Responses API に 2 言語候補から翻訳元を判定させます。保護なし経路で候補外または判定不能の場合は `language_mismatch` を返します。`/api/interpret` の保護なし経路は決めた翻訳方向のまま翻訳するため、`/api/interpret` が `language_mismatch` を返すのは Whisper 経路の言語照合で一致しなかった場合だけです。翻訳方向の詳細は [api.md](api.md) を参照してください。
+`/api/translate` は、文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳で使います（本番の通訳の画面では、録音中の入力中の翻訳には使いません）。保護経路では入力文字種や名前表現と選択言語から翻訳方向を決め、保護なし経路では OpenAI Responses API に 2 言語候補から翻訳元を判定させます。保護なし経路で候補外または判定不能の場合は `language_mismatch` を返します。`/api/interpret` の保護なし経路は決めた翻訳方向のまま翻訳するため、`/api/interpret` が `language_mismatch` を返すのは Whisper 経路の言語照合で一致しなかった場合だけです。翻訳方向の詳細は [api.md](api.md) を参照してください。
 
 ## 8. 音声処理フロー
 
@@ -176,9 +175,7 @@ sequenceDiagram
   FE->>FE: use the kept microphone (getUserMedia only for the first recording or after the track ended)
   FE->>MR: start recording
   FE->>Browser: start SpeechRecognition with selected speechCode
-  Browser-->>FE: interim transcript
-  FE->>BE: POST /api/translate text + languages (real-time translation)
-  BE-->>FE: live translated text
+  Browser-->>FE: interim transcript (display only)
 
   User->>FE: tap the recording overlay (or ■) to stop
   FE->>Browser: stop SpeechRecognition
@@ -188,14 +185,14 @@ sequenceDiagram
   FE->>BE: POST /api/interpret audio + languages + speaker + optional transcript
   BE-->>FE: text + translatedText + backTranslation + ttsText
   User->>FE: tap speak button
-  FE->>BE: POST /api/tts text
+  FE->>BE: POST /api/tts text (only when the text differs from the kept audio)
   BE->>TTS: synthesize speech
   TTS-->>BE: audio/mpeg
   BE-->>FE: audio/mpeg
-  FE->>FE: play audio with AudioContext
+  FE->>FE: play audio with AudioContext (keep the decoded audio for the same text)
 ```
 
-マイクはページ全体で1つ持ちます（`frontend/src/audio/keptMic.ts`）。最初の録音と、track が `ended` になった後の録音のときだけ `getUserMedia({ audio: true })` でマイク入力を取得し、録音の後も中断のときも閉じずに、次の録音で使い回します。録音は `MediaRecorder` で行い、録音ごとに作る `AudioContext` / `AnalyserNode` で音量（RMS）を測ります。通訳の画面は音量を表示には使わず（`onLevel` は何もしません）、診断の `level` にだけ残します。録音中の画面の棒グラフは、音量ではなく音声認識の途中の文字の更新で動きます（[ui.md](ui.md) の「6.1 棒グラフ」）（録音の資源は `frontend/src/hooks/useKeptAudioSession.ts`。URL の `exp` に切り分けの実験のスイッチがあるときだけ、録音のたびにマイクを開いて閉じる前の版の `useAudioSession.ts` を使います）。録音と並行してブラウザの `SpeechRecognition` を動かし、認識テキストを表示とリアルタイム翻訳に使います。録音終了時は、録音音声を `/api/interpret` に送ります。認識テキストがある場合は `transcript` として添え、ない場合は Backend が音声から文字起こしします。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは送りません（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。読み上げは `AudioContext` で鳴らします（[speech-flow.md](speech-flow.md) の「9. TTS」）。
+マイクはページ全体で1つ持ちます（`frontend/src/audio/keptMic.ts`）。最初の録音と、track が `ended` になった後の録音のときだけ `getUserMedia({ audio: true })` でマイク入力を取得し、録音の後も中断のときも閉じずに、次の録音で使い回します。録音は `MediaRecorder` で行い、録音ごとに作る `AudioContext` / `AnalyserNode` で音量（RMS）を測ります。通訳の画面は音量を表示には使わず（`onLevel` は何もしません）、診断の `level` にだけ残します。録音中の画面の棒グラフは、音量ではなく音声認識の途中の文字の更新で動きます（[ui.md](ui.md) の「6.1 棒グラフ」）（録音の資源は `frontend/src/hooks/useKeptAudioSession.ts`。URL の `exp` に切り分けの実験のスイッチがあるときだけ、録音のたびにマイクを開いて閉じる前の版の `useAudioSession.ts` を使います）。録音と並行してブラウザの `SpeechRecognition` を動かし、認識テキストを表示と、`/api/interpret` に添える `transcript` に使います。録音終了時は、録音音声を `/api/interpret` に送ります。認識テキストがある場合は `transcript` として添え、ない場合は Backend が音声から文字起こしします。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは送りません（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。読み上げは `AudioContext` で鳴らします（[speech-flow.md](speech-flow.md) の「9. TTS」）。
 
 ## 9. 固有名詞保護の概要
 

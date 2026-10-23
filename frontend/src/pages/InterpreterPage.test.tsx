@@ -858,7 +858,6 @@ describe('InterpreterPage fetch signal and timeout', () => {
     const recognition = setupSpeechRecognitionMock()
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const fetchMock = vi.spyOn(globalThis, 'fetch')
-    fetchMock.mockResolvedValueOnce(makeOkResponse({ translatedText: 'live', sourceLanguage: 'ja' }))
     fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse({ text: 'こんにちは' })))
     fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse({ translatedText: 'Hi' })))
     fetchMock.mockResolvedValueOnce(makeAudioOkResponse())
@@ -884,20 +883,18 @@ describe('InterpreterPage fetch signal and timeout', () => {
     })
 
     const urls = fetchMock.mock.calls.map(([url]) => url)
-    expect(urls).toEqual(['/api/translate', '/api/interpret', '/api/translate', '/api/tts'])
+    expect(urls).toEqual(['/api/interpret', '/api/translate', '/api/tts'])
     for (const [, options] of fetchMock.mock.calls) {
       expect((options as RequestInit).signal).toBeInstanceOf(AbortSignal)
     }
 
     // Backend は JSON の未知のフィールドを拒否する（DisallowUnknownFields）ので、送るフィールドを固定する
     const jsonBody = (i: number) => JSON.parse((fetchMock.mock.calls[i][1] as RequestInit).body as string)
-    for (const i of [0, 2]) {
-      const body = jsonBody(i)
-      expect(Object.keys(body).sort()).toEqual(['languages', 'text'])
-      for (const lang of body.languages) expect(Object.keys(lang).sort()).toEqual(['id', 'label'])
-    }
-    expect(Object.keys(jsonBody(3))).toEqual(['text'])
-    const form = (fetchMock.mock.calls[1][1] as RequestInit).body as FormData
+    const translateBody = jsonBody(1)
+    expect(Object.keys(translateBody).sort()).toEqual(['languages', 'text'])
+    for (const lang of translateBody.languages) expect(Object.keys(lang).sort()).toEqual(['id', 'label'])
+    expect(Object.keys(jsonBody(2))).toEqual(['text'])
+    const form = (fetchMock.mock.calls[0][1] as RequestInit).body as FormData
     expect([...form.keys()].sort()).toEqual(['audio', 'myLanguage', 'speaker', 'theirLanguage', 'transcript'])
     expect(Object.keys(JSON.parse(form.get('myLanguage') as string)).sort()).toEqual(['id', 'label'])
   })
@@ -961,61 +958,6 @@ describe('InterpreterPage fetch signal and timeout', () => {
     await act(async () => { vi.advanceTimersByTime(1_000) })
     expect(signal!.aborted).toBe(true)
     await waitFor(() => expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled())
-  })
-
-  it('aborts the debounced live translation when recording stops', async () => {
-    const recognition = setupSpeechRecognitionMock()
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    let liveSignal: AbortSignal | undefined
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-    fetchMock.mockImplementationOnce((_url, options) => {
-      liveSignal = options?.signal ?? undefined
-      return pendingUntilAborted(options)
-    })
-    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
-
-    mockRecorder = undefined
-    setupMediaRecorderMock()
-    setupGetUserMediaMock()
-    renderPage([ja, en])
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
-    })
-    act(() => { recognition.onresult?.({ results: [[{ transcript: 'こんにちは' }]] }) })
-    await act(async () => { vi.advanceTimersByTime(800) })
-    expect(fetchMock).toHaveBeenCalledWith('/api/translate', expect.objectContaining({ signal: expect.any(AbortSignal) }))
-    expect(liveSignal!.aborted).toBe(false)
-
-    act(() => { mockRecorder!.ondataavailable?.({ data: new Blob([AUDIO_DATA]) }) })
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Japaneseの録音を停止' }))
-    })
-    expect(liveSignal!.aborted).toBe(true)
-  })
-
-  it('aborts the debounced live translation when the text changes, and sends only the latest', async () => {
-    const recognition = setupSpeechRecognitionMock()
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const signals: AbortSignal[] = []
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((_url, options) => {
-      signals.push(options!.signal!)
-      return pendingUntilAborted(options)
-    })
-
-    mockRecorder = undefined
-    setupMediaRecorderMock()
-    setupGetUserMediaMock()
-    renderPage([ja, en])
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Japaneseで話す' }))
-    })
-    act(() => { recognition.onresult?.({ results: [[{ transcript: 'こん' }]] }) })
-    await act(async () => { vi.advanceTimersByTime(800) })
-    act(() => { recognition.onresult?.({ results: [[{ transcript: 'こんにちは' }]] }) })
-    expect(signals[0].aborted).toBe(true)
-    await act(async () => { vi.advanceTimersByTime(800) })
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(signals[1].aborted).toBe(false)
   })
 })
 

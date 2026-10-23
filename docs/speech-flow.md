@@ -8,13 +8,13 @@ GoTalk の音声処理は、利用者が国旗ボタンから開始した発話�
 
 - `getUserMedia` と `MediaRecorder` による録音（マイクはページ全体で1つ持ち、閉じずに使い回します）
 - `SpeechRecognition` / `webkitSpeechRecognition` による録音中の認識テキスト表示
-- 録音中のリアルタイム翻訳（`/api/translate`）
 - 録音終了後の確定翻訳（`/api/interpret`）
+- 文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳（`/api/translate`）
 - Backend の `/api/tts`
 - OpenAI Audio Speech API
 - Frontend の `AudioContext` での再生（`<audio>` は使いません）
 
-`SpeechRecognition` は録音と並行して動き、認識テキストを表示とリアルタイム翻訳に使います。録音終了時は、録音音声を `/api/interpret` に送ります。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは、マイクの音が来ていない（または押してすぐ止めた）ものとして送りません（[8.1](#81-マイクの音が来ないときの検出)）。認識テキストが得られている場合は `transcript` として同じリクエストに添え、Backend はそのテキストを翻訳します。認識テキストがない場合は、Backend が OpenAI の音声文字起こし API で言語判定と文字起こしを行います。
+`SpeechRecognition` は録音と並行して動き、認識テキストを表示と、`/api/interpret` に添える `transcript` に使います。本番の通訳の画面（`InterpreterPage`）では、録音中に `/api/translate` で話している途中の文字を訳すこと（リアルタイム翻訳）はしません（[7. リアルタイム翻訳](#7-リアルタイム翻訳)）。録音終了時は、録音音声を `/api/interpret` に送ります。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは、マイクの音が来ていない（または押してすぐ止めた）ものとして送りません（[8.1](#81-マイクの音が来ないときの検出)）。認識テキストが得られている場合は `transcript` として同じリクエストに添え、Backend はそのテキストを翻訳します。認識テキストがない場合は、Backend が OpenAI の音声文字起こし API で言語判定と文字起こしを行います。
 
 ## 2. 全体フロー
 
@@ -24,7 +24,6 @@ sequenceDiagram
   participant FE as Frontend
   participant MR as MediaRecorder
   participant SR as SpeechRecognition
-  participant TR as /api/translate
   participant IN as /api/interpret
   participant TTSAPI as /api/tts
   participant Speech as OpenAI Audio Speech API
@@ -35,9 +34,7 @@ sequenceDiagram
   FE->>MR: start
   FE->>FE: AudioContext / AnalyserNode
   FE->>SR: speechCode を指定して start
-  SR-->>FE: 認識テキスト
-  FE->>TR: リアルタイム翻訳 text + languages
-  TR-->>FE: live translated text
+  SR-->>FE: 認識テキスト（表示）
   User->>FE: 録音中の画面（グレーの画面）のどこか、または ■ のボタンをタップして録音終了
   FE->>SR: stop
   FE->>MR: stop
@@ -62,7 +59,7 @@ Frontend の音声処理は、画面の `frontend/src/pages/InterpreterPage.tsx`
 
 | 担当 | 持つもの | 役割 |
 | --- | --- | --- |
-| `InterpreterPage` | 画面全体の状態（`InterpreterStatus`。[5. 音声入力状態](#5-音声入力状態)）、翻訳の問い合わせの番号、読み上げ用の `AudioContext` と今鳴らしている音 | 国旗のタップ、状態の遷移、Backend への問い合わせ、読み上げ、中断の片付けの呼び出し（`visibilitychange`、`pagehide`、`pageshow`、戻る、外れる）、マイクの音が来ないときの検出 |
+| `InterpreterPage` | 画面全体の状態（`InterpreterStatus`。[5. 音声入力状態](#5-音声入力状態)）、翻訳の問い合わせの番号、読み上げ用の `AudioContext` と今鳴らしている音、取っておいた読み上げの音声 | 国旗のタップ、状態の遷移、Backend への問い合わせ、読み上げ、中断の片付けの呼び出し（`visibilitychange`、`pagehide`、`pageshow`、戻る、外れる）、マイクの音が来ないときの検出 |
 | `keptMic` | ページ全体で1つのマイク（stream）と、`getUserMedia` を待っている Promise | `getUserMedia` と、`ended` の track があるときの取り直し。track の `ended` の見張り（[6.1](#61-マイクの持ち方と用語)） |
 | `useKeptAudioSession` | 録音の資源（`MediaRecorder`、音声認識、`AudioContext` と node、`requestAnimationFrame` の番号）と、録音のセッションの番号。状態は持ちません。stream は `keptMic` が持つものを使い、閉じません | `MediaRecorder`、音声認識、音量の取得。「録音が成立した」「録音の最後のデータがそろった」「失敗した」を callback で画面に知らせます |
 
@@ -70,7 +67,7 @@ Frontend の音声処理は、画面の `frontend/src/pages/InterpreterPage.tsx`
 
 画面から hook を呼ぶのは、`start(言語)`、`stop()`（利用者の停止）、`abort(理由)`（中断と、`starting` の間の取り消し）だけです。
 
-国旗ボタンは、2 つの選択言語それぞれに表示されます。`handleFlagTap` は、`idle` または `ready` のときに表示中の原文、リアルタイム翻訳、翻訳文、`ttsText`、バックトランスレーション、エラーメッセージを空にし、状態を `starting` にしてから、タップされた国旗の言語で `start` を呼びます。`starting` と `recording` の間は、画面全体を録音中の画面（オーバーレイ。[ui.md](ui.md) の「録音中の画面」）が覆います。`recording` の間は、録音中の画面のどこをタップしても `stopRecording` を実行します（今までの、同じ国旗の2回目のタップと同じ処理です。`stopRecording` は `recording` のときだけ止めるので、2回目以降のタップは何もしません）。`starting` の間は、録音中の画面の下のボタン（×）だけが取り消し（`handleCancelStarting`）を実行します。`recording` 中に同じ国旗がタップされた場合に `stopRecording` を実行する分岐も、守りとして残しています（録音中の画面が覆っているので、ふつうは届きません）。`recording` 中は反対側の国旗を、`starting`、`stopping`、`processing`、`speaking`、`error` の間は両方の国旗を操作できません。タップの判定には、React の状態ではなく `statusRef` の最新の値を使います。
+国旗ボタンは、2 つの選択言語それぞれに表示されます。`handleFlagTap` は、`idle` または `ready` のときに表示中の原文、翻訳文、`ttsText`、バックトランスレーション、エラーメッセージを空にし、状態を `starting` にしてから、タップされた国旗の言語で `start` を呼びます。`starting` と `recording` の間は、画面全体を録音中の画面（オーバーレイ。[ui.md](ui.md) の「録音中の画面」）が覆います。`recording` の間は、録音中の画面のどこをタップしても `stopRecording` を実行します（今までの、同じ国旗の2回目のタップと同じ処理です。`stopRecording` は `recording` のときだけ止めるので、2回目以降のタップは何もしません）。`starting` の間は、録音中の画面の下のボタン（×）だけが取り消し（`handleCancelStarting`）を実行します。`recording` 中に同じ国旗がタップされた場合に `stopRecording` を実行する分岐も、守りとして残しています（録音中の画面が覆っているので、ふつうは届きません）。`recording` 中は反対側の国旗を、`starting`、`stopping`、`processing`、`speaking`、`error` の間は両方の国旗を操作できません。タップの判定には、React の状態ではなく `statusRef` の最新の値を使います。
 
 `start` は、`keptMic` が持っているマイクが使えれば（track が1本以上あり、どれも `ended` でなければ）、`getUserMedia` を呼ばずに、`await` を挟まずにその stream で録音を始めます（利用者の操作の中で同期的に録音を始めます。実機で確かめた実験の `legacykeep` と同じです）。使えなければ `keptMic` で `navigator.mediaDevices.getUserMedia({ audio: true })` を呼んでマイク入力を取得します。stream に audio track が1本以上あり、すべての track の `readyState` が `live` であることを確かめてから、`getSupportedMimeType` で選んだ MIME type で `MediaRecorder` を作成して `start()` します。`MediaRecorder.isTypeSupported` で `audio/webm;codecs=opus`、`audio/webm`、`audio/mp4`、`audio/ogg;codecs=opus` の順に確認し、最初に対応しているものを使います。どれにも対応していない場合は MIME type を指定せずに `MediaRecorder` を作成します。ここまで成功したときが録音の成立（マイク ON）で、hook は `onRecordingStarted` で画面に知らせ、画面は状態を `recording` にします。
 
@@ -79,11 +76,11 @@ Frontend の音声処理は、画面の `frontend/src/pages/InterpreterPage.tsx`
 - 音量の取得：`AudioContext.createMediaStreamSource(stream)` で入力元を作り、`AnalyserNode` に接続します。`requestAnimationFrame` のループで `getByteTimeDomainData` を読み、振幅を `onLevel` で画面に渡します。画面は、声の大きさを表示に使いません（`onLevel` には何もしない関数を渡します。録音中の画面の棒グラフは、音声認識の途中の文字で動きます。[ui.md](ui.md) の「録音中の画面」）。測った値は診断に残ります。`AudioContext` の作成に失敗した場合は、診断の値が出ないだけです
 - 音声認識：`SpeechRecognition` の constructor が取得できる場合は、タップされた国旗に対応する `lang.speechCode` を `recognition.lang` に設定して開始します。constructor が取得できない場合や、作成や `recognition.start()` が失敗した場合も、録音はそのまま継続し、Backend の文字起こしだけで結果を出します
 
-音声入力中は、`recognizedText` の変更に対して 800ms のデバウンスで `/api/translate` を呼び出します。このリアルタイム翻訳は `text` と選択済み `languages` を送信します。レスポンスの `translatedText` があり、`sourceLanguage` が `unknown` でない場合に `liveTranslatedText` を更新します。
+音声入力中は、`recognizedText` を録音中の画面に出すだけで、`/api/translate` は呼びません（[7. リアルタイム翻訳](#7-リアルタイム翻訳)）。
 
 録音終了時の流れは [8. 録音終了後](#8-録音終了後) を、中断のときの片付けは [6. 録音のライフサイクル](#6-録音のライフサイクル) を参照してください。
 
-音声再生は `handleSpeak` が担当します。`ready` のときだけ押せます。`/api/tts` に `{ text: ttsText }` を送信し、返却された `audio/mpeg` を `AudioContext` で鳴らします（`<audio>` は使いません。[9. TTS](#9-tts)）。
+音声再生は `handleSpeak` が担当します。`ready` のときだけ押せます。`/api/tts` に `{ text: ttsText }` を送信し、返却された `audio/mpeg` を `AudioContext` で鳴らします（`<audio>` は使いません。[9. TTS](#9-tts)）。同じ文字の2回目からは、`/api/tts` を呼ばずに、取っておいた音声を鳴らします。
 
 ## 4. 録音と SpeechRecognition
 
@@ -115,7 +112,7 @@ Frontend の音声処理は、画面の `frontend/src/pages/InterpreterPage.tsx`
 | --- | --- | --- |
 | `idle` | 何もしていない（最初、またはエラーの後） | 録音を始める |
 | `starting` | 録音を始めている途中（タップから録音の成立まで。持っているマイクを使えないときは `getUserMedia` を待つ）。録音中の画面の × で取り消せます | 受け付けない |
-| `recording` | 録音の成立の後、話している。`SpeechRecognition` が認識テキストを更新し、リアルタイム翻訳が動きます。録音中の画面のタップで止めます | 同じ国旗なら止める（録音中の画面が覆っているので、ふつうは届きません）。もう一方は受け付けない |
+| `recording` | 録音の成立の後、話している。`SpeechRecognition` が認識テキストを更新し、録音中の画面に出します（訳はしません）。録音中の画面のタップで止めます | 同じ国旗なら止める（録音中の画面が覆っているので、ふつうは届きません）。もう一方は受け付けない |
 | `stopping` | 利用者が止めて、録音の最後のデータ（`MediaRecorder` の `onstop`）を待っている | 受け付けない |
 | `processing` | 録音終了後に `/api/interpret` で確定翻訳を実行している状態、または原文編集後に `/api/translate` で再翻訳している状態。翻訳中メッセージを表示します | 受け付けない |
 | `ready` | 翻訳文、バックトランスレーション、`ttsText` が取得済みの状態。読み上げを押せるのは、この状態のときだけです | 録音を始める |
@@ -198,7 +195,7 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 
 ### 6.3 翻訳の問い合わせの番号
 
-翻訳の問い合わせ（`/api/interpret` と、編集した文の `/api/translate`）には、録音のセッションの番号とは別に、問い合わせ専用の番号を振ります。問い合わせを始めるたびに番号を増やし、今有効な問い合わせの番号を1つだけ持ちます。`pagehide`、戻る、外れるで止めたときは、`AbortController` で `fetch` を止め、今有効な番号を「なし」にします。結果や失敗が戻ってきたら、自分の番号が今有効な番号と同じときだけ画面に反映します。話している途中の文字を先に訳す問い合わせ（リアルタイム翻訳）は、別の `AbortController` で扱い、この番号の対象にはしません。
+翻訳の問い合わせ（`/api/interpret` と、編集した文の `/api/translate`）には、録音のセッションの番号とは別に、問い合わせ専用の番号を振ります。問い合わせを始めるたびに番号を増やし、今有効な問い合わせの番号を1つだけ持ちます。`pagehide`、戻る、外れるで止めたときは、`AbortController` で `fetch` を止め、今有効な番号を「なし」にします。結果や失敗が戻ってきたら、自分の番号が今有効な番号と同じときだけ画面に反映します。
 
 読み上げ（`/api/tts` と `AudioContext` での再生）にも、同じ考え方の番号を振ります。読み上げを止めたときは、番号を「なし」にし、`/api/tts` の `fetch` を止め、見張りのタイマーを止め、今鳴らしている `AudioBufferSourceNode` の `onended` を外して `stop()` と `disconnect()` を呼びます。後から戻った音声は再生せず、後から来た `resume()` の結果も使いません。
 
@@ -325,25 +322,11 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 
 ## 7. リアルタイム翻訳
 
-リアルタイム翻訳は `recording` 中だけ動作します。
+本番の通訳の画面（`InterpreterPage`）では、録音中のリアルタイム翻訳（話している途中の文字を `/api/translate` で訳して出すこと）は行いません。録音中は、話した文字（`recognizedText`）だけを録音中の画面に出し（[ui.md](ui.md) の「録音中の画面」）、翻訳は録音を止めた後の確定翻訳（`/api/interpret`）だけで行います。`/api/translate` は、文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳に使います（[ui.md](ui.md) の「原文の入力と編集」）。
 
-`recognizedText` は `SpeechRecognition.onresult` から更新される表示用の認識テキストです。`recognizedTextRef` は、録音終了時に最新の認識テキストを同期的に参照するために使われます。
+`recognizedText` は `SpeechRecognition.onresult` から更新される表示用の認識テキストです。`recognizedTextRef` は、録音終了時に最新の認識テキストを同期的に参照するために使われます（`/api/interpret` に添える `transcript`）。
 
-`useEffect` は、`status !== 'recording'` または `recognizedText` が空の場合は何もしません。条件を満たす場合、800ms の `setTimeout` で `/api/translate` を呼び出します。cleanup では `clearTimeout` と `AbortController.abort()` を実行するため、`recognizedText` が短時間で更新されると前のリクエスト準備は取り消されます。送信中の `fetch` も、`recognizedText` が変わったときや録音を止めて `status` が変わったときに abort されます。`fetch` には 30 秒のタイムアウトもあり、タイムアウトになったら abort します。
-
-送信する JSON は以下です。
-
-```json
-{
-  "text": "recognizedText",
-  "languages": [
-    { "id": "first selected language id", "label": "first selected language label" },
-    { "id": "second selected language id", "label": "second selected language label" }
-  ]
-}
-```
-
-レスポンスが成功し、`data.translatedText` が存在し、`data.sourceLanguage !== 'unknown'` の場合だけ `liveTranslatedText` を更新します。リアルタイム翻訳の結果は、録音中の画面の文字の領域（話した文字の下）に表示されます（[ui.md](ui.md) の「録音中の画面」）。リアルタイム翻訳中の `AbortError`、ネットワークエラー、HTTP エラーは UI エラーとして表示せず無視します。
+URL の `exp` の実験のスイッチのときに使う `LegacyInterpreterPage` の実験の経路では、録音中のリアルタイム翻訳（`recording` 中に `recognizedText` の変更に対して 800ms のデバウンスで `/api/translate` を呼び、結果を `liveTranslatedText` として `live-translation-card` に出す）が GOTALK-3 まで今のまま残ります。
 
 ## 8. 録音終了後
 
@@ -394,7 +377,7 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 
 ## 9. TTS
 
-TTS は、確定翻訳（`/api/interpret`）または原文編集後の再翻訳（`/api/translate`）が成功した後に、翻訳カードの読み上げボタンから実行されます。
+TTS は、確定翻訳（`/api/interpret`）、または文字の入力と原文の編集を確定した後の翻訳（`/api/translate`）が成功した後に、翻訳カードの読み上げボタンから実行されます。
 
 Frontend は `handleSpeak` で、`status` が `ready` であることを確かめてから `speaking` にし、Backend の `/api/tts` に以下を送信します。
 
@@ -414,10 +397,17 @@ Frontend は、読み上げを `AudioContext` で鳴らします。マイクを�
 
 1. 読み上げ用の `AudioContext` を、画面で1つ持ちます（`ttsContextRef`）。最初の読み上げのタップのときに作り、画面が外れるまで使い回します。作れないとき（`new AudioContext()` の例外。`AudioContext` がない、作れる数の上限など）は、読み上げの失敗として、ログ（`logApiError` と診断の出来事 `tts_context_create_failed:<例外の name>`）を残し、文言は出さず、`ready` のまま戻ります。鳴らせないので `/api/tts` は呼ばず、`speaking` にもしません。`ttsContextRef` は空のままにし、次の読み上げのタップでもう一度作るのを試します。戻る前に、録音のセッションが残っていれば、`unexpected_active_audio_session_before_tts` を残して片付けます（[6.8](#68-冪等な片付け) の守りと同じ処理）
 2. タップの処理の中（`await` の前）で `resume()` を呼び、Promise を持っておきます（ここでは待ちません。iPhone では、利用者の操作の中でないと鳴らせないためです）。`resume()` が同期の例外を出したときは、拒否された Promise と同じに扱います
-3. `/api/tts` の結果を `arrayBuffer()` で受け取り、`decodeAudioData` で `AudioBuffer` にします
+3. `/api/tts` の結果を `arrayBuffer()` で受け取り、`decodeAudioData` で `AudioBuffer` にします。読み上げる文字が取っておいた音声の文字と同じときは、`/api/tts` と `decodeAudioData` を呼ばずに、取っておいた `AudioBuffer` を使います（下の「読み上げの音声を取っておく」）
 4. 再生を始める直前に `resume()` の結果を確かめます。拒否されたとき、または解決しても `state` が `running` でないときは、再生を始めず、読み上げの失敗として扱います（文言は出さず、診断のログに、拒否されたとき（同期の例外を含む）は `tts_resume_rejected:<例外の name>` を、解決したが `running` でないときは `tts_resume_not_running:<state>` を残し、`ready` に戻します）
 5. `createBufferSource()` に `AudioBuffer` を入れて `destination` につなぎ、`start()` します。今鳴らしている `AudioBufferSourceNode` を `ttsSourceRef` に持ちます
 6. `onended` で `ready` に戻します。再生を始めた後に、見張りのタイマー（`AudioBuffer.duration` × 1000 ＋ 3000 ミリ秒）を始め、それまでに `onended` が来なければ、診断のログに `tts_ended_timeout` を残して `ready` に戻します（iPhone の割り込みなどで再生が止まり、`onended` が来ないまま `speaking` に残らないため）
+
+読み上げの音声を取っておく：デコード済みの `AudioBuffer` と、その元の文字（読み上げを始めるときの `ttsText`）の組を1つだけ持ちます（`ttsCacheRef`）。読み上げる文字が取っておいた組の文字と同じなら、`/api/tts`、`arrayBuffer()`、`decodeAudioData()` を飛ばして、その `AudioBuffer` を鳴らします。違えば今までどおり `/api/tts` を呼び、`decodeAudioData()` の後の読み上げの番号の確認を通ったら、その組を取っておきます（前の組は捨てます）。
+
+- 取っておいた音声を使うときも、`resume()` の確かめ、`speaking`、`onended`、見張りのタイマー、各 `await` の後の番号の確認は同じです。鳴らすたびに新しい `AudioBufferSourceNode` を作ります。`resume()` の呼び出しから鳴らすまでの間の `await` は、`resume()` の結果を待つことだけになります
+- 取っておかないとき：`/api/tts` の失敗、時間切れ、`decodeAudioData()` の失敗、`decodeAudioData()` の後の番号の確認より前に読み上げを止めたとき（番号が変わったとき）。次のタップで取り直します
+- 取っておいた後に、`resume()` が拒否された、`running` でなかった、`start()` に失敗した、読み上げを止めた（`hidden`、`pagehide`、原文の編集の確定など）ときも、取っておいた音声は捨てず、次の同じ文字の読み上げで使います
+- 読み上げる文字が変われば、文字の比較で使われなくなり、新しい翻訳の読み上げで上書きします。訳し直しで同じ文字の翻訳が返ったときは、取っておいた音声を使います。国旗のタップや原文の編集の確定で `ttsText` を空にするとき、`stopSpeaking()` のときは捨てません。画面が外れるとき（`AudioContext` を `close()` するところ）に捨てます
 
 `await` の後ごとに、今有効な読み上げの番号かを確かめ、違えば何もしません（古い読み上げの結果や `resume()` の拒否が、新しい読み上げの状態を変えません）。読み上げを止める処理（`stopSpeaking()`）は冪等で、番号を「なし」にし、`/api/tts` の問い合わせと見張りのタイマーを止め、今鳴らしている音の `onended` を外して `stop()` と `disconnect()` を呼びます（例外は捨てます）。`AudioContext` は閉じません。
 
@@ -429,11 +419,12 @@ Frontend は、読み上げを `AudioContext` で鳴らします。マイクを�
 | `tts_response:status=<HTTP の状態>` | `fetch` が返った直後（今有効な読み上げの番号の確認の前） |
 | `tts_downloaded:bytes=<大きさ>` | `arrayBuffer()` の後 |
 | `tts_decoded:ms=<音声の長さ（ms、整数）>` | `decodeAudioData()` の後 |
+| `tts_cache_hit:ms=<音声の長さ（ms、整数）>` | 取っておいた音声を使うとき（`tts_response`、`tts_downloaded`、`tts_decoded` の代わり） |
 | `tts_started` | `AudioBufferSourceNode` の `start()` の直後 |
 
 `/api/tts` が失敗したとき（503 など）は、`tts_tap` と `tts_response:status=<HTTP の状態>` までが残ります。Backend は、`/api/tts` の成功のときに、`tts: runes=<入力の文字数> bytes=<音声の大きさ> openai_ms=<OpenAI への HTTP の呼び出しから音声の本体を読み終わるまでの時間>` をログに出します（読み上げの本文は出しません。失敗のときは今までどおり `TTS error` だけです）。
 
-`/api/tts` の呼び出し、`decodeAudioData`、`start()` に失敗した場合は、ログだけ残して `ready` に戻します（`ApiError` で文言があるときだけ文言を出します）。`speaking` の間に画面が隠れた場合やページを離れた場合は、読み上げを止めて `ready` に戻します（[6.6 中断のときの状態](#66-中断のときの状態)）。画面が外れるときは、読み上げを止めた後に、読み上げ用の `AudioContext` を `close()` します。
+`/api/tts` の呼び出し、`decodeAudioData`、`start()` に失敗した場合は、ログだけ残して `ready` に戻します（`ApiError` で文言があるときだけ文言を出します）。`speaking` の間に画面が隠れた場合やページを離れた場合は、読み上げを止めて `ready` に戻します（[6.6 中断のときの状態](#66-中断のときの状態)）。画面が外れるときは、読み上げを止めた後に、読み上げ用の `AudioContext` を `close()` し、取っておいた読み上げの音声を捨てます。
 
 ## 10. エラー処理
 

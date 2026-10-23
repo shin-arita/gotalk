@@ -603,7 +603,7 @@
   color: #ffffff;
 }
 
-/* 話した文字と入力中の翻訳。長くなったら、この領域だけが縦にスクロールする */
+/* 話した文字。長くなったら、この領域だけが縦にスクロールする */
 .recording-overlay__text {
   flex: 1;
   min-height: 0;
@@ -619,15 +619,6 @@
   font-weight: 600;
   line-height: 1.45;
   color: #ffffff;
-  word-break: break-word;
-}
-
-.recording-overlay__live-translation {
-  margin: 12px 0 0;
-  font-size: 18px;
-  font-weight: 400;
-  line-height: 1.5;
-  color: rgba(255, 255, 255, 0.7);
   word-break: break-word;
 }
 

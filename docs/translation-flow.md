@@ -4,13 +4,14 @@
 
 GoTalk の翻訳処理は、2 つの選択言語の間で会話を成立させるために、利用者の発話を翻訳し、翻訳結果とバックトランスレーションを表示し、必要に応じて翻訳文を音声として再生する処理です。
 
-現在の実装では、翻訳は次の 3 つの経路で実行されます。
+現在の実装では、翻訳は次の 2 つの経路で実行されます。
 
 | 経路 | API | 翻訳対象 |
 | --- | --- | --- |
 | 録音終了後の確定翻訳 | `/api/interpret` | `SpeechRecognition` の認識テキスト。認識テキストがない場合は録音音声の文字起こし結果 |
-| 録音中のリアルタイム翻訳 | `/api/translate` | `SpeechRecognition` の認識テキスト |
-| 原文編集後の再翻訳 | `/api/translate` | 編集後のテキスト |
+| 文字の入力と原文の編集を確定したときの翻訳 | `/api/translate` | 入力したテキスト（原文が空の状態からの入力と、原文の編集） |
+
+本番の通訳の画面（`InterpreterPage`）では、録音中の入力中の翻訳（話している途中の文字を `/api/translate` で訳すこと）はしません。Legacy の実験の経路（`LegacyInterpreterPage`）では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残ります。
 
 確定翻訳では、Frontend は録音音声、タップされた国旗の言語（`myLanguage`、`speaker`）、もう一方の言語（`theirLanguage`）、認識テキストがあれば `transcript` を `/api/interpret` に送信します。Backend は翻訳方向を決定し、必要な場合は固有名詞保護を適用してから OpenAI Responses API で翻訳とバックトランスレーションを実行します。
 
@@ -62,7 +63,7 @@ Frontend の翻訳処理は `frontend/src/pages/InterpreterPage.tsx` に実装�
 
 `startRecording` は、タップされた国旗の言語を `recordingLangRef` に保存し、`MediaRecorder` で録音を開始します。あわせて、その言語の `speechCode` を `recognition.lang` に設定して `SpeechRecognition` を開始します。`interimResults` と `continuous` は有効化されています。`onresult` では認識結果を連結し、`recognizedText` と `recognizedTextRef` を更新し、`hasLiveTranscriptRef` を `true` にします。
 
-録音中は `recognizedText` の変更に対して 800ms のデバウンスで `/api/translate` を呼び出します。このリアルタイム翻訳では、`text` と選択済み `languages` を送信します。成功時は `translatedText` が存在し、かつ `sourceLanguage` が `unknown` でない場合に `liveTranslatedText` を更新します。
+録音中は `recognizedText` を表示するだけで、`/api/translate` は呼びません（[speech-flow.md](speech-flow.md) の「7. リアルタイム翻訳」）。
 
 録音終了時は `stopRecording` が `SpeechRecognition` と `MediaRecorder` を停止します。`MediaRecorder` の `onstop` で録音データを `Blob` にまとめ、`callInterpretApi(blob)` を実行します。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは送りません（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。
 
@@ -102,7 +103,7 @@ Frontend の翻訳処理は `frontend/src/pages/InterpreterPage.tsx` に実装�
 
 ### /api/translate
 
-リアルタイム翻訳と再翻訳は `backend/main.go` の `translateHandler` に実装されています。
+文字の入力と原文の編集を確定したときの翻訳は `backend/main.go` の `translateHandler` に実装されています。
 
 `/api/translate` は `POST` のみ受け付けます。`OPENAI_API_KEY` が未設定の場合は `translation service unavailable` を返します。request body の JSON decode に失敗した場合は `invalid request body`、`text` が空白のみの場合は `text is required`、`languages` が 2 件未満の場合は `two languages are required` を返します。
 
@@ -129,8 +130,7 @@ Frontend の翻訳処理は `frontend/src/pages/InterpreterPage.tsx` に実装�
 | --- | --- | --- |
 | 録音終了後の確定翻訳（`transcript` あり） | `/api/interpret` | `speaker`（タップされた国旗の言語）を翻訳元にする |
 | 録音終了後の確定翻訳（`transcript` なし） | `/api/interpret` | `whisper-1` の判定言語が一致した選択言語を翻訳元にする |
-| 録音中のリアルタイム翻訳 | `/api/translate` | 保護経路では入力文字種と選択言語から、保護なし経路では OpenAI Responses API が判定した翻訳元から決める |
-| 原文編集後の再翻訳 | `/api/translate` | リアルタイム翻訳と同じ |
+| 文字の入力と原文の編集を確定したときの翻訳 | `/api/translate` | 保護経路では入力文字種と選択言語から、保護なし経路では OpenAI Responses API が判定した翻訳元から決める |
 
 ## 6. 固有名詞保護
 

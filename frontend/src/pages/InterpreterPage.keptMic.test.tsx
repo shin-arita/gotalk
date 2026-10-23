@@ -152,7 +152,9 @@ describe('InterpreterPage kept microphone', () => {
     expect(streams[0].tracks[0].stop).not.toHaveBeenCalled()
     expect(recorders.instances).toHaveLength(10)
     expect(interpretCalls()).toHaveLength(10)
-    expect(ttsCalls()).toHaveLength(2)
+    // 3回目と7回目の翻訳は同じ文字なので、7回目の後の読み上げは取っておいた音声を使う（/api/tts は1回、鳴らすのは2回）
+    expect(ttsCalls()).toHaveLength(1)
+    expect(ttsContext().bufferSources).toHaveLength(2)
     expect(AudioCtor).not.toHaveBeenCalled()
   })
 

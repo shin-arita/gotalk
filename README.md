@@ -14,8 +14,7 @@ GoTalk は、異なる言語を話す 2 人がブラウザ上で会話するた�
 - マイク入力の録音と、ブラウザ SpeechRecognition による音声認識
 - 音声認識テキストが得られない場合の、OpenAI 音声文字起こし API（whisper-1、gpt-4o-transcribe）による言語判定と文字起こし
 - OpenAI Responses API による翻訳とバックトランスレーション
-- 録音中のリアルタイム翻訳表示
-- 認識テキストの編集と再翻訳
+- 文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳（録音中の入力中の翻訳はしません）
 - OpenAI Audio Speech API による翻訳文の読み上げ（500 文字まで。500 文字を超える翻訳の結果は、全文を表示しますが読み上げはできません）
 - 画面内の会話履歴表示
 
@@ -50,7 +49,7 @@ flowchart LR
   subgraph App[Application]
     User[User Browser] -->|MediaRecorder / SpeechRecognition| Frontend[React / Vite]
     Frontend -->|POST /api/interpret audio + optional transcript| Backend[Go API]
-    Frontend -->|POST /api/translate text + languages<br/>real-time / re-translation| Backend
+    Frontend -->|POST /api/translate text + languages<br/>typed or edited text| Backend
     Frontend -->|POST /api/tts text| Backend
     Backend -->|language detection / transcription| Transcriptions[OpenAI Audio Transcriptions API]
     Backend -->|translation / back translation| Responses[OpenAI Responses API]

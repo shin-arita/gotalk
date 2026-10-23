@@ -88,6 +88,7 @@ function renderPage(options: { languages?: Language[]; experiment?: ExperimentCo
 }
 
 const session = () => captured.session!
+const fetchedUrls = (): string[] => fetchMock.mock.calls.map((call: unknown[]) => String(call[0]))
 const overlay = () => document.querySelector<HTMLElement>('.recording-overlay')
 const overlayButton = () => document.querySelector<HTMLButtonElement>('.recording-overlay__button')
 const overlayText = () => document.querySelector<HTMLElement>('.recording-overlay__text')
@@ -391,15 +392,17 @@ describe('InterpreterPage recording overlay: click shield (5.7-6)', () => {
 })
 
 describe('InterpreterPage recording overlay: text (5.7-7, 5.7-8)', () => {
-  it('shows the transcript and the live translation in the overlay, not the old recording UI', async () => {
+  it('shows only the transcript in the overlay, without the live translation or the old recording UI', async () => {
     vi.useFakeTimers()
     renderPage()
     await startRecording()
     await sendTranscript('こんにちは')
     expect(document.querySelector('.recording-overlay__source')?.textContent).toBe('こんにちは')
-    expect(document.querySelector('.recording-overlay__live-translation')).toBeNull()
+    // 入力中の翻訳はしない（800ms たっても /api/translate を呼ばず、訳も出さない）
     await advance(800)
-    expect(document.querySelector('.recording-overlay__live-translation')?.textContent).toBe('訳:こんにちは')
+    expect(fetchedUrls().filter(url => url === '/api/translate')).toHaveLength(0)
+    expect(document.querySelector('.recording-overlay__live-translation')).toBeNull()
+    expect(overlayText()!.textContent).toBe('こんにちは')
     // 今までの録音中の表示は出さない
     expect(document.querySelector('.live-translation-card')).toBeNull()
     expect(document.querySelector('.lang-flags-bar__scroll-text')).toBeNull()
@@ -410,7 +413,7 @@ describe('InterpreterPage recording overlay: text (5.7-7, 5.7-8)', () => {
     expect(flag).not.toHaveClass('lang-flags-bar__btn--recording')
   })
 
-  it('scrolls the text area to the end when the transcript or the live translation changes', async () => {
+  it('scrolls the text area to the end when the transcript changes', async () => {
     vi.useFakeTimers()
     renderPage()
     await startRecording()
@@ -425,11 +428,25 @@ describe('InterpreterPage recording overlay: text (5.7-7, 5.7-8)', () => {
     scrollHeight = 900
     await sendTranscript('一行目 二行目')
     expect(el.scrollTop).toBe(900)
-    el.scrollTop = 10
-    scrollHeight = 1200
-    await advance(800)
-    expect(document.querySelector('.recording-overlay__live-translation')?.textContent).toBe('訳:一行目 二行目')
-    expect(el.scrollTop).toBe(1200)
+  })
+
+  it('does not call /api/translate while recording, however often the transcript changes', async () => {
+    vi.useFakeTimers()
+    renderPage()
+    await startRecording()
+    for (const transcript of ['駅', '駅は', '駅はどこ', '駅はどこですか']) {
+      await sendTranscript(transcript)
+      await advance(800)
+    }
+    await advance(10000)
+    expect(fetchedUrls().filter(url => url === '/api/translate')).toHaveLength(0)
+    // 録音を止めて /api/interpret が返るまで呼ばない
+    await tap(overlay()!)
+    await finishRecorder()
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
+    expect(fetchedUrls()).not.toContain('/api/translate')
+    expect(fetchedUrls().filter(url => url === '/api/interpret')).toHaveLength(1)
   })
 })
 
