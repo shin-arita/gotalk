@@ -208,8 +208,9 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       hasLiveTranscriptRef.current = true
       recognizedTextRef.current = transcript
       setRecognizedText(transcript)
-      // 棒グラフは、文字が変わったときだけ動かし続ける（同じ文字がもう一度届いても延長しない）
-      if (transcript !== lastFlowTranscriptRef.current) {
+      // 棒グラフは、録音中（recording）に文字が変わったときだけ動かし続ける（同じ文字がもう一度届いても延長しない。
+      // 停止の後に遅れて届いた最後の文字では動かさない。その文字も送信と表示には使う）
+      if (statusRef.current === 'recording' && transcript !== lastFlowTranscriptRef.current) {
         lastFlowTranscriptRef.current = transcript
         setIsTextFlowing(true)
         if (flowTimerRef.current !== null) clearTimeout(flowTimerRef.current)

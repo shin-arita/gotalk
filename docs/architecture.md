@@ -195,7 +195,7 @@ sequenceDiagram
   FE->>FE: play audio with AudioContext
 ```
 
-マイクはページ全体で1つ持ちます（`frontend/src/audio/keptMic.ts`）。最初の録音と、track が `ended` になった後の録音のときだけ `getUserMedia({ audio: true })` でマイク入力を取得し、録音の後も中断のときも閉じずに、次の録音で使い回します。録音は `MediaRecorder` で行い、録音ごとに作る `AudioContext` / `AnalyserNode` で入力中の波紋表示を制御します（録音の資源は `frontend/src/hooks/useKeptAudioSession.ts`。URL の `exp` に切り分けの実験のスイッチがあるときだけ、録音のたびにマイクを開いて閉じる前の版の `useAudioSession.ts` を使います）。録音と並行してブラウザの `SpeechRecognition` を動かし、認識テキストを表示とリアルタイム翻訳に使います。録音終了時は、録音音声を `/api/interpret` に送ります。認識テキストがある場合は `transcript` として添え、ない場合は Backend が音声から文字起こしします。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは送りません（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。読み上げは `AudioContext` で鳴らします（[speech-flow.md](speech-flow.md) の「9. TTS」）。
+マイクはページ全体で1つ持ちます（`frontend/src/audio/keptMic.ts`）。最初の録音と、track が `ended` になった後の録音のときだけ `getUserMedia({ audio: true })` でマイク入力を取得し、録音の後も中断のときも閉じずに、次の録音で使い回します。録音は `MediaRecorder` で行い、録音ごとに作る `AudioContext` / `AnalyserNode` で音量（RMS）を測ります。通訳の画面は音量を表示には使わず（`onLevel` は何もしません）、診断の `level` にだけ残します。録音中の画面の棒グラフは、音量ではなく音声認識の途中の文字の更新で動きます（[ui.md](ui.md) の「6.1 棒グラフ」）（録音の資源は `frontend/src/hooks/useKeptAudioSession.ts`。URL の `exp` に切り分けの実験のスイッチがあるときだけ、録音のたびにマイクを開いて閉じる前の版の `useAudioSession.ts` を使います）。録音と並行してブラウザの `SpeechRecognition` を動かし、認識テキストを表示とリアルタイム翻訳に使います。録音終了時は、録音音声を `/api/interpret` に送ります。認識テキストがある場合は `transcript` として添え、ない場合は Backend が音声から文字起こしします。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは送りません（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。読み上げは `AudioContext` で鳴らします（[speech-flow.md](speech-flow.md) の「9. TTS」）。
 
 ## 9. 固有名詞保護の概要
 

@@ -35,7 +35,8 @@ vi.mock('../hooks/useKeptAudioSession', async (importOriginal) => {
 })
 
 const AUDIO_DATA = 'a'.repeat(MIN_INTERPRET_AUDIO_BYTES)
-const [ja, en, zhCN, , ko] = LANGUAGES
+// vi は vitest の vi と同じ名前になるので、ベトナム語は viet にする
+const [ja, en, zhCN, zhTW, ko, th, viet] = LANGUAGES
 
 let restoreGlobals: () => void
 let gum: ReturnType<typeof setupDeferredGetUserMedia>
@@ -177,6 +178,35 @@ describe('InterpreterPage recording overlay: appearance (5.7-1)', () => {
     // recording になると ■（停止）
     await act(async () => { await gum.calls[0].resolve() })
     expect(overlayButton()).toHaveAttribute('aria-label', stop)
+  })
+})
+
+// 7言語の案内、停止、キャンセルの文字（TT3）。製品のコードの表を import せず、設計の表の文字を書く
+const RECORDING_TEXTS: [Language, string, string, string][] = [
+  [ja, '話し終わったら画面をタップしてください', '停止', 'キャンセル'],
+  [en, 'When you finish speaking, tap the screen.', 'Stop', 'Cancel'],
+  [zhCN, '说完后请点击屏幕。', '停止', '取消'],
+  [zhTW, '說完後請點擊螢幕。', '停止', '取消'],
+  [ko, '말씀이 끝나면 화면을 탭해 주세요.', '정지', '취소'],
+  [th, 'เมื่อพูดจบแล้ว กรุณาแตะหน้าจอ', 'หยุด', 'ยกเลิก'],
+  [viet, 'Khi nói xong, vui lòng chạm vào màn hình.', 'Dừng', 'Hủy'],
+]
+
+describe('InterpreterPage recording overlay: texts in all 7 languages (TT3)', () => {
+  it.each(RECORDING_TEXTS.map(([lang, guide, stop, cancel]) => [lang.id, lang, guide, stop, cancel] as const))('shows exactly the guide, cancel and stop texts of the tapped flag (%s)', async (_id, lang, guide, stop, cancel) => {
+    // もう一方の国旗は、違う文言の言語にする
+    const other = lang.id === 'ja' ? en : ja
+    const otherGuide = RECORDING_TEXTS.find(([l]) => l.id === other.id)![1]
+    renderPage({ languages: [lang, other] })
+    await tap(flagButton(lang))
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveAttribute('aria-label', guide)
+    expect(document.querySelector('.recording-overlay__guide')?.textContent).toBe(guide)
+    expect(dialog.textContent).not.toContain(otherGuide)
+    expect(overlayButton()).toHaveAttribute('aria-label', cancel)
+    await act(async () => { await gum.calls[0].resolve() })
+    expect(overlayButton()).toHaveAttribute('aria-label', stop)
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', guide)
   })
 })
 
@@ -444,6 +474,26 @@ describe('InterpreterPage recording overlay: bars (5.7-9)', () => {
     expect(vi.getTimerCount()).toBe(0)
     // 次の録音は止まっている状態から始まる
     await startRecording()
+    expect(isFlowing()).toBe(false)
+  })
+
+  it('does not flow on a late transcript after the stop, but still shows and sends it (TT2)', async () => {
+    vi.useFakeTimers()
+    renderPage()
+    await startRecording()
+    await sendTranscript('こんにちは')
+    await tap(overlay()!)
+    expect(isFlowing()).toBe(false)
+    const timersAtStopping = vi.getTimerCount()
+    // MediaRecorder の onstop の前（stopping）に、違う文字の最後の onresult が届く
+    await sendTranscript('こんにちは、元気ですか')
+    expect(isFlowing()).toBe(false)
+    expect(vi.getTimerCount()).toBe(timersAtStopping)
+    await finishRecorder()
+    // その文字は、今までどおり表示と送信に使う
+    const interpret = fetchMock.mock.calls.find((c: unknown[]) => String(c[0]) === '/api/interpret')!
+    expect(((interpret[1] as RequestInit).body as FormData).get('transcript')).toBe('こんにちは、元気ですか')
+    expect(document.querySelector('.source-card__text')?.textContent).toBe('こんにちは、元気ですか')
     expect(isFlowing()).toBe(false)
   })
 
