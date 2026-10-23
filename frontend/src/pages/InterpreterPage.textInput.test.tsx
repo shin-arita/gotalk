@@ -10,8 +10,9 @@ import { LANGUAGES } from '../languages'
 import type { Language } from '../languages'
 import {
   AUDIO_GLOBALS, firePageTransition, makeTtsOkResponse, saveGlobals, setupAudioContext, setupDeferredGetUserMedia, setupMediaRecorder,
-  setupSpeechRecognition, setVisibility,
+  setupSpeechRecognition, setVisibility, ttsContextOf,
 } from '../test/audioMocks'
+import type { FakeAudioContext } from '../test/audioMocks'
 import type { AudioSession } from '../hooks/useAudioSession'
 
 // 画面の状態（idle と ready など、画面の見た目では区別できないもの）を、録音のセッションの診断の出来事（status:…）で確かめる。
@@ -48,6 +49,9 @@ let recognitions: ReturnType<typeof setupSpeechRecognition>
 let fetchMock: ReturnType<typeof vi.spyOn>
 // /api/translate の応答（既定は成功）。null のときは、応答を返さずに待つ
 let translateResponse: ((text: string) => Response) | null
+// /api/interpret の応答（null のときは既定の成功）
+let interpretResponse: (() => Response) | null
+let audioContexts: FakeAudioContext[]
 
 function okJson(body: object): Response {
   return { ok: true, status: 200, json: () => Promise.resolve(body) } as unknown as Response
@@ -62,8 +66,9 @@ beforeEach(() => {
   gum = setupDeferredGetUserMedia()
   recorders = setupMediaRecorder()
   recognitions = setupSpeechRecognition()
-  setupAudioContext()
+  audioContexts = setupAudioContext().instances
   translateResponse = translateOk
+  interpretResponse = null
   fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, options) => {
     if (String(url) === '/api/tts') return makeTtsOkResponse()
     if (String(url) === '/api/translate') {
@@ -72,6 +77,7 @@ beforeEach(() => {
       const { text } = JSON.parse(String((options as RequestInit).body)) as { text: string }
       return respond(text)
     }
+    if (interpretResponse !== null) return interpretResponse()
     return okJson({ text: 'こんにちは', translatedText: 'Hello', ttsText: 'Hello', backTranslation: '(こんにちは)', sourceLanguage: 'ja', targetLanguage: 'en' })
   })
 })
@@ -132,6 +138,12 @@ async function type(text: string) {
 
 // 録音して止め、翻訳の結果（原文は「こんにちは」）を出して ready にする
 async function reachReadyByRecording() {
+  await recordAndStop()
+  expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
+}
+
+// 録音して「こんにちは」と話し、止めて /api/interpret に送る
+async function recordAndStop() {
   await act(async () => { fireEvent.click(flagButton(ja)) })
   await act(async () => { await gum.calls[0].resolve() })
   await act(async () => { recognitions.instances.at(-1)!.onresult?.({ results: [[{ transcript: 'こんにちは' }]] }) })
@@ -141,7 +153,6 @@ async function reachReadyByRecording() {
     recorder.ondataavailable?.({ data: new Blob([AUDIO_DATA]) })
     recorder.onstop?.()
   })
-  expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
 }
 
 describe('InterpreterPage text input: start (GOTALK-6 5.8)', () => {
@@ -678,5 +689,54 @@ describe('InterpreterPage text input: retranslating the same source after a fail
     await confirmAgainUnchanged()
     expect(translateCalls()).toHaveLength(1)
     expectSuccess()
+  })
+})
+
+describe('InterpreterPage text input: confirming the unchanged source while speaking (PR #37 UU8)', () => {
+  it('keeps speaking and does not call /api/translate', async () => {
+    renderPage()
+    await reachReadyByRecording()
+    const speakButton = screen.getByRole('button', { name: '発声する' })
+    await act(async () => { fireEvent.click(speakButton) })
+    const source = ttsContextOf(audioContexts)!.bufferSources.at(-1)!
+    expect(source.start).toHaveBeenCalledTimes(1)
+    expect(lastStatus()).toBe('status:speaking')
+    // 原文を変えずに確定する
+    await startEdit()
+    expect(textarea()!.value).toBe('こんにちは')
+    await tap(editShield()!)
+    expect(textarea()).toBeNull()
+    expect(translateCalls()).toHaveLength(0)
+    expect(source.stop).not.toHaveBeenCalled()
+    expect(source.disconnect).not.toHaveBeenCalled()
+    expect(lastStatus()).toBe('status:speaking')
+    expect(speakButton).toHaveClass('speak-icon-button--speaking')
+    expect(speakButton).toBeDisabled()
+  })
+})
+
+describe('InterpreterPage text input: retranslating the spoken source after /api/interpret fails (PR #37 UU9)', () => {
+  it('translates the unchanged recognized text with /api/translate', async () => {
+    interpretResponse = () => ({ ok: false, status: 500, json: () => Promise.resolve({}) }) as unknown as Response
+    renderPage()
+    await recordAndStop()
+    expect(fetchMock.mock.calls.filter((call: unknown[]) => String(call[0]) === '/api/interpret')).toHaveLength(1)
+    // 原文のカードに音声認識の文字が残り、翻訳は空で、idle
+    expect(screen.getByRole('alert').textContent).toBe(getLocalizedMessage('generic_error', 'ja', 'en'))
+    expect(sourceText()?.textContent).toBe('こんにちは')
+    expect(translationText()).toBe('')
+    expect(screen.queryByRole('button', { name: '発声する' })).toBeNull()
+    expect(lastStatus()).toBe('status:idle')
+    // 原文を変えずに確定する
+    await startEdit()
+    expect(textarea()!.value).toBe('こんにちは')
+    await tap(editShield()!)
+    expect(translateCalls()).toHaveLength(1)
+    const body = JSON.parse(String((translateCalls()[0][1] as RequestInit).body)) as { text: string }
+    expect(body.text).toBe('こんにちは')
+    expect(translationText()).toBe('訳:こんにちは')
+    expect(screen.getByText('逆:こんにちは')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
+    expect(lastStatus()).toBe('status:ready')
   })
 })
