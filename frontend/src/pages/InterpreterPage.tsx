@@ -1,4 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef } from 'react'
+import { flushSync } from 'react-dom'
 import type { Language } from '../languages'
 import { API_TIMEOUT_MS, ApiError, MAX_INTERPRET_AUDIO_BYTES, MIN_INTERPRET_AUDIO_BYTES, apiErrorCode, apiErrorFromResponse, isTooLongForTts, logApiError, messageKeyForCode, messageKeyForError } from '../api'
 import { getLocalizedMessage } from '../messages'
@@ -233,15 +234,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     setStatus(next)
     audioSession.logEvent(`status:${next}`)
   }
-
-  useEffect(() => {
-    if (!isEditing || !editRef.current) return
-    const el = editRef.current
-    el.style.height = 'auto'
-    el.style.height = `${el.scrollHeight}px`
-    el.focus()
-    el.setSelectionRange(el.value.length, el.value.length)
-  }, [isEditing])
 
   const addHistoryEntry = (source: string, translation: string, bt: string, srcId: string, tgtId: string) => {
     const now = new Date()
@@ -810,10 +802,19 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     }
   }, [])
 
+  // 原文の入力と編集を始める。原文があればその文字を入れた状態で（話した文の手直し）、空なら空の状態で始める。
+  // iPhone では、タップの処理の中で focus() を呼ばないとキーボードが出ないことがあるので、flushSync で textarea を
+  // 描画してから、同じ処理の中でフォーカスを移す（docs/ui.md）
   const handleEditStart = () => {
-    if (!recognizedText) return
-    setEditValue(recognizedText)
-    setIsEditing(true)
+    flushSync(() => {
+      setEditValue(recognizedText)
+      setIsEditing(true)
+    })
+    const el = editRef.current
+    if (!el) return
+    fitEditHeight(el)
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
   }
 
   const handleEditConfirm = () => {
@@ -830,16 +831,36 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
 
   const handleEditChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setEditValue(e.target.value)
-    e.target.style.height = 'auto'
-    e.target.style.height = `${e.target.scrollHeight}px`
+    fitEditHeight(e.target)
   }
 
   const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // 日本語の入力の変換を確定する Enter では、文を確定しない
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEditConfirm() }
     if (e.key === 'Escape') setIsEditing(false)
   }
 
-  const canEdit = !!recognizedText && !isEditing && (status === 'idle' || status === 'ready' || status === 'speaking')
+  // 編集の間の透明な覆いのタップ。確定（blur の handler の handleEditConfirm）のほかに何も起こさない。
+  // mousedown の既定の動き（フォーカスの移動）を止めるのは、click の前に blur で覆いが消えて、
+  // click が下の要素（国旗など）に届かないようにするため
+  const handleEditShieldMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+  }
+
+  const handleEditShieldTap = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    editRef.current?.blur()
+  }
+
+  // 編集の間に、原文のカードの textarea の外（余白と鉛筆のボタンの位置）をタップしたときも確定する
+  const handleSourceCardTap = (e: React.MouseEvent) => {
+    if (!isEditing || e.target === editRef.current) return
+    editRef.current?.blur()
+  }
+
+  const canEdit = !isEditing && (status === 'idle' || status === 'ready' || status === 'speaking')
 
   const canTapFlag = (i: 0 | 1): boolean => {
     if (status === 'recording') return recordingFlagIndex === i
@@ -947,7 +968,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       )}
 
       <div className="page-content" inert={underlayInert}>
-        <div className="source-card">
+        <div className={`source-card${isEditing ? ' source-card--editing' : ''}`} onClick={handleSourceCardTap}>
           {isEditing ? (
             <textarea
               ref={editRef}
@@ -966,10 +987,10 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
           )}
           <button
             type="button"
-            className="source-card__edit"
+            className={`source-card__edit${isEditing ? ' source-card__edit--editing' : ''}`}
             onClick={handleEditStart}
             disabled={!canEdit}
-            aria-label="編集"
+            aria-label={recognizedText ? '編集' : '入力'}
           >
             <EditIcon />
           </button>
@@ -1056,6 +1077,10 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
         />
       </div>}
 
+      {isEditing && (
+        <div className="edit-confirm-shield" onMouseDown={handleEditShieldMouseDown} onClick={handleEditShieldTap} aria-hidden="true" />
+      )}
+
       {overlayVisible && (
         <div
           className="recording-overlay"
@@ -1098,11 +1123,17 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
 
 function EditIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
+}
+
+// textarea の高さを中の文字に合わせる
+function fitEditHeight(el: HTMLTextAreaElement) {
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
 }
 
 function ChevronIcon() {

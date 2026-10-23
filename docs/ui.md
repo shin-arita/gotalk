@@ -70,8 +70,8 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 | `frontend/src/pages/LanguageSelectPage.tsx:34` | `使用する言語を2つ選択` | 言語の選択の画面の、言語のカードの一覧 |
 | `frontend/src/pages/InterpreterPage.tsx:651` | `トップ画面へ戻る` | 通訳の画面の「GoTalk」の見出し（タップで戻る） |
 | `frontend/src/pages/InterpreterPage.tsx:676` | `${lang.label}で話す`、`${lang.label}の録音を停止` | 国旗のボタン |
-| `frontend/src/pages/InterpreterPage.tsx:719` | `原文を編集` | 原文の編集の textarea |
-| `frontend/src/pages/InterpreterPage.tsx:731` | `編集` | 原文の編集のボタン |
+| `frontend/src/pages/InterpreterPage.tsx:981` | `原文を編集` | 原文の編集の textarea |
+| `frontend/src/pages/InterpreterPage.tsx:993` | `入力`（原文が空のとき）、`編集`（原文があるとき） | 原文の入力と編集のボタン（[原文の入力と編集](#7-原文の入力と編集)） |
 | `frontend/src/pages/InterpreterPage.tsx:779` | `発声する` | 読み上げのボタン |
 | `frontend/index.html` | `<html lang="ja">` | ページの言語（スクリーンリーダーの読み上げの言語の判定に使われます） |
 
@@ -136,7 +136,23 @@ iPhone では、タップで要素が消えた直後に、同じ位置の下の�
 - 盾は、録音中の画面と同じ `position: fixed; inset: 0;` で、背景は透明、`z-index` は録音中の画面と同じです。`onClick` で `preventDefault()` と `stopPropagation()` をして、何もしません（`onPointerDown` では受けません。`pointerdown` で消すと、その後の click が下に届く余地を増やすためです）
 - 盾を出している間も、下の要素の `inert` を続けます。盾のタイマーは、画面が外れるときに消します
 
-## 7. 関連ドキュメント
+## 7. 原文の入力と編集
+
+原文のカード（`source-card`）の右の鉛筆のボタンで、話さなくても文字を打って翻訳できます（GOTALK-6）。話した文の手直しにも使います。
+
+- 押せるとき：状態が `idle`、`ready`、`speaking` のとき（原文が空でも押せます）。録音中、翻訳中（`starting`、`recording`、`stopping`、`processing`）と、編集の間は押せず、薄く表示します（`opacity: 0.3`）
+- `aria-label`：原文が空なら「入力」、あれば「編集」です（日本語だけ。[5. 決まりの対象に入っていないもの](#5-決まりの対象に入っていないもの)）
+- 押したとき：原文があればその文字を入れた状態で、空なら空の状態で、原文のカードが文字を打つ欄（`textarea`）になります。新しい文を打つときは、利用者が消して打ちます（「新しい入力」と「手直し」を分けるボタンはありません）。iPhone では、タップの処理の中で `focus()` を呼ばないとキーボードが出ないことがあるため、ボタンのタップの処理の中で、`flushSync` で `textarea` を描画してから、同じ処理の中でフォーカスを移し、カーソルを末尾に置き、高さを合わせます
+- 大きさと位置：押せる範囲は 44px 角（中の鉛筆のアイコンは 24px）で、原文のカードの縦の中心に置きます（`top: 50%; transform: translateY(-50%);`、右から 8px）。原文が空のときも1行分の高さ（原文の 24px × 1.45 = 34.8px。`min-height`）を保つので、空のときと1行のときでカードの高さは変わりません。原文の右の余白（`padding-right: 56px`）は、ボタンが文字に重ならない幅です
+- 確定：次のどれでも確定します。前後の空白を除いた文字が空か、前の原文と同じなら何もしません。それ以外は、`/api/translate` に選んだ2つの言語を送り、どちらの言語かを判定して訳します（今までの編集の後の再翻訳と同じ。どちらでもなければ `language_unclear`）。翻訳中の表示（「ただいま翻訳中です」）の言語の順は、最後に押した国旗から決めます（打った文の言語は応答が来るまで分からないため）。翻訳の結果は翻訳のカードに出し、履歴に足します
+  - 画面のどこかをタップする：編集の間だけ、透明な覆い（`edit-confirm-shield`）を画面全体に出します（`position: fixed; inset: 0;`、`z-index: 10`。画面の普通の要素より上で、録音中の画面と click shield の `1000` より下）。原文のカードは、編集の間だけ覆いより上に出します（`source-card--editing`、`z-index: 11`）。iPhone の Safari では、押せない要素（ただの文字や余白）をタップしても `blur` が起きないことがあるためです。覆いのタップでは、`preventDefault()` と `stopPropagation()` をしてから `textarea` を `blur()` し、`blur` の処理で確定します。**このタップでは、確定のほかに何も起こしません**（透けて見える国旗の録音、題名の戻る、読み上げなどは起きません。もう一度タップすれば、ふつうに動きます）。覆いの `mousedown` の既定の動き（フォーカスの移動）も止めます（click の前に `blur` で覆いが消えて、click が下の要素に届かないようにするためです）
+  - 原文のカードの中の、`textarea` の外（余白と、鉛筆のボタンの位置）をタップする：カードの `onClick` で `blur()` します。鉛筆のボタンは、編集の間は `source-card__edit--editing`（`pointer-events: none`）を付けて、タップの対象から外し、下のカードにタップを届けます（`disabled` の `<button>` の上のタップは、親へのイベントの伝わり方に頼れないためです）
+  - `blur`：iPhone のキーボードの「完了」や、別のアプリに切り替えたときなど
+  - Enter（Shift なし）：ただし、日本語の入力の変換を確定する Enter（`isComposing` が真か、`keyCode` が 229）では確定しません
+- 取り消し：Escape で、訳さずに元の原文に戻します
+- `textarea` の中のタップでは確定しません
+
+## 8. 関連ドキュメント
 
 - [api.md](api.md)
 - [speech-flow.md](speech-flow.md)
