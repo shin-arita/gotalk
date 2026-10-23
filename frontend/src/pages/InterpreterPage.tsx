@@ -834,7 +834,9 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     if (!isEditingRef.current) return
     changeEditing(false)
     const trimmed = editValue.trim()
-    if (!trimmed || trimmed === recognizedText) return
+    if (!trimmed) return
+    // 同じ文字でも、翻訳が出ていなければ（訳し直しの失敗、中断、language_mismatch の後）訳し直す
+    if (trimmed === recognizedText && translatedText) return
     // 編集できるのは idle、ready、speaking のときだけ（録音や問い合わせの途中は受け付けない）
     if (!['idle', 'ready', 'speaking'].includes(statusRef.current)) return
     recognizedTextRef.current = trimmed

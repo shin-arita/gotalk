@@ -598,3 +598,85 @@ describe('InterpreterPage text input: the previous translation is not left with 
     expect(translationCardText()).not.toContain('Hello')
   })
 })
+
+describe('InterpreterPage text input: retranslating the same source after a failure or an interruption (PR #37 UU7)', () => {
+  const speakButton = () => screen.queryByRole('button', { name: '発声する' })
+
+  // 原文を変えずに、もう一度確定する
+  async function confirmAgainUnchanged() {
+    await startEdit()
+    expect(textarea()!.value).toBe('駅はどこですか')
+    await tap(editShield()!)
+  }
+
+  function expectSuccess() {
+    expect(translationText()).toBe('訳:駅はどこですか')
+    expect(screen.getByText('逆:駅はどこですか')).toBeInTheDocument()
+    expect(speakButton()).not.toBeDisabled()
+    expect(lastStatus()).toBe('status:ready')
+  }
+
+  it.each([
+    ['a network error', () => Promise.reject(new TypeError('Failed to fetch')) as unknown as Response],
+    ['500', () => ({ ok: false, status: 500, json: () => Promise.resolve({}) }) as unknown as Response],
+    ['503 upstream_busy', () => ({ ok: false, status: 503, json: () => Promise.resolve({ code: 'upstream_busy' }) }) as unknown as Response],
+  ] as const)('translates the same source again after the retranslation fails with %s', async (_name, response) => {
+    translateResponse = response
+    renderPage()
+    await reachReadyByRecording()
+    await startEdit()
+    await type('駅はどこですか')
+    await tap(editShield()!)
+    expect(translateCalls()).toHaveLength(1)
+    expect(lastStatus()).toBe('status:idle')
+    translateResponse = translateOk
+    await confirmAgainUnchanged()
+    expect(translateCalls()).toHaveLength(2)
+    expectSuccess()
+  })
+
+  it('translates the same source again after blur, pagehide and pageshow interrupted the retranslation', async () => {
+    translateResponse = null
+    renderPage()
+    await reachReadyByRecording()
+    await startEdit()
+    await type('駅はどこですか')
+    const el = textarea()!
+    await act(async () => {
+      el.blur()
+      firePageTransition('pagehide', true)
+    })
+    await act(async () => { firePageTransition('pageshow', true) })
+    expect(translateCalls()).toHaveLength(1)
+    expect(sourceText()?.textContent).toBe('駅はどこですか')
+    translateResponse = translateOk
+    await confirmAgainUnchanged()
+    expect(translateCalls()).toHaveLength(2)
+    expectSuccess()
+  })
+
+  it('translates the same source again after language_mismatch', async () => {
+    translateResponse = () => ({ ok: false, status: 422, json: () => Promise.resolve({ error: 'language_mismatch' }) }) as unknown as Response
+    renderPage()
+    await startEdit()
+    await type('駅はどこですか')
+    await tap(editShield()!)
+    expect(translateCalls()).toHaveLength(1)
+    expect(screen.getByRole('alert').textContent).toBe(getLocalizedMessage('language_unclear', 'ja', 'en'))
+    translateResponse = translateOk
+    await confirmAgainUnchanged()
+    expect(translateCalls()).toHaveLength(2)
+    expectSuccess()
+  })
+
+  it('does not call /api/translate for the unchanged source while its translation is shown (after a typed translation)', async () => {
+    renderPage()
+    await startEdit()
+    await type('駅はどこですか')
+    await tap(editShield()!)
+    expect(translateCalls()).toHaveLength(1)
+    await confirmAgainUnchanged()
+    expect(translateCalls()).toHaveLength(1)
+    expectSuccess()
+  })
+})
