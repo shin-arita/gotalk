@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import type { Language } from '../languages'
 import { API_TIMEOUT_MS, ApiError, MAX_INTERPRET_AUDIO_BYTES, MIN_INTERPRET_AUDIO_BYTES, apiErrorCode, apiErrorFromResponse, isTooLongForTts, logApiError, messageKeyForCode, messageKeyForError } from '../api'
 import { getLocalizedMessage } from '../messages'
@@ -85,15 +85,42 @@ const FLAG_TAP_MESSAGES: Record<string, string> = {
   'vi':    'Nhấn vào cờ để nói.',
 }
 
-const FLAG_FINISH_MESSAGES: Record<string, string> = {
-  'ja':    '話し終わったらもう一度国旗をタップして終了してください。',
-  'en':    'Tap the flag again when you are finished.',
-  'zh-CN': '说完后再次点击国旗结束。',
-  'zh-TW': '說完後再次點擊國旗結束。',
-  'ko':    '말이 끝나면 국기를 다시 탭하여 종료하세요.',
-  'th':    'เมื่อพูดเสร็จแล้ว แตะธงอีกครั้งเพื่อสิ้นสุด',
-  'vi':    'Khi nói xong, nhấn vào cờ một lần nữa để kết thúc.',
+// 録音中の画面（docs/ui.md）の案内の文言と、下のボタンの aria-label。押した国旗の言語の1言語だけを出す
+const RECORDING_GUIDE_MESSAGES: Record<string, string> = {
+  'ja':    '話し終わったら画面をタップしてください',
+  'en':    'When you finish speaking, tap the screen.',
+  'zh-CN': '说完后请点击屏幕。',
+  'zh-TW': '說完後請點擊螢幕。',
+  'ko':    '말씀이 끝나면 화면을 탭해 주세요.',
+  'th':    'เมื่อพูดจบแล้ว กรุณาแตะหน้าจอ',
+  'vi':    'Khi nói xong, vui lòng chạm vào màn hình.',
 }
+
+const STOP_BUTTON_LABELS: Record<string, string> = {
+  'ja':    '停止',
+  'en':    'Stop',
+  'zh-CN': '停止',
+  'zh-TW': '停止',
+  'ko':    '정지',
+  'th':    'หยุด',
+  'vi':    'Dừng',
+}
+
+const CANCEL_BUTTON_LABELS: Record<string, string> = {
+  'ja':    'キャンセル',
+  'en':    'Cancel',
+  'zh-CN': '取消',
+  'zh-TW': '取消',
+  'ko':    '취소',
+  'th':    'ยกเลิก',
+  'vi':    'Hủy',
+}
+
+// 棒グラフを動かし続ける時間（ms）。音声認識の途中の文字がこの間に変わらなければ止める
+const TEXT_FLOW_HOLD_MS = 800
+
+// 録音中の画面が消えた後に、タップの通り抜け（ghost click）を受け止める透明な盾を出す時間（ms）
+const CLICK_SHIELD_MS = 400
 
 // pagehide のときの状態から、bfcache から戻ったとき（pageshow の persisted）にするべき状態（docs/speech-flow.md）
 const PAGESHOW_RECOVERY_STATUS: Record<InterpreterStatus, InterpreterStatus> = {
@@ -129,6 +156,10 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [processingMsgIdx, setProcessingMsgIdx] = useState(0)
   const [processingLangs, setProcessingLangs] = useState<[string, string] | null>(null)
+  // 録音中の画面の棒グラフが動いているか（音声認識の途中の文字が届いている間だけ true）
+  const [isTextFlowing, setIsTextFlowing] = useState(false)
+  // 録音中の画面が消えた後の、タップの通り抜けの守り（click shield）を出しているか
+  const [shieldVisible, setShieldVisible] = useState(false)
 
   const backTranslationLabel = selectedLanguages.length === 2
     ? `${BACK_TRANSLATION_LABELS[selectedLanguages[0].id] ?? '逆翻訳'} / ${BACK_TRANSLATION_LABELS[selectedLanguages[1].id] ?? '逆翻訳'}`
@@ -157,7 +188,14 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   const recognizedTextRef = useRef('')
   // 画面が recording になった時刻（録音の長さを測り、マイクの音が来ていないかの判定に使う）
   const recordingStartedAtRef = useRef<number | null>(null)
-  const rippleRefs = useRef<(HTMLDivElement | null)[]>([null, null, null])
+  // 棒グラフの見張り。送信用の recognizedTextRef とは別に、最後に棒グラフを動かした文字を持つ
+  const lastFlowTranscriptRef = useRef('')
+  const flowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 録音中の画面の文字の領域と下のボタン、前の描画のときに録音中の画面を出していたか、盾のタイマー
+  const overlayTextRef = useRef<HTMLDivElement>(null)
+  const overlayButtonRef = useRef<HTMLButtonElement>(null)
+  const prevOverlayVisibleRef = useRef(false)
+  const shieldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // 切り分けの実験のスイッチ。最初の描画のときの値だけを使う
   const experimentRef = useRef(experiment)
 
@@ -170,8 +208,19 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       hasLiveTranscriptRef.current = true
       recognizedTextRef.current = transcript
       setRecognizedText(transcript)
+      // 棒グラフは、文字が変わったときだけ動かし続ける（同じ文字がもう一度届いても延長しない）
+      if (transcript !== lastFlowTranscriptRef.current) {
+        lastFlowTranscriptRef.current = transcript
+        setIsTextFlowing(true)
+        if (flowTimerRef.current !== null) clearTimeout(flowTimerRef.current)
+        flowTimerRef.current = setTimeout(() => {
+          flowTimerRef.current = null
+          setIsTextFlowing(false)
+        }, TEXT_FLOW_HOLD_MS)
+      }
     },
-    onLevel: (amplitude, elapsedMs) => updateRipples(amplitude, elapsedMs),
+    // 声の大きさは画面に出さない（セッションは今までどおり測り、診断に残す）
+    onLevel: () => {},
     onRecordingStopped: (blob) => handleRecordingStopped(blob),
     onRecorderError: () => handleRecorderError(),
     isRecordingStatus: () => statusRef.current === 'recording',
@@ -380,21 +429,14 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     return () => { clearInterval(id); setProcessingMsgIdx(0) }
   }, [status])
 
-  const updateRipples = (amplitude: number, elapsedMs: number) => {
-    const DURATION = 1500
-    const COUNT = 3
-    rippleRefs.current.forEach((el, ri) => {
-      if (!el) return
-      const phase = ((elapsedMs / DURATION) + ri / COUNT) % 1
-      el.style.transform = `scale(${phase})`
-      el.style.opacity = String((1 - phase) * amplitude * 0.75)
-    })
-  }
-
-  const resetRipples = () => {
-    rippleRefs.current.forEach(el => {
-      if (el) { el.style.transform = 'scale(0)'; el.style.opacity = '0' }
-    })
+  // 棒グラフを止め、タイマーと最後の文字を片付ける
+  const resetTextFlow = () => {
+    if (flowTimerRef.current !== null) {
+      clearTimeout(flowTimerRef.current)
+      flowTimerRef.current = null
+    }
+    lastFlowTranscriptRef.current = ''
+    setIsTextFlowing(false)
   }
 
   // 読み上げを止める（今鳴らしている音を止めてつなぎを外し、見張りのタイマーと /api/tts の問い合わせも止める）。冪等。
@@ -431,6 +473,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   // 録音の成立までの失敗。hook が資源を片付けた後に呼ばれる
   const handleStartFailed = (failure: AudioSessionStartFailure, reason: string) => {
     console.warn('[GoTalk] microphone error', { reason })
+    resetTextFlow()
     changeStatus('error')
     showMessage(failure)
     setRecordingFlagIndex(null)
@@ -440,7 +483,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   // 録音の成立の後の失敗（MediaRecorder の onerror など）。hook が中断の片付け（理由 error）をした後に呼ばれる
   const handleRecorderError = () => {
     changeStatus('error')
-    resetRipples()
+    resetTextFlow()
     showMessage('recording_failed')
     setRecordingFlagIndex(null)
     changeStatus('idle')
@@ -449,6 +492,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   // 利用者の停止で、録音の最後のデータがそろった後に呼ばれる。ここで初めて processing に進み、Backend に送る。
   // 音声認識の文字がなく、録音のデータがほとんどないときは送らない（docs/speech-flow.md の「マイクの音が来ないときの検出」）
   const handleRecordingStopped = (blob: Blob) => {
+    resetTextFlow()
     if (statusRef.current !== 'stopping') return
     const startedAt = recordingStartedAtRef.current
     recordingStartedAtRef.current = null
@@ -474,8 +518,18 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   const stopRecording = () => {
     if (statusRef.current !== 'recording') return
     changeStatus('stopping')
-    resetRipples()
+    resetTextFlow()
     audioSession.stop()
+  }
+
+  // マイクの準備の途中（starting）の取り消し（録音中の画面の × のボタン）。文言は出さない。
+  // getUserMedia を待っている間なら、セッションが取得した stream を残して次の録音で使い回す（中断と同じ）
+  const handleCancelStarting = () => {
+    if (statusRef.current !== 'starting') return
+    void audioSession.abort('cancel')
+    resetTextFlow()
+    setRecordingFlagIndex(null)
+    changeStatus('idle')
   }
 
   const handleFlagTap = (flagIndex: 0 | 1) => {
@@ -494,6 +548,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     setTtsText('')
     setBackTranslation('')
     setErrorMessage('')
+    resetTextFlow()
     const lang = selectedLanguages[flagIndex]
     recordingLangRef.current = lang
     setRecordingFlagIndex(flagIndex)
@@ -513,6 +568,8 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   // 次の録音が壊れるため、<audio> は使わない（失敗しても <audio> に切り替えて鳴らし直さない）
   const handleSpeak = async () => {
     if (statusRef.current !== 'ready') return
+    // 読み上げの時間の記録（docs/speech-flow.md の「読み上げ」）。events の at が時刻
+    audioSession.logEvent('tts_tap')
     setErrorMessage('')
     // 上限を超える翻訳の結果は読み上げない（翻訳の結果の表示はそのまま）
     if (isTooLongForTts(ttsText)) {
@@ -564,6 +621,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
         body: JSON.stringify({ text: ttsText }),
         signal: controller.signal,
       })
+      audioSession.logEvent(`tts_response:status=${res.status}`)
       if (activeTtsIdRef.current !== ttsId) return
       if (!res.ok) {
         // 利用者に知らせるべきエラー（混み合っている、など）だけを表示する。
@@ -573,8 +631,10 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
         throw new ApiError(messageKey, '/api/tts', res.status, code)
       }
       const data = await res.arrayBuffer()
+      audioSession.logEvent(`tts_downloaded:bytes=${data.byteLength}`)
       if (activeTtsIdRef.current !== ttsId) return
       const buffer = await ctx.decodeAudioData(data)
+      audioSession.logEvent(`tts_decoded:ms=${Math.round(buffer.duration * 1000)}`)
       if (activeTtsIdRef.current !== ttsId) return
       // resume() の結果を確かめる。拒否されたとき、または running でないときは鳴らさず、読み上げの失敗とする
       // （文言は出さない）
@@ -602,6 +662,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
         changeStatus('ready')
       }
       source.start()
+      audioSession.logEvent('tts_started')
       // onended が来ないまま speaking に残らないよう（iPhone の割り込みなどで再生が止まったとき）、見張りのタイマーを始める
       ttsWatchdogRef.current = setTimeout(() => {
         ttsWatchdogRef.current = null
@@ -630,10 +691,10 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     const current = statusRef.current
     const leavingScreen = reason === 'back' || reason === 'unmount'
     if (reason === 'pagehide') pagehideRecoveryStatusRef.current = PAGESHOW_RECOVERY_STATUS[current]
+    resetTextFlow()
 
     if (current === 'starting' || current === 'recording' || current === 'stopping' || current === 'error') {
       void audioSession.abort(reason)
-      resetRipples()
       setRecordingFlagIndex(null)
       if (!leavingScreen) changeStatus('idle')
     } else if (current === 'speaking') {
@@ -651,8 +712,12 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       abortTranslationRequest()
       stopSpeaking()
     }
-    // 画面が外れるときは、読み上げ用の AudioContext を閉じる（読み上げの出力用で、マイクではない）
+    // 画面が外れるときは、読み上げ用の AudioContext を閉じる（読み上げの出力用で、マイクではない）。盾のタイマーも消す
     if (reason === 'unmount') {
+      if (shieldTimerRef.current !== null) {
+        clearTimeout(shieldTimerRef.current)
+        shieldTimerRef.current = null
+      }
       const ctx = ttsContextRef.current
       ttsContextRef.current = null
       if (ctx) void ctx.close().catch(() => { /* close() の拒否は捨てる */ })
@@ -675,7 +740,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       void audioSession.abort('pagehide')
       abortTranslationRequest()
       stopSpeaking()
-      resetRipples()
       recovery ??= PAGESHOW_RECOVERY_STATUS[statusRef.current]
     }
     if (recovery === null) return
@@ -781,14 +845,67 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     return status === 'idle' || status === 'ready'
   }
 
+  // 録音中の画面（docs/ui.md）。starting と recording の間だけ出す（stopping になった時点で消える）
+  const overlayVisible = (status === 'starting' || status === 'recording') && recordingFlagIndex !== null
+  const overlayLangId = recordingFlagIndex !== null ? selectedLanguages[recordingFlagIndex]?.id : undefined
+  const recordingGuide = (overlayLangId && RECORDING_GUIDE_MESSAGES[overlayLangId]) || RECORDING_GUIDE_MESSAGES['en']
+  const overlayButtonLabels = status === 'recording' ? STOP_BUTTON_LABELS : CANCEL_BUTTON_LABELS
+  const overlayButtonLabel = (overlayLangId && overlayButtonLabels[overlayLangId]) || overlayButtonLabels['en']
+  // 録音中の画面と盾を出している間は、下の要素を操作できないようにする
+  const underlayInert = overlayVisible || shieldVisible
+
+  // 録音中の画面が出たら下のボタンにフォーカスを移し、消えたら（理由を問わない）盾を出す。
+  // 画面が消える描画と盾が出る描画の間を空けないよう、useLayoutEffect で変化を見る
+  useLayoutEffect(() => {
+    const prev = prevOverlayVisibleRef.current
+    prevOverlayVisibleRef.current = overlayVisible
+    if (overlayVisible && !prev) {
+      overlayButtonRef.current?.focus({ preventScroll: true })
+    } else if (!overlayVisible && prev) {
+      setShieldVisible(true)
+      if (shieldTimerRef.current !== null) clearTimeout(shieldTimerRef.current)
+      shieldTimerRef.current = setTimeout(() => {
+        shieldTimerRef.current = null
+        setShieldVisible(false)
+      }, CLICK_SHIELD_MS)
+    }
+  }, [overlayVisible])
+
+  // 文字の領域は、新しい文字が届くたびに末尾（最新の行）を見せる
+  useEffect(() => {
+    const el = overlayTextRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [recognizedText, liveTranslatedText, overlayVisible])
+
+  // 録音中の画面の本体のタップ。recording のときだけ止める（stopRecording は recording のときだけ止めるので、
+  // 2回目以降のタップは何もしない）。starting の間は、許可のダイアログの操作の間の誤タップで取り消さないよう、何もしない
+  const handleOverlayTap = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    stopRecording()
+  }
+
+  // 下のボタン。recording なら停止（■）、starting なら取り消し（×）
+  const handleOverlayButton = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (statusRef.current === 'recording') stopRecording()
+    else if (statusRef.current === 'starting') handleCancelStarting()
+  }
+
+  // 盾はタップを受け止めるだけで、何もしない
+  const handleShieldTap = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
   return (
     <main className="interpreter-page">
-      <header className="interpreter-header">
+      <header className="interpreter-header" inert={underlayInert}>
         <h1 className="interpreter-title" onClick={handleBack} role="button" aria-label="トップ画面へ戻る">GoTalk</h1>
       </header>
 
       {selectedLanguages.length === 2 && (
-        <div className="lang-flags-bar">
+        <div className="lang-flags-bar" inert={underlayInert}>
           {status !== 'recording' && (
             <p className="lang-flags-bar__guide">
               {FLAG_TAP_MESSAGES[selectedLanguages[0].id] ?? FLAG_TAP_MESSAGES['en']}
@@ -804,7 +921,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
                   type="button"
                   className={[
                     'lang-flags-bar__btn',
-                    isThisRecording ? 'lang-flags-bar__btn--recording' : '',
+                    isThisRecording ? 'lang-flags-bar__btn--recording-static' : '',
                   ].filter(Boolean).join(' ')}
                   onClick={() => handleFlagTap(i)}
                   disabled={!canTapFlag(i)}
@@ -816,32 +933,19 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
                     src={`/flags/${lang.id}.svg`}
                     alt={lang.label}
                   />
-                  {isThisRecording && (
-                    <>
-                      <div className="flag-ripple" ref={el => { rippleRefs.current[0] = el }} />
-                      <div className="flag-ripple" ref={el => { rippleRefs.current[1] = el }} />
-                      <div className="flag-ripple" ref={el => { rippleRefs.current[2] = el }} />
-                    </>
-                  )}
                 </button>
               )
             })}
           </div>
-          {status !== 'recording' ? (
+          {status !== 'recording' && (
             <p className="lang-flags-bar__guide">
               {FLAG_TAP_MESSAGES[selectedLanguages[1].id] ?? FLAG_TAP_MESSAGES['en']}
             </p>
-          ) : recordingFlagIndex !== null ? (
-            <div className="lang-flags-bar__scroll-wrap">
-              <p className="lang-flags-bar__scroll-text">
-                {FLAG_FINISH_MESSAGES[selectedLanguages[recordingFlagIndex].id] ?? FLAG_FINISH_MESSAGES['en']}
-              </p>
-            </div>
-          ) : null}
+          )}
         </div>
       )}
 
-      <div className="page-content">
+      <div className="page-content" inert={underlayInert}>
         <div className="source-card">
           {isEditing ? (
             <textarea
@@ -869,12 +973,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
             <EditIcon />
           </button>
         </div>
-
-        {status === 'recording' && liveTranslatedText && (
-          <div className="live-translation-card">
-            <p className="live-translation-card__text">{liveTranslatedText}</p>
-          </div>
-        )}
 
         {status !== 'recording' && (
           <div className="translation-card">
@@ -943,17 +1041,56 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
         )}
       </div>
 
-      {experiment.enabled && <ExperimentPanel
-        config={experiment}
-        busy={status === 'starting' || status === 'recording' || status === 'stopping'}
-        read={() => ({
-          kind: 'audioSession',
-          takenAt: new Date().toISOString(),
-          effective: [...experiment.effective],
-          // 表示が、押した後の診断の変化で変わらないように複製する
-          diagnostics: JSON.parse(JSON.stringify(audioSession.getDiagnostics())),
-        })}
-      />}
+      {experiment.enabled && <div className="experiment-panel-wrap" inert={underlayInert}>
+        <ExperimentPanel
+          config={experiment}
+          busy={status === 'starting' || status === 'recording' || status === 'stopping'}
+          read={() => ({
+            kind: 'audioSession',
+            takenAt: new Date().toISOString(),
+            effective: [...experiment.effective],
+            // 表示が、押した後の診断の変化で変わらないように複製する
+            diagnostics: JSON.parse(JSON.stringify(audioSession.getDiagnostics())),
+          })}
+        />
+      </div>}
+
+      {overlayVisible && (
+        <div
+          className="recording-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label={recordingGuide}
+          onClick={handleOverlayTap}
+        >
+          <p className="recording-overlay__guide">{recordingGuide}</p>
+          <div className="recording-overlay__text" ref={overlayTextRef} aria-live="polite">
+            <p className="recording-overlay__source">{recognizedText}</p>
+            {liveTranslatedText && (
+              <p className="recording-overlay__live-translation">{liveTranslatedText}</p>
+            )}
+          </div>
+          <div
+            className={`recording-overlay__bars${isTextFlowing ? ' recording-overlay__bars--flowing' : ''}`}
+            aria-hidden="true"
+          >
+            {[0, 1, 2, 3, 4].map(i => <span key={i} className="recording-overlay__bar" />)}
+          </div>
+          <button
+            ref={overlayButtonRef}
+            type="button"
+            className="recording-overlay__button"
+            onClick={handleOverlayButton}
+            aria-label={overlayButtonLabel}
+          >
+            {status === 'recording' ? <StopIcon /> : <CancelIcon />}
+          </button>
+        </div>
+      )}
+
+      {shieldVisible && (
+        <div className="recording-click-shield" onClick={handleShieldTap} aria-hidden="true" />
+      )}
     </main>
   )
 }
@@ -975,6 +1112,21 @@ function ChevronIcon() {
   )
 }
 
+function StopIcon() {
+  return (
+    <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="3" width="18" height="18" rx="3" fill="currentColor" />
+    </svg>
+  )
+}
+
+function CancelIcon() {
+  return (
+    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M5 5l14 14M19 5L5 19" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+    </svg>
+  )
+}
 
 function SpeakerIcon() {
   return (

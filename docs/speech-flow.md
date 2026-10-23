@@ -68,15 +68,15 @@ Frontend の音声処理は、画面の `frontend/src/pages/InterpreterPage.tsx`
 
 画面は、最初の描画のときに、URL の `exp` に `useAudioSession` の実験のスイッチ（[testing.md](testing.md) の「切り分けの実験のスイッチ」）が1つでもあれば、前の版の `frontend/src/hooks/useAudioSession.ts`（録音のたびに `getUserMedia` を呼び、録音の後に track を `stop()` する）を、なければ `useKeptAudioSession` を使います（`useInterpreterAudioSession`。画面が外れるまで変えません）。この文書は、スイッチがないとき（`useKeptAudioSession`）の動きを書きます。`useAudioSession` とスイッチは PR C で外します。
 
-画面から hook を呼ぶのは、`start(言語)`、`stop()`（利用者の停止）、`abort(理由)`（中断）だけです。
+画面から hook を呼ぶのは、`start(言語)`、`stop()`（利用者の停止）、`abort(理由)`（中断と、`starting` の間の取り消し）だけです。
 
-国旗ボタンは、2 つの選択言語それぞれに表示されます。`handleFlagTap` は、`idle` または `ready` のときに表示中の原文、リアルタイム翻訳、翻訳文、`ttsText`、バックトランスレーション、エラーメッセージを空にし、状態を `starting` にしてから、タップされた国旗の言語で `start` を呼びます。`recording` 中に同じ国旗がタップされた場合は `stopRecording` を実行します。`recording` 中は反対側の国旗を、`starting`、`stopping`、`processing`、`speaking`、`error` の間は両方の国旗を操作できません。タップの判定には、React の状態ではなく `statusRef` の最新の値を使います。
+国旗ボタンは、2 つの選択言語それぞれに表示されます。`handleFlagTap` は、`idle` または `ready` のときに表示中の原文、リアルタイム翻訳、翻訳文、`ttsText`、バックトランスレーション、エラーメッセージを空にし、状態を `starting` にしてから、タップされた国旗の言語で `start` を呼びます。`starting` と `recording` の間は、画面全体を録音中の画面（オーバーレイ。[ui.md](ui.md) の「録音中の画面」）が覆います。`recording` の間は、録音中の画面のどこをタップしても `stopRecording` を実行します（今までの、同じ国旗の2回目のタップと同じ処理です。`stopRecording` は `recording` のときだけ止めるので、2回目以降のタップは何もしません）。`starting` の間は、録音中の画面の下のボタン（×）だけが取り消し（`handleCancelStarting`）を実行します。`recording` 中に同じ国旗がタップされた場合に `stopRecording` を実行する分岐も、守りとして残しています（録音中の画面が覆っているので、ふつうは届きません）。`recording` 中は反対側の国旗を、`starting`、`stopping`、`processing`、`speaking`、`error` の間は両方の国旗を操作できません。タップの判定には、React の状態ではなく `statusRef` の最新の値を使います。
 
 `start` は、`keptMic` が持っているマイクが使えれば（track が1本以上あり、どれも `ended` でなければ）、`getUserMedia` を呼ばずに、`await` を挟まずにその stream で録音を始めます（利用者の操作の中で同期的に録音を始めます。実機で確かめた実験の `legacykeep` と同じです）。使えなければ `keptMic` で `navigator.mediaDevices.getUserMedia({ audio: true })` を呼んでマイク入力を取得します。stream に audio track が1本以上あり、すべての track の `readyState` が `live` であることを確かめてから、`getSupportedMimeType` で選んだ MIME type で `MediaRecorder` を作成して `start()` します。`MediaRecorder.isTypeSupported` で `audio/webm;codecs=opus`、`audio/webm`、`audio/mp4`、`audio/ogg;codecs=opus` の順に確認し、最初に対応しているものを使います。どれにも対応していない場合は MIME type を指定せずに `MediaRecorder` を作成します。ここまで成功したときが録音の成立（マイク ON）で、hook は `onRecordingStarted` で画面に知らせ、画面は状態を `recording` にします。
 
 録音の成立の後に、補助の機能（音量の取得と音声認識）の開始を試みます。補助の機能が失敗しても、メッセージは出さずに録音を続け、診断のログにだけ残します。
 
-- 音量の取得：`AudioContext.createMediaStreamSource(stream)` で入力元を作り、`AnalyserNode` に接続します。`requestAnimationFrame` のループで `getByteTimeDomainData` を読み、振幅を `onLevel` で画面に渡し、画面は国旗周辺の波紋要素の `transform` と `opacity` を更新します。`AudioContext` の作成に失敗した場合は、波紋の表示と診断の値が出ないだけです
+- 音量の取得：`AudioContext.createMediaStreamSource(stream)` で入力元を作り、`AnalyserNode` に接続します。`requestAnimationFrame` のループで `getByteTimeDomainData` を読み、振幅を `onLevel` で画面に渡します。画面は、声の大きさを表示に使いません（`onLevel` には何もしない関数を渡します。録音中の画面の棒グラフは、音声認識の途中の文字で動きます。[ui.md](ui.md) の「録音中の画面」）。測った値は診断に残ります。`AudioContext` の作成に失敗した場合は、診断の値が出ないだけです
 - 音声認識：`SpeechRecognition` の constructor が取得できる場合は、タップされた国旗に対応する `lang.speechCode` を `recognition.lang` に設定して開始します。constructor が取得できない場合や、作成や `recognition.start()` が失敗した場合も、録音はそのまま継続し、Backend の文字起こしだけで結果を出します
 
 音声入力中は、`recognizedText` の変更に対して 800ms のデバウンスで `/api/translate` を呼び出します。このリアルタイム翻訳は `text` と選択済み `languages` を送信します。レスポンスの `translatedText` があり、`sourceLanguage` が `unknown` でない場合に `liveTranslatedText` を更新します。
@@ -114,8 +114,8 @@ Frontend の音声処理は、画面の `frontend/src/pages/InterpreterPage.tsx`
 | 状態 | 意味 | 国旗のタップ |
 | --- | --- | --- |
 | `idle` | 何もしていない（最初、またはエラーの後） | 録音を始める |
-| `starting` | 録音を始めている途中（タップから録音の成立まで。持っているマイクを使えないときは `getUserMedia` を待つ） | 受け付けない |
-| `recording` | 録音の成立の後、話している。`SpeechRecognition` が認識テキストを更新し、リアルタイム翻訳が動きます | 同じ国旗なら止める。もう一方は受け付けない |
+| `starting` | 録音を始めている途中（タップから録音の成立まで。持っているマイクを使えないときは `getUserMedia` を待つ）。録音中の画面の × で取り消せます | 受け付けない |
+| `recording` | 録音の成立の後、話している。`SpeechRecognition` が認識テキストを更新し、リアルタイム翻訳が動きます。録音中の画面のタップで止めます | 同じ国旗なら止める（録音中の画面が覆っているので、ふつうは届きません）。もう一方は受け付けない |
 | `stopping` | 利用者が止めて、録音の最後のデータ（`MediaRecorder` の `onstop`）を待っている | 受け付けない |
 | `processing` | 録音終了後に `/api/interpret` で確定翻訳を実行している状態、または原文編集後に `/api/translate` で再翻訳している状態。翻訳中メッセージを表示します | 受け付けない |
 | `ready` | 翻訳文、バックトランスレーション、`ttsText` が取得済みの状態。読み上げを押せるのは、この状態のときだけです | 録音を始める |
@@ -131,7 +131,8 @@ stateDiagram-v2
   ready --> starting: 国旗ボタンをタップ
   starting --> recording: 録音の成立
   starting --> error: getUserMedia の失敗、録音の成立までの失敗
-  recording --> stopping: 同じ国旗ボタンをタップ
+  starting --> idle: 録音中の画面の × で取り消し（abort('cancel')。文言は出さない）
+  recording --> stopping: 録音中の画面をタップ（同じ国旗ボタンのタップも同じ）
   recording --> error: MediaRecorder の onerror、MediaRecorder が自分で止まった
   stopping --> error: stop() の例外、onstop が 10 秒届かない
   stopping --> processing: 最後のデータがそろい、録音の資源を片付けた
@@ -145,6 +146,8 @@ stateDiagram-v2
   ready --> speaking: 読み上げボタンをタップ
   speaking --> ready: 再生終了、再生の失敗、見張りのタイマー
 ```
+
+`starting` の間の取り消し（`handleCancelStarting`）は、`starting` のときだけ、`abort('cancel')` で録音のセッションを中断して録音の資源を片付け、`idle` に戻します。文言は出しません。`getUserMedia` を待っている間に取り消したときは、中断のときと同じく、取得した stream を `keptMic` に残して次の録音で使い回し、画面には何も知らせません（診断の出来事は `stale_get_user_media_kept`）。取り消した後に遅れて録音の成立が来ないことは、セッションを先に無効にすることで守ります（もし来ても、画面は `starting` でないときの録音の成立を `abort('error')` で片付けます）。
 
 中断（画面が隠れる、ページを離れる、戻る、外れる）のときの遷移は、[6. 録音のライフサイクル](#6-録音のライフサイクル) の表に従います。中断のときに必ず `idle` に戻るわけではありません。
 
@@ -203,7 +206,7 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 
 | | 利用者の停止（`stop()`） | 中断の片付け（`abort(理由)`） |
 | --- | --- | --- |
-| きっかけ | 録音中の国旗をもう一度タップ | `hidden`、`pagehide`、`back`、`unmount`、`error` |
+| きっかけ | 録音中の画面のタップ（録音中の国旗をもう一度タップしても同じ） | `hidden`、`pagehide`、`back`、`unmount`、`error`、`cancel`（`starting` の間の取り消し） |
 | 止める理由 | `user` | 中断の理由 |
 | セッション | 最後のデータがそろって画面に渡した後に無効にします | 最初に無効にします |
 | 録音のデータ | Backend に送ります | 送りません（後から来る `onstop` は何もしません） |
@@ -233,7 +236,7 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 
 見張りの時間の 10 秒は、実機で確かめていない仮の値です。`stop()` から `onstop` までは、ふつうは数十から数百ミリ秒ですが、古い端末で、上限に近い長い録音（`audio/mp4` など）を止めた場合は、1 秒を超えることがあり得ます。短すぎると、正常な長い録音を「録音の失敗」として捨ててしまいます。長すぎた場合の損失は、ブラウザの不具合で `onstop` が届かないときに、`stopping` のまま長く待つことだけなので、損失の小さい長めの値にしています。診断の情報には、利用者の停止で `stop()` を呼んでから（`MediaRecorder` がすでに `inactive` のときは、止める指示を記録してから）`onstop` が届くまでの時間（`stopLatencyMs`）と、見張りのタイマーで片付けたか（`stopTimedOut`）と、それまでに待った時間（`stopWaitedMs`）を残します。PR 2 の診断の表示でこの時間を測り、実測の値に余裕を足した値に見直します。
 
-中断の片付け（失敗の片付けを含みます）では、理由（`hidden`、`pagehide`、`back`、`unmount`、`error`）によらず、今有効なセッションを先に無効にしてから、音声認識と音量の取得を止め、`MediaStreamAudioSourceNode` を `disconnect()` して `AudioContext` を閉じ、その後に `MediaRecorder` が止まっていなければ `stop()` し、参照を捨てます。録音の資源だけを片付け、track は `stop()` しません。
+中断の片付け（失敗の片付けと、`starting` の間の取り消しを含みます）では、理由（`hidden`、`pagehide`、`back`、`unmount`、`error`、`cancel`）によらず、今有効なセッションを先に無効にしてから、音声認識と音量の取得を止め、`MediaStreamAudioSourceNode` を `disconnect()` して `AudioContext` を閉じ、その後に `MediaRecorder` が止まっていなければ `stop()` し、参照を捨てます。録音の資源だけを片付け、track は `stop()` しません。
 
 片付けの順番：利用者の停止でも中断の片付けでも、「音声認識の停止 → `requestAnimationFrame` の取り消し → `disconnect()` → 音量の取得の `AudioContext` の `close()` の開始 → `MediaRecorder` の `stop()`」の順にします（track は止めません）。前の版（`useAudioSession`）と同じ順番で、実験の `legacykeep` とも同じです。
 
@@ -249,13 +252,16 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 
 中断の後の状態は、中断したときの状態と理由によって、次の表のとおりにします。`hidden`（`visibilitychange` で `hidden`）は一時的に GoTalk から離れる（戻ってくる）こと、`pagehide` はページそのものを離れること、`back`（言語の選択の画面に戻る）と `unmount`（コンポーネントが外れる）は画面が外れることとして扱います。
 
-| 中断したときの状態 | `hidden` | `pagehide` | `back`、`unmount` | `error` |
-| --- | --- | --- | --- | --- |
-| `starting`、`recording`、`stopping` | 録音のセッションを中断して録音の資源を片付け、`idle` に戻します | 録音のセッションを中断して録音の資源を片付け、`idle` に戻します | 録音のセッションを中断して録音の資源を片付けます（画面は外れます） | 録音のセッションを中断して録音の資源を片付け、`idle` に戻します（メッセージを表示します） |
-| `processing` | 何もしません。状態は `processing` のままで、Backend への問い合わせは続け、結果が来たら `ready` にします。その間は国旗を押せません | Backend への問い合わせを止め、結果を使いません。状態は `idle` に戻します | Backend への問い合わせを止めます（画面は外れます） | （起きません。Backend の失敗は今までの扱いのままです） |
-| `ready` | 何もしません | 何もしません | 何もしません（画面は外れます） | （起きません） |
-| `speaking` | 今鳴らしている音を止め（`stop()` と `disconnect()`）、`ready` に戻します（翻訳の結果は残します） | 今鳴らしている音を止め、`ready` に戻します | 今鳴らしている音を止めます（画面は外れます） | （起きません。読み上げの失敗は今までの扱いのままです） |
-| `idle` | 何もしません | 何もしません | 何もしません | （起きません） |
+| 中断したときの状態 | `hidden` | `pagehide` | `back`、`unmount` | `error` | `cancel` |
+| --- | --- | --- | --- | --- | --- |
+| `starting` | 録音のセッションを中断して録音の資源を片付け、`idle` に戻します | 録音のセッションを中断して録音の資源を片付け、`idle` に戻します | 録音のセッションを中断して録音の資源を片付けます（画面は外れます） | 録音のセッションを中断して録音の資源を片付け、`idle` に戻します（メッセージを表示します） | 録音のセッションを中断して録音の資源を片付け、`idle` に戻します（メッセージは出しません。録音中の画面の × のとき） |
+| `recording`、`stopping` | 録音のセッションを中断して録音の資源を片付け、`idle` に戻します | 録音のセッションを中断して録音の資源を片付け、`idle` に戻します | 録音のセッションを中断して録音の資源を片付けます（画面は外れます） | 録音のセッションを中断して録音の資源を片付け、`idle` に戻します（メッセージを表示します） | （起きません。`starting` のときだけです） |
+| `processing` | 何もしません。状態は `processing` のままで、Backend への問い合わせは続け、結果が来たら `ready` にします。その間は国旗を押せません | Backend への問い合わせを止め、結果を使いません。状態は `idle` に戻します | Backend への問い合わせを止めます（画面は外れます） | （起きません。Backend の失敗は今までの扱いのままです） | （起きません） |
+| `ready` | 何もしません | 何もしません | 何もしません（画面は外れます） | （起きません） | （起きません） |
+| `speaking` | 今鳴らしている音を止め（`stop()` と `disconnect()`）、`ready` に戻します（翻訳の結果は残します） | 今鳴らしている音を止め、`ready` に戻します | 今鳴らしている音を止めます（画面は外れます） | （起きません。読み上げの失敗は今までの扱いのままです） | （起きません） |
+| `idle` | 何もしません | 何もしません | 何もしません | （起きません） | （起きません） |
+
+`cancel` は、中断の片付け（`abort(理由)`）の理由の1つで、hook の中では、ほかの理由と同じ片付けをします（理由は、診断の止める理由と `abort:cancel` の出来事に残るだけです）。
 
 どの理由のときも、マイクの track は `stop()` しません（[6.1](#61-マイクの持ち方と用語)）。`unmount`（画面が外れる）のときは、読み上げを止めた後に、読み上げ用の `AudioContext` を `close()` します（読み上げの出力用で、マイクではありません）。
 
@@ -309,7 +315,7 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 - `MediaRecorder` の state、mimeType、録音の時間、録音の大きさ、エラー、利用者の停止から `onstop` までの時間（`stopLatencyMs`）、見張りのタイマーで片付けたか（`stopTimedOut`）と待った時間（`stopWaitedMs`）
 - `AudioContext` の state、音量の RMS と最大値と、取れたサンプルの数
 - 音声認識の結果があったかと、その文字数（本文は残しません）
-- 画面が残す出来事：マイクの音が来ないと判断した録音（`no_audio_detected:bytes=<大きさ>,ms=<長さ>`）、読み上げの見張りのタイマーで `ready` に戻したこと（`tts_ended_timeout`）、読み上げの `resume()` の失敗（拒否されたとき（同期の例外を含む）は `tts_resume_rejected:<例外の name>`、解決したが `running` でないときは `tts_resume_not_running:<state>`）、読み上げ用の `AudioContext` を作れなかったこと（`tts_context_create_failed:<例外の name>`）
+- 画面が残す出来事：マイクの音が来ないと判断した録音（`no_audio_detected:bytes=<大きさ>,ms=<長さ>`）、読み上げの見張りのタイマーで `ready` に戻したこと（`tts_ended_timeout`）、読み上げの `resume()` の失敗（拒否されたとき（同期の例外を含む）は `tts_resume_rejected:<例外の name>`、解決したが `running` でないときは `tts_resume_not_running:<state>`）、読み上げ用の `AudioContext` を作れなかったこと（`tts_context_create_failed:<例外の name>`）、読み上げの時間の記録（`tts_tap`、`tts_response:status=<HTTP の状態>`、`tts_downloaded:bytes=<大きさ>`、`tts_decoded:ms=<音声の長さ>`、`tts_started`。[9. TTS](#9-tts) の「読み上げの時間の記録」）
 
 `keptMic` は、`getUserMedia` を呼んだ回数（`getUserMediaCalls()`）と、track の `ended` の記録（`endedEvents()`）を持ちます。`useKeptAudioSession` の `getDiagnostics()` の結果に `keptMic: { getUserMediaCalls, endedEvents }` として入り、「コピー」の JSON にも入ります（診断の表示の画面には出しません。実験のスイッチのとき（`useAudioSession`）は入りません）。iPhone が track を止めたか（`ended` が来たか）を確かめ、`microphone_no_audio` が出たときの原因の切り分けに使います。
 
@@ -335,7 +341,7 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 }
 ```
 
-レスポンスが成功し、`data.translatedText` が存在し、`data.sourceLanguage !== 'unknown'` の場合だけ `liveTranslatedText` を更新します。リアルタイム翻訳の結果は `recording` 中だけ表示されます。リアルタイム翻訳中の `AbortError`、ネットワークエラー、HTTP エラーは UI エラーとして表示せず無視します。
+レスポンスが成功し、`data.translatedText` が存在し、`data.sourceLanguage !== 'unknown'` の場合だけ `liveTranslatedText` を更新します。リアルタイム翻訳の結果は、録音中の画面の文字の領域（話した文字の下）に表示されます（[ui.md](ui.md) の「録音中の画面」）。リアルタイム翻訳中の `AbortError`、ネットワークエラー、HTTP エラーは UI エラーとして表示せず無視します。
 
 ## 8. 録音終了後
 
@@ -343,8 +349,8 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 
 処理内容は以下です（[6.4 利用者の停止と中断の片付けの違い](#64-利用者の停止と中断の片付けの違い)）。
 
-- `status` を `stopping` にする
-- 波紋要素の `transform` と `opacity` を初期化する
+- `status` を `stopping` にする（録音中の画面は、この時点で消えます）
+- 録音中の画面の棒グラフを止める（`resetTextFlow()`。[ui.md](ui.md) の「録音中の画面」）
 - hook の `stop()` を呼ぶ。hook は、止める指示を記録してから、音声認識と音量の取得を止め、`AudioContext` を閉じてから、`MediaRecorder` を停止する
 
 `MediaRecorder` の `onstop` で、hook は録音データから `Blob` を作成し、録音の資源を片付け（track は止めません）、`onRecordingStopped` で画面に渡します。画面は、[8.1](#81-マイクの音が来ないときの検出) の判定の後、`recordingFlagIndex` を `null` にし、`callInterpretApi(blob)` で `status` を `processing` にして送信します。中断のときは、セッションを先に無効にしているので、`/api/interpret` は呼ばれません。
@@ -412,6 +418,18 @@ Frontend は、読み上げを `AudioContext` で鳴らします。マイクを�
 6. `onended` で `ready` に戻します。再生を始めた後に、見張りのタイマー（`AudioBuffer.duration` × 1000 ＋ 3000 ミリ秒）を始め、それまでに `onended` が来なければ、診断のログに `tts_ended_timeout` を残して `ready` に戻します（iPhone の割り込みなどで再生が止まり、`onended` が来ないまま `speaking` に残らないため）
 
 `await` の後ごとに、今有効な読み上げの番号かを確かめ、違えば何もしません（古い読み上げの結果や `resume()` の拒否が、新しい読み上げの状態を変えません）。読み上げを止める処理（`stopSpeaking()`）は冪等で、番号を「なし」にし、`/api/tts` の問い合わせと見張りのタイマーを止め、今鳴らしている音の `onended` を外して `stop()` と `disconnect()` を呼びます（例外は捨てます）。`AudioContext` は閉じません。
+
+読み上げの時間の記録：押してから鳴るまでの時間を、OpenAI の時間、通信の時間、iPhone での変換の時間に分けるため、`handleSpeak` は診断の出来事（`events` の `at` が時刻）を次の順に残します。処理の順番は変えず、記録を足すだけです。
+
+| 出来事 | 記録する場所 |
+| --- | --- |
+| `tts_tap` | `handleSpeak` の最初（`ready` の確認の後） |
+| `tts_response:status=<HTTP の状態>` | `fetch` が返った直後（今有効な読み上げの番号の確認の前） |
+| `tts_downloaded:bytes=<大きさ>` | `arrayBuffer()` の後 |
+| `tts_decoded:ms=<音声の長さ（ms、整数）>` | `decodeAudioData()` の後 |
+| `tts_started` | `AudioBufferSourceNode` の `start()` の直後 |
+
+`/api/tts` が失敗したとき（503 など）は、`tts_tap` と `tts_response:status=<HTTP の状態>` までが残ります。Backend は、`/api/tts` の成功のときに、`tts: runes=<入力の文字数> bytes=<音声の大きさ> openai_ms=<OpenAI への HTTP の呼び出しから音声の本体を読み終わるまでの時間>` をログに出します（読み上げの本文は出しません。失敗のときは今までどおり `TTS error` だけです）。
 
 `/api/tts` の呼び出し、`decodeAudioData`、`start()` に失敗した場合は、ログだけ残して `ready` に戻します（`ApiError` で文言があるときだけ文言を出します）。`speaking` の間に画面が隠れた場合やページを離れた場合は、読み上げを止めて `ready` に戻します（[6.6 中断のときの状態](#66-中断のときの状態)）。画面が外れるときは、読み上げを止めた後に、読み上げ用の `AudioContext` を `close()` します。
 

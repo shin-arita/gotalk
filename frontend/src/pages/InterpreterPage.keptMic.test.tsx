@@ -382,6 +382,8 @@ describe('InterpreterPage TTS with AudioContext', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     renderPage(readExperimentConfig('?exp='))
     await recordAndTranslate()
+    // 録音中の画面が消えた後の盾（400ms）のタイマーを終わらせてから、見張りのタイマーだけを数える
+    await act(async () => { vi.advanceTimersByTime(400) })
     await speak()
     expect(vi.getTimerCount()).toBe(1)
     act(() => { lastSource().onended?.() })

@@ -764,3 +764,21 @@ func TestReadOpenAIErrorDetail_RealConnectionErrors(t *testing.T) {
 		})
 	}
 }
+
+// The TTS handler logs the timing of a successful call without the text to speak.
+func TestLogging_TTSSuccessLogsTimingWithoutText(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	logs := captureLog(t)
+	setMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return fakeHTTPResponse(http.StatusOK, "audio-bytes"), nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/tts", strings.NewReader(`{"text":"秘密の読み上げ"}`))
+	rec := httptest.NewRecorder()
+	ttsHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	got := logs.String()
+	assertLogIncludes(t, got, "tts: runes=7 bytes=11 openai_ms=")
+	assertLogExcludes(t, got, "秘密の読み上げ", "TTS error")
+}

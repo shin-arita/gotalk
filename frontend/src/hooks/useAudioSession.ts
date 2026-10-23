@@ -12,7 +12,7 @@ import type { ExperimentDiagnostics, ExperimentSessionTrace } from './experiment
 // 「録音が成立した」「録音の最後のデータがそろった」「失敗した」などを callback で画面に知らせる
 
 // 中断の理由。利用者の停止（user）とは別に、セッションを先に無効にして、録音のデータを送らずに片付ける
-export type AudioSessionAbortReason = 'hidden' | 'pagehide' | 'back' | 'unmount' | 'error'
+export type AudioSessionAbortReason = 'hidden' | 'pagehide' | 'back' | 'unmount' | 'error' | 'cancel'
 export type AudioSessionStopReason = 'user' | AudioSessionAbortReason
 
 // 録音の成立までの失敗。getUserMedia の失敗は microphone_denied、getUserMedia の成功の後の失敗
