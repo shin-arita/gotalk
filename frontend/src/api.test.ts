@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { API_TIMEOUT_MS, ApiError, MAX_INTERPRET_AUDIO_BYTES, TTS_MAX_CHARS, apiErrorFromResponse, isTooLongForTts, messageKeyForError } from './api'
+import { API_TIMEOUT_MS, ApiError, MAX_INTERPRET_AUDIO_BYTES, MAX_UPLOAD_BYTES, TTS_MAX_CHARS, apiErrorFromResponse, isTooLongForTts, messageKeyForError } from './api'
 
 function res(body: unknown, json = true, status = 500): Response {
   return {
@@ -9,10 +9,11 @@ function res(body: unknown, json = true, status = 500): Response {
 }
 
 describe('API_TIMEOUT_MS', () => {
-  it('is longer than the backend deadlines (55s / 25s / 25s) and nginx (60s) for interpret', () => {
+  it('is longer than the backend deadlines (55s / 25s / 25s / 55s) and nginx (60s) for interpret and photo', () => {
     expect(API_TIMEOUT_MS.interpret).toBe(65_000)
     expect(API_TIMEOUT_MS.translate).toBe(30_000)
     expect(API_TIMEOUT_MS.tts).toBe(30_000)
+    expect(API_TIMEOUT_MS.photo).toBe(65_000)
   })
 })
 
@@ -24,6 +25,11 @@ describe('apiErrorFromResponse', () => {
     expect(e.endpoint).toBe('/api/translate')
     expect(e.status).toBe(503)
     expect(e.reason).toBe('upstream_busy')
+  })
+
+  it('uses the photo message keys for the codes of /api/photo', async () => {
+    expect((await apiErrorFromResponse('/api/photo', res({ error: 'x', code: 'no_text_found' }, true, 422))).messageKey).toBe('no_text_found')
+    expect((await apiErrorFromResponse('/api/photo', res({ error: 'x', code: 'photo_too_much_text' }, true, 422))).messageKey).toBe('photo_too_much_text')
   })
 
   it('uses the generic error for unknown codes, a missing code, and non-JSON bodies', async () => {
@@ -118,8 +124,13 @@ describe('isTooLongForTts', () => {
   })
 })
 
-describe('MAX_INTERPRET_AUDIO_BYTES', () => {
+describe('MAX_UPLOAD_BYTES', () => {
   it('is the nginx limit (1 MiB) minus a 16 KiB margin for the other multipart fields', () => {
-    expect(MAX_INTERPRET_AUDIO_BYTES).toBe(1_032_192)
+    expect(MAX_UPLOAD_BYTES).toBe(1_032_192)
+  })
+
+  // MAX_INTERPRET_AUDIO_BYTES は LegacyInterpreterPage が使う前の名前（GOTALK-3 で消す）
+  it('has the same value as the old name MAX_INTERPRET_AUDIO_BYTES', () => {
+    expect(MAX_INTERPRET_AUDIO_BYTES).toBe(MAX_UPLOAD_BYTES)
   })
 })

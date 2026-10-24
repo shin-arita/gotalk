@@ -174,12 +174,14 @@ docker compose ps
 | `OPENAI_TTS_MODEL` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | TTS model | `gpt-4o-mini-tts` |
 | `OPENAI_TTS_VOICE` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | TTS voice | `marin` |
 | `WHISPER_MODEL` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | `/api/interpret` で音声を文字起こしする model | `gpt-4o-transcribe` |
+| `OPENAI_VISION_MODEL` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | `/api/photo`（写真の翻訳）で写真の文字を読み取って訳す model | `gpt-6-luna` |
+| `OPENAI_VISION_REASONING_EFFORT` | Compose では渡さない。ホスト上で Backend を直接実行するときのシェルの環境変数だけ | `/api/photo` の推論の度合い（Responses API の `reasoning.effort`） | `none` |
 
 「未設定時」の列は、アプリケーションが環境変数を受け取らなかったときの動作です。
 
 VPS 側の `.env` には少なくとも `OPENAI_API_KEY` を設定します。`OPENAI_MODEL` は `docker-compose.yml` で default が定義されています。本番の `.env` には `CONTAINER_PREFIX`、`FRONTEND_PORT`、`BACKEND_PORT` を書きません（コンテナの名前とポートを既定の値にするため）。これらはステージングの `.env` だけで使います（[docker.md の「3.2 ステージングの override」](docker.md#32-ステージングの-overridedocker-composestagingyml) を参照）。
 
-`.env` を読むのは Docker Compose の変数置換だけで、Backend 自身は `.env` を読み込みません（`backend/main.go` は `os.Getenv` で環境変数を読むだけです）。`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `docker-compose.yml` が backend に渡していないため、`.env` に書いても、どの起動方法でも反映されず、Backend 実装の未設定時の default が使われます。これらはホスト上で Backend を直接実行する場合（開発時）に、シェルの環境変数として渡したときだけ反映されます（[development.md](development.md) を参照）。
+`.env` を読むのは Docker Compose の変数置換だけで、Backend 自身は `.env` を読み込みません（`backend/main.go` は `os.Getenv` で環境変数を読むだけです）。`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL`、`OPENAI_VISION_MODEL`、`OPENAI_VISION_REASONING_EFFORT` は `docker-compose.yml` が backend に渡していないため、`.env` に書いても、どの起動方法でも反映されず、Backend 実装の未設定時の default が使われます。これらはホスト上で Backend を直接実行する場合（開発時）に、シェルの環境変数として渡したときだけ反映されます（[development.md](development.md) を参照）。
 
 ```env
 OPENAI_API_KEY=sk-...

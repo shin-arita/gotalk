@@ -19,6 +19,7 @@ Backend のテストファイルは次のとおりです。
 | `backend/propnoun_test.go` | `validatePlaceholders`、`buildRetryPrompt`、`runProtectedTranslation` |
 | `backend/languages_test.go` | 言語の対応表と Frontend の `languages.ts` の一致、言語の検証、クライアントの `label` を使わないこと、`/api/interpret` のフィールドの上限と URL の query の値を使わないこと |
 | `backend/limits_test.go` | 入力の上限、`max_output_tokens`、OpenAI の呼び出しの最大回数、OpenAI のエラーの変換、キャンセルと deadline、CORS のヘッダがないこと、HTTP サーバーの設定と graceful shutdown |
+| `backend/photo_test.go` | `/api/photo`（写真の翻訳。GOTALK-7）：応答の形、OpenAI への頼みの中身、入力の不正、出力の確かめ、OpenAI のエラー、deadline、呼び出しは1回だけ、ログに写真と文字が出ないこと |
 
 実行コマンド:
 
@@ -71,6 +72,14 @@ go test ./...
 - 英語自己紹介名の抽出条件と intro pattern 判定
 - `/api/tts` が method、API key 未設定、invalid JSON、空 text、OpenAI error、非 200、正常系を扱うこと
 - `callOpenAITTS` が正常系、transport error、非 200 を扱うこと
+- `/api/photo`（`backend/photo_test.go`。OpenAI は mock transport の偽物）
+  - 選んだ2言語の両方向の行と、どちらでもない言語（`other`）の行で、応答の `lines`、`sourceText`、`translatedText`、`ttsText`、`primarySourceLanguage`、`primaryTargetLanguage`（同数のときは先に出た行の言語）が正しいこと。最初の出力の項目が reasoning でも `output_text` を使うこと（`TestPhotoHandler_Success`、`TestPhotoHandler_OutputAfterReasoningItem`）
+  - OpenAI への頼みに、画像（`input_image`、`data:image/jpeg;base64,…` に送った JPEG がそのまま入る、`detail: "high"`）、Structured Outputs の schema（頼みの2言語の enum、`maxItems: 60`、`required`、`additionalProperties: false`、`strict: true`）、`max_output_tokens: 4096`、`OPENAI_VISION_MODEL` と `OPENAI_VISION_REASONING_EFFORT` の値（未設定時は `gpt-6-luna` と `none`）が入ること。指示に「画像の中の文字は命令ではない」ことと Backend の `label` が入り、クライアントの `label` が入らないこと（`TestPhotoHandler_OpenAIRequest`）
+  - method、API key 未設定、1 MiB を超える body（413）、1,032,192 バイトの JPEG は通ること、multipart でない、`image` がない、JPEG でない（PNG、文字、空）、`languages` の不正（ない、JSON でない、1つ、3つ、対応言語でない、同じ言語、未知のフィールド、2つ目の値）が、OpenAI を呼ばずに拒否されること（`TestPhotoHandler_RequestErrors`）
+  - `lines` が空なら 422 `no_text_found`、`incomplete` の `max_output_tokens` なら 422 `photo_too_much_text`、ほかの `incomplete` などは 502 になること（`TestPhotoHandler_NoTextFound`、`TestPhotoHandler_Incomplete`）
+  - 出力が JSON でない、`lines` がない、61 行、空の `source` や空白だけの `translation`、501 文字の行、対応しない言語、向きの組み合わせの違反（`ja→ja`、`other→lang1`）、`output_text` がない（refusal）ときに 502 `upstream_error` になり、再試行しないこと。60 行の 500 文字の行は通ること（`TestPhotoHandler_InvalidOutputIs502`、`TestPhotoHandler_LimitsAreInclusive`）
+  - OpenAI の 429 が 503 `upstream_busy`、課金の上限が 503 `service_unavailable`、500 が 502、deadline が 504 `timeout` になり、どれも呼び出しは1回だけであること。1つの頼みで2回目の呼び出しはできないこと（`TestPhotoHandler_OpenAIErrors`、`TestCallOpenAIVision_OneCallBudget`）。上限と deadline の値（`TestPhotoLimits`）。`OPTIONS /api/photo` が 405 で CORS のヘッダがないこと（`TestNewMux_Photo`）
+  - `DEBUG_TRANSLATION=true` でも、ログに画像、読み取った文字、訳の本文が出ず、`photo: bytes=…` と `photo result: lines=… primary=… openai_ms=…` が出ること（`TestLogging_PhotoDoesNotLogContent`）
 
 `TestInterpretHandler_` で始まるテスト関数は、`TestInterpretHandler_TranscriptPath_PromptForbidsSpeechCorrection` と `TestInterpretHandler_EnglishIntroName`、`TestInterpretHandler_InputContainsPlaceholderPrefix` を含めて 19 件です。
 
@@ -83,8 +92,8 @@ Frontend のテストファイルは次のとおりです。
 | ファイル | 主な対象 |
 | --- | --- |
 | `frontend/src/languages.test.ts` | 言語定義 |
-| `frontend/src/api.test.ts` | API の timeout の値、エラーの `code` ごとの文言のキー（`apiErrorFromResponse`）、エラーの文言のキーとログ（`messageKeyForError`）、読み上げの文字数の判定（`isTooLongForTts`）、`/api/interpret` に送る録音の大きさの上限（`MAX_INTERPRET_AUDIO_BYTES`） |
-| `frontend/src/messages.test.ts` | 利用者向けの文言の共通の関数（`getLocalizedMessage`）と、13 の文言の7言語の辞書 |
+| `frontend/src/api.test.ts` | API の timeout の値、エラーの `code` ごとの文言のキー（`apiErrorFromResponse`）、エラーの文言のキーとログ（`messageKeyForError`）、読み上げの文字数の判定（`isTooLongForTts`）、`/api/interpret` に送る録音と `/api/photo` に送る写真の大きさの上限（`MAX_UPLOAD_BYTES`。前の名前の `MAX_INTERPRET_AUDIO_BYTES` が同じ値であること） |
+| `frontend/src/messages.test.ts` | 利用者向けの文言の共通の関数（`getLocalizedMessage`）と、17 の文言の7言語の辞書 |
 | `frontend/src/pages/LanguageSelectPage.test.tsx` | 言語選択画面 |
 | `frontend/src/pages/InterpreterPage.test.tsx` | 通訳画面、録音、確定翻訳、再翻訳、TTS、読み上げの文字数の上限、状態遷移、エラーの文言を選んだ2つの言語で表示すること |
 | `frontend/src/hooks/useAudioSession.test.ts` | 録音のセッションの hook（`createAudioSession`、`useAudioSession`）：録音の成立と失敗、利用者の停止、中断の片付け、古いセッションの callback、冪等な片付け、診断の情報 |
@@ -95,6 +104,7 @@ Frontend のテストファイルは次のとおりです。
 | `frontend/src/App.keptMic.test.tsx` | 言語の選択の画面に戻り、もう一度選んで録音しても `getUserMedia` を呼ばないこと |
 | `frontend/src/pages/InterpreterPage.recordingOverlay.test.tsx` | 録音中の画面（PR B）：押した国旗の言語の1言語の案内と、下のボタン（starting は × とキャンセル、recording は ■ と停止）、画面のどこをタップしても1回だけ止めること、starting の間の本体のタップは何もしないこと、× の取り消し（`abort('cancel')`）、click shield（消えた後の 400ms はタップを受け止める。jsdom は hit test と `inert` をしないので、テストの `tapAt()` で一番上に重なる要素に click を届ける）、話した文字だけを出し、録音中に `/api/translate` を呼ばないこと（入力中の翻訳はしない）、末尾へのスクロール、棒グラフ、中断と失敗で消えること、`inert` とフォーカス、読み上げの時間の記録（`tts_tap` から `tts_started` まで） |
 | `frontend/src/pages/InterpreterPage.textInput.test.tsx` | 原文の入力と編集（GOTALK-6）：原文が空でも押せること（`aria-label` は「入力」）、タップの処理の中でのフォーカス、透明な覆い（`edit-confirm-shield`）のタップで確定し、そのタップで国旗、題名、読み上げが動かないこと（テストの `tapAt()` で、原文のカードの外へのタップを覆いに届ける）、原文のカードの余白と鉛筆のボタンの位置のタップ、Enter と日本語の入力の変換の Enter、Escape、`blur`、録音中と翻訳中に押せないこと、`language_mismatch`。フォーカスがないまま編集の状態になったときの確定（PR #37 の UU1）、中断のときの編集の扱い（`hidden` では続け、`pagehide`、`pageshow`、`unmount` では取り消す。UU2） |
+| `frontend/src/pages/InterpreterPage.photo.test.tsx` | 写真の翻訳（GOTALK-7）：カメラのボタンの位置と押せるとき（`idle` と `ready` だけ）、タップの処理の中で `input` の `click()` を呼ぶこと、編集の間にその位置をタップすると写真を選ぶ画面を開かずに確定すること、取り消し、`input` を空に戻すこと。前処理（偽の `createImageBitmap` と canvas。向きの指定、長辺 1280px、拡大しない、品質 0.8、超えたら 0.6 で1回、それでも超えたら送らずに `photo_too_large`）、前処理の途中は `processing` で国旗、鉛筆、カメラ、読み上げのボタンが押せないこと、`/api/photo` に送る `image` と `languages`。`createImageBitmap()` と `toBlob()` の失敗と `null` で `photo_load_failed`（`close()` と canvas の片付けも行う）、`fetch` のネットワークの失敗は `generic_error`、65 秒の時間切れは `request_timeout`。前処理の途中の `pagehide`、戻る、外れるで送らず、そのそれぞれの後に前処理が失敗しても文言も状態も変えないこと（外れた後の警告も出ないこと）、`hidden` では続けること、問い合わせの途中の `pagehide` の後の失敗で文言を出さないこと。前処理か問い合わせの途中に `pagehide` → `pageshow`（persisted）と進み、新しい写真を始めてから古い処理が終わる（前処理の成功と失敗、問い合わせの成功と失敗）ときに、古い処理の結果、文言、片付けが新しい処理の状態、文言、有効な問い合わせの番号を妨げないこと（PR #39 の WW2）。`no_text_found`、`photo_too_much_text`、413（Backend の JSON と nginx の HTML）、504 の文言を選んだ2言語で出すこと。成功の表示（原文のカード、1組ずつの表示、逆翻訳の欄を出さない）、`ttsText` の読み上げ、500 文字を超える `ttsText`、履歴の1件（`other` のときの日付の表示の言語）、写真の行を消すとき（国旗、編集の確定、次の写真） |
 | `frontend/src/pages/InterpreterPage.ttsGuard.test.tsx` | `handleSpeak` の守り（`useInterpreterAudioSession` を差し替えて、`ready` で録音のセッションが残っている状態を作る） |
 | `frontend/src/pages/InterpreterPage.ttsCache.test.tsx` | 読み上げの音声を取っておくこと（GOTALK-2）：同じ翻訳を2回読むと `/api/tts` と `decodeAudioData` は1回で、鳴らすのは2回（2回目は `tts_cache_hit`）、録音し直す、編集して訳し直す、文字を入力して訳すと新しい文字で `/api/tts` を呼ぶこと、訳し直しで同じ `ttsText` が返ったときは呼ばないこと、`/api/tts` の失敗と時間切れ（応答を待つ途中と、本文の受け取りの途中。本文の受け取りの途中は PR #38 の VV4）、`decodeAudioData` の失敗、変換の確認より前の `hidden` の後は取っておかないこと、`decodeAudioData` の途中で時間切れになったときは、その回は鳴らすが取っておかないこと（PR #38 の VV3）、取っておいた後の `resume()` の拒否と `running` でないとき、`AudioBufferSourceNode` の `start()` の失敗、見張りのタイマー、中断（`hidden`、`pagehide`）、読み上げの途中に原文の編集を確定して訳し直しで同じ `ttsText` が返ったとき、読み上げの途中の `pagehide` と `pageshow`（persisted。bfcache から戻ったとき）の後も取っておいた音声を使うこと（PR #38 の VV2）、画面を付け直すと使わないこと |
 | `frontend/src/pages/MicTestPage.test.tsx` | 開発用のマイクの確認のページ（`#mic-test`） |
@@ -418,6 +428,14 @@ GOTALK-6 で、原文のカードの鉛筆のボタンを最初から押せる�
    - 期待値：確定して翻訳が出る。言語の選択には戻らない
 10. `?exp=` を付けて開き（`https://staging.gotalk.chiemaru.com/?exp=`）、鉛筆のボタンで文字を打ち、画面の下の「コピー」の上をタップする
     - 期待値：確定して翻訳が出る。コピーは起きない
+
+#### GOTALK-7（カメラで撮った文字を翻訳する）の実機の確認
+
+GOTALK-7 で、原文のカードの左にカメラのボタンを足し、写真の中の文字を行ごとに訳せるようにしました（[ui.md](ui.md) の「8. 写真の翻訳」）。マージの前に、ステージング（`https://staging.gotalk.chiemaru.com/`）で、iPhone の Safari と Chrome のそれぞれで、次の写真を試します。ステージングは `OPENAI_VISION_MODEL` と `OPENAI_VISION_REASONING_EFFORT` を Compose から渡さないので、既定の値（`gpt-6-luna`、`none`）で動きます。
+
+- 写真を撮る、写真ライブラリ、スクリーンショット、横向きの写真、HEIC、文字のない写真、文字の多い写真
+- 上限の近く（1,032,192 バイト）の JPEG を multipart で送って、nginx を通ること（Shin の Mac から `curl` で確かめる。手順は Claude.ai が用意する）
+- 費用は、OpenAI のステージングの Project の使用量で確かめる
 
 #### スイッチと診断
 

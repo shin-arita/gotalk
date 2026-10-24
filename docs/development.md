@@ -245,7 +245,7 @@ go test ./...
 go build -o /tmp/gotalk-backend .
 ```
 
-Backend は `:8080` で HTTP server を起動します。`OPENAI_API_KEY`、`OPENAI_MODEL`、`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL`、`DEBUG_TRANSLATION` は `backend/main.go` で `os.Getenv` により参照されます。
+Backend は `:8080` で HTTP server を起動します。`OPENAI_API_KEY`、`OPENAI_MODEL`、`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL`、`DEBUG_TRANSLATION` は `backend/main.go` で、`OPENAI_VISION_MODEL`、`OPENAI_VISION_REASONING_EFFORT` は `backend/photo.go` で、`os.Getenv` により参照されます。
 
 Backend は `.env` を読み込まないため、ホスト上で Backend を起動する場合は、必要な環境変数をシェルで渡します。
 
@@ -257,12 +257,14 @@ export OPENAI_MODEL=gpt-4o-mini
 export OPENAI_TTS_MODEL=gpt-4o-mini-tts
 export OPENAI_TTS_VOICE=marin
 export WHISPER_MODEL=gpt-4o-transcribe
+export OPENAI_VISION_MODEL=gpt-6-luna
+export OPENAI_VISION_REASONING_EFFORT=none
 # 翻訳の debug log が必要なときだけ設定します（下の「Backend の debug log」を参照）
 # export DEBUG_TRANSLATION=true
 go run .
 ```
 
-`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` を反映できるのは、この方法で起動した場合だけです。
+`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL`、`OPENAI_VISION_MODEL`、`OPENAI_VISION_REASONING_EFFORT` を反映できるのは、この方法で起動した場合だけです。
 
 ### Backend の debug log
 

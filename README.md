@@ -15,6 +15,7 @@ GoTalk は、異なる言語を話す 2 人がブラウザ上で会話するた�
 - 音声認識テキストが得られない場合の、OpenAI 音声文字起こし API（whisper-1、gpt-4o-transcribe）による言語判定と文字起こし
 - OpenAI Responses API による翻訳とバックトランスレーション
 - 文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳（録音中の入力中の翻訳はしません）
+- カメラで撮った文字の翻訳（メニュー、看板などの写真の文字を、OpenAI Responses API で行ごとに読み取って訳します。選んだ写真は翻訳のために OpenAI に送り、サーバーには残しません）
 - OpenAI Audio Speech API による翻訳文の読み上げ（500 文字まで。500 文字を超える翻訳の結果は、全文を表示しますが読み上げはできません）
 - 画面内の会話履歴表示
 
@@ -195,7 +196,7 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
 ```
 
-`.env` を読むのは Docker Compose の変数置換だけで、Backend 自身は `.env` を読み込みません。`docker-compose.yml` は `.env` の値のうち `OPENAI_API_KEY` と `OPENAI_MODEL` を backend に渡します。翻訳の debug log を出す `DEBUG_TRANSLATION` は `docker-compose.yml` で渡していないため、本番を含む Compose の起動では debug log は出力されません（ローカルで有効にする方法は [docs/development.md](docs/development.md) を参照）。`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `.env` に書いても、どの起動方法でも反映されません。これらはホスト上で Backend を直接実行する場合に、シェルの環境変数として渡したときだけ反映されます。未設定時は Backend の既定値（`gpt-4o-mini-tts`、`marin`、`gpt-4o-transcribe`）が使われます。`.env.example` ではこの 3 つをコメントアウトして記載しています。
+`.env` を読むのは Docker Compose の変数置換だけで、Backend 自身は `.env` を読み込みません。`docker-compose.yml` は `.env` の値のうち `OPENAI_API_KEY` と `OPENAI_MODEL` を backend に渡します。翻訳の debug log を出す `DEBUG_TRANSLATION` は `docker-compose.yml` で渡していないため、本番を含む Compose の起動では debug log は出力されません（ローカルで有効にする方法は [docs/development.md](docs/development.md) を参照）。`OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`WHISPER_MODEL` は `.env` に書いても、どの起動方法でも反映されません。これらはホスト上で Backend を直接実行する場合に、シェルの環境変数として渡したときだけ反映されます。未設定時は Backend の既定値（`gpt-4o-mini-tts`、`marin`、`gpt-4o-transcribe`）が使われます。`.env.example` ではこの 3 つをコメントアウトして記載しています。写真の翻訳に使う `OPENAI_VISION_MODEL` と `OPENAI_VISION_REASONING_EFFORT` も同じく `docker-compose.yml` で渡していないため、Compose の起動では Backend の既定値（`gpt-6-luna`、`none`）が使われます（`.env.example` にコメントアウトして記載しています）。
 
 Docker Compose で frontend/backend を起動します。
 

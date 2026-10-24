@@ -16,6 +16,10 @@ export type MessageKey =
   | 'recording_start_failed'
   | 'recording_failed'
   | 'microphone_no_audio'
+  | 'no_text_found'
+  | 'photo_too_much_text'
+  | 'photo_load_failed'
+  | 'photo_too_large'
 
 // 文言がない言語のときに使う言語
 const FALLBACK_LANGUAGE = 'en'
@@ -152,6 +156,46 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
     'ko':    '마이크 소리를 받지 못했습니다. 브라우저를 완전히 종료한 후 다시 열어 주세요.',
     'th':    'ไม่ได้รับเสียงจากไมโครโฟน กรุณาปิดเบราว์เซอร์ให้สนิทแล้วเปิดใหม่อีกครั้ง',
     'vi':    'Không nhận được âm thanh từ micrô. Vui lòng đóng hẳn trình duyệt rồi mở lại.',
+  },
+  // 写真の翻訳（/api/photo）で、写真に文字が見つからなかった場合（Backend の no_text_found）
+  no_text_found: {
+    'ja':    '写真から文字を読み取れませんでした',
+    'en':    'No text could be read from the photo.',
+    'zh-CN': '无法从照片中读取文字。',
+    'zh-TW': '無法從照片中讀取文字。',
+    'ko':    '사진에서 글자를 읽을 수 없었습니다.',
+    'th':    'ไม่สามารถอ่านข้อความจากรูปภาพได้',
+    'vi':    'Không thể đọc chữ từ ảnh.',
+  },
+  // 写真の文字が多く、訳の出力が上限で切れた場合（Backend の photo_too_much_text）
+  photo_too_much_text: {
+    'ja':    '写真の文字が多すぎます\n訳したいところを撮り直してください',
+    'en':    'The photo has too much text. Please retake just the part you want translated.',
+    'zh-CN': '照片中的文字太多。请只拍摄需要翻译的部分。',
+    'zh-TW': '照片中的文字太多。請只拍攝需要翻譯的部分。',
+    'ko':    '사진에 글자가 너무 많습니다. 번역할 부분만 다시 찍어 주세요.',
+    'th':    'รูปภาพมีข้อความมากเกินไป กรุณาถ่ายใหม่เฉพาะส่วนที่ต้องการแปล',
+    'vi':    'Ảnh có quá nhiều chữ. Vui lòng chụp lại phần bạn muốn dịch.',
+  },
+  // 選んだ写真を開けない、縮められない場合（Frontend の前処理の失敗）
+  photo_load_failed: {
+    'ja':    '写真を開けませんでした\n別の写真でお試しください',
+    'en':    'The photo could not be opened. Please try another photo.',
+    'zh-CN': '无法打开照片，请换一张照片再试。',
+    'zh-TW': '無法開啟照片，請換一張照片再試一次。',
+    'ko':    '사진을 열 수 없습니다. 다른 사진으로 다시 시도해 주세요.',
+    'th':    'ไม่สามารถเปิดรูปภาพได้ กรุณาลองใช้รูปภาพอื่น',
+    'vi':    'Không thể mở ảnh. Vui lòng thử ảnh khác.',
+  },
+  // 縮めた写真が送れる大きさを超えた場合と、/api/photo の 413
+  photo_too_large: {
+    'ja':    '写真が大きすぎます\n別の写真でお試しください',
+    'en':    'The photo is too large. Please try another photo.',
+    'zh-CN': '照片太大，请换一张照片再试。',
+    'zh-TW': '照片太大，請換一張照片再試一次。',
+    'ko':    '사진이 너무 큽니다. 다른 사진으로 다시 시도해 주세요.',
+    'th':    'รูปภาพมีขนาดใหญ่เกินไป กรุณาลองใช้รูปภาพอื่น',
+    'vi':    'Ảnh quá lớn. Vui lòng thử ảnh khác.',
   },
 }
 

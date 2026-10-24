@@ -21,6 +21,8 @@ const (
 	maxInterpretBodyBytes = 3 << 19 // 1.5 MiB
 	// maxAudioBytes is the most bytes accepted for the audio part of /api/interpret.
 	maxAudioBytes = 1 << 20 // 1 MiB
+	// maxPhotoBodyBytes is the most bytes accepted for a whole /api/photo request body.
+	maxPhotoBodyBytes = 1 << 20 // 1 MiB
 	// maxJSONBodyBytes is the most bytes accepted for a /api/translate or /api/tts request body.
 	maxJSONBodyBytes = 16 << 10 // 16 KiB
 	// maxTextRunes is the most characters (runes) accepted for the text to translate or read aloud,
@@ -29,6 +31,11 @@ const (
 
 	// maxOutputTokens is set on every Responses API call.
 	maxOutputTokens = 1024
+
+	// maxPhotoOutputTokens is set on the /api/photo call (the lines and their translations).
+	maxPhotoOutputTokens = 4096
+	// maxPhotoLines is the most lines read from one photo.
+	maxPhotoLines = 60
 
 	// maxTranslationRetries is the number of retries for each of the translation and the
 	// back-translation on the proper noun protection path (see runProtectedTranslation).
@@ -44,6 +51,7 @@ const (
 	maxTranslateRequestCalls  = maxTranslationCalls
 	maxInterpretRequestCalls  = 2 + maxTranslationCalls
 	maxTTSRequestCalls        = 1
+	maxPhotoRequestCalls      = 1
 	openAIClientTimeout       = 120 * time.Second
 	maxUpstreamRetryAfterSecs = 60
 )
@@ -54,6 +62,7 @@ var (
 	interpretDeadline = 55 * time.Second
 	translateDeadline = 25 * time.Second
 	ttsDeadline       = 25 * time.Second
+	photoDeadline     = 55 * time.Second
 )
 
 // openAIClient is the HTTP client for every OpenAI request. Its timeout is a safety net longer
@@ -72,6 +81,8 @@ const (
 	codeInternalError      = "internal_error"
 	codeLanguageMismatch   = "language_mismatch"
 	codeProtectionFailed   = "proper_noun_protection_failed"
+	codeNoTextFound        = "no_text_found"
+	codePhotoTooMuchText   = "photo_too_much_text"
 )
 
 // logLimit logs a request stopped by a limit, a cancellation, or an OpenAI error that was

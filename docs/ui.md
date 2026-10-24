@@ -44,9 +44,15 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 | `microphone_no_audio` | マイクの音を受け取れませんでした。ブラウザを一度終了してから、開き直してください | 音声認識の文字がなく、録音のデータが 1024 バイト（`MIN_INTERPRET_AUDIO_BYTES`）未満で、録音の長さが 1 秒以上の場合（マイクの音が来ていない）。録音は Backend に送りません。1 秒未満のとき（押してすぐ止めた）は `recording_failed` を出します（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」） |
 | `generic_error` | エラーが発生しました。もう一度お試しください。 | 対応する文言がない status や `code`（502 `upstream_error` など）、ネットワークのエラー（`fetch` の reject）、応答が JSON として読めない場合など |
 | `language_unclear` | 言語不明、もう一度お話ください | `/api/interpret` と `/api/translate`（再翻訳）の 422 `language_mismatch` |
-| `request_timeout` | うまく翻訳できませんでした。もう一度お願いします。 | Frontend の `fetch` の timeout（`AbortController` の abort。`/api/interpret` は 65 秒、再翻訳の `/api/translate` は 30 秒）。Backend の 504（`timeout`）とは別の文言です |
+| `request_timeout` | うまく翻訳できませんでした。もう一度お願いします。 | Frontend の `fetch` の timeout（`AbortController` の abort。`/api/interpret` と `/api/photo` は 65 秒、再翻訳の `/api/translate` は 30 秒）。Backend の 504（`timeout`）とは別の文言です |
+| `no_text_found` | 写真から文字を読み取れませんでした | `/api/photo` の 422 `no_text_found`（写真に文字が見つからない） |
+| `photo_too_much_text` | 写真の文字が多すぎます<br>訳したいところを撮り直してください | `/api/photo` の 422 `photo_too_much_text`（訳の出力が上限で切れた） |
+| `photo_load_failed` | 写真を開けませんでした<br>別の写真でお試しください | 写真の前処理の失敗（`createImageBitmap()`、canvas、`toBlob()` の失敗と、`toBlob()` が `null` を返した場合）。`/api/photo` の問い合わせの失敗には使いません |
+| `photo_too_large` | 写真が大きすぎます<br>別の写真でお試しください | 縮めた写真が品質 0.6 でも 1,032,192 バイト（`MAX_UPLOAD_BYTES`）を超える場合（送りません）と、`/api/photo` の 413（本文の形式によらない） |
 
 7言語の文言は `frontend/src/messages.ts` の `MESSAGES` を参照してください。
+
+表の `<br>` は改行です。写真の翻訳の日本語の文言のうち2つの文からなるもの（`photo_too_much_text`、`photo_load_failed`、`photo_too_large`）は、句点も読点も使わず、文と文の間を改行（`\n`）にしています。エラーの表示の位置（`error-text`）は `white-space: pre-line` なので、この改行と、2つの言語の間の空行は、そのまま表示されます。
 
 読み上げ（`/api/tts`）のエラーは、`tts_too_long`、`service_unavailable`、`upstream_busy`、`timeout` の場合だけ表示します。表示する文言がないエラー（502、ネットワークのエラー、timeout など）では何も表示せず、ログにだけ残します。本番の通訳の画面（`InterpreterPage`）では、録音中のリアルタイム翻訳はしません（Legacy の実験の経路では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残り、その失敗は表示しません）。
 
@@ -73,6 +79,7 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 | `frontend/src/pages/InterpreterPage.tsx:981` | `原文を編集` | 原文の編集の textarea |
 | `frontend/src/pages/InterpreterPage.tsx:993` | `入力`（原文が空のとき）、`編集`（原文があるとき） | 原文の入力と編集のボタン（[原文の入力と編集](#7-原文の入力と編集)） |
 | `frontend/src/pages/InterpreterPage.tsx:779` | `発声する` | 読み上げのボタン |
+| `frontend/src/pages/InterpreterPage.tsx:1129` | `写真から翻訳` | カメラのボタン（[写真の翻訳](#8-写真の翻訳)） |
 | `frontend/index.html` | `<html lang="ja">` | ページの言語（スクリーンリーダーの読み上げの言語の判定に使われます） |
 
 開発用の確認のページ（URL の末尾に `#tts-test` を付けたときの `frontend/src/pages/TtsTestPage.tsx` と、`#mic-test` を付けたときの `frontend/src/pages/MicTestPage.tsx`）は、開発者が実機で動作を確かめるためのもので、通常の画面からはリンクしていません。これらのページの文言は日本語だけで、[1. 利用者向けの文言の言語](#1-利用者向けの文言の言語) の決まりの対象外です。
@@ -143,7 +150,7 @@ iPhone では、タップで要素が消えた直後に、同じ位置の下の�
 - 押せるとき：状態が `idle`、`ready`、`speaking` のとき（原文が空でも押せます）。録音中、翻訳中（`starting`、`recording`、`stopping`、`processing`）と、編集の間は押せず、薄く表示します（`opacity: 0.3`）
 - `aria-label`：原文が空なら「入力」、あれば「編集」です（日本語だけ。[5. 決まりの対象に入っていないもの](#5-決まりの対象に入っていないもの)）
 - 押したとき：原文があればその文字を入れた状態で、空なら空の状態で、原文のカードが文字を打つ欄（`textarea`）になります。新しい文を打つときは、利用者が消して打ちます（「新しい入力」と「手直し」を分けるボタンはありません）。iPhone では、タップの処理の中で `focus()` を呼ばないとキーボードが出ないことがあるため、ボタンのタップの処理の中で、`flushSync` で `textarea` を描画してから、同じ処理の中でフォーカスを移し、カーソルを末尾に置き、高さを合わせます
-- 大きさと位置：押せる範囲は 44px 角（中の鉛筆のアイコンは 24px）で、原文のカードの縦の中心に置きます（`top: 50%; transform: translateY(-50%);`、右から 8px）。原文が空のときも1行分の高さ（原文の 24px × 1.45 = 34.8px。`min-height`）を保つので、空のときと1行のときでカードの高さは変わりません。原文の右の余白（`padding-right: 56px`）は、ボタンが文字に重ならない幅です
+- 大きさと位置：押せる範囲は 44px 角（中の鉛筆のアイコンは 24px）で、原文のカードの縦の中心に置きます（`top: 50%; transform: translateY(-50%);`、右から 8px）。原文が空のときも1行分の高さ（原文の 24px × 1.45 = 34.8px。`min-height`）を保つので、空のときと1行のときでカードの高さは変わりません。原文の左右の余白（`padding: 20px 56px`）は、左のカメラのボタン（[8. 写真の翻訳](#8-写真の翻訳)）と右の鉛筆のボタンが、原文の文字と `textarea` に重ならない幅です
 - 確定：次のどれでも確定します。前後の空白を除いた文字が空なら何もしません。前の原文と同じ文字で、その翻訳が出ているときも何もしません。同じ文字でも、翻訳が出ていなければ（訳し直しの失敗、中断、`language_unclear` の後など）訳し直します。それ以外は、`/api/translate` に選んだ2つの言語を送り、どちらの言語かを判定して訳します（今までの編集の後の再翻訳と同じ。どちらでもなければ `language_unclear`）。翻訳中の表示（「ただいま翻訳中です」）の言語の順は、最後に押した国旗から決めます（打った文の言語は応答が来るまで分からないため）。翻訳の結果は翻訳のカードに出し、履歴に足します。訳し直しを始めるとき（`/api/translate` を呼ぶ直前）に、前の翻訳、逆翻訳、読み上げの文を消します（読み上げのボタンも消えます）。新しい原文と前の原文の翻訳が、一組のように並ばないようにするためです。訳し直しが失敗したとき（通信のエラー、時間切れ、混み合いなど）や、ページを離れて中断したときも、前の翻訳は戻さず、`idle` になります。打った文は原文のカードに残すので、もう一度確定すれば訳し直せます
   - 画面のどこかをタップする：編集の間だけ、透明な覆い（`edit-confirm-shield`）を画面全体に出します（`position: fixed; inset: 0;`、`z-index: 10`。画面の普通の要素より上で、録音中の画面と click shield の `1000` より下）。原文のカードは、編集の間だけ覆いより上に出します（`source-card--editing`、`z-index: 11`）。iPhone の Safari では、押せない要素（ただの文字や余白）をタップしても `blur` が起きないことがあるためです。覆いのタップでは、`preventDefault()` と `stopPropagation()` をしてから確定します（`confirmEditFromTap()`。`textarea` にフォーカスがあれば `blur()` して `blur` の処理で確定し、フォーカスがなければ（iPhone が `focus()` を受け付けなかった、裏に回して戻った、など。フォーカスのない要素の `blur()` は `blur` の出来事を出さないため）直接確定します）。**このタップでは、確定のほかに何も起こしません**（透けて見える国旗の録音、題名の戻る、読み上げなどは起きません。もう一度タップすれば、ふつうに動きます）。覆いの `mousedown` の既定の動き（フォーカスの移動）も止めます（click の前に `blur` で覆いが消えて、click が下の要素に届かないようにするためです）
   - 原文のカードの中の、`textarea` の外（余白と、鉛筆のボタンの位置）をタップする：カードの `onClick` で、覆いのタップと同じように確定します（`confirmEditFromTap()`）。鉛筆のボタンは、編集の間は `source-card__edit--editing`（`pointer-events: none`）を付けて、タップの対象から外し、下のカードにタップを届けます（`disabled` の `<button>` の上のタップは、親へのイベントの伝わり方に頼れないためです）
@@ -162,7 +169,22 @@ iPhone では、タップで要素が消えた直後に、同じ位置の下の�
 
   ただし、ブラウザが裏に回すときなどに `textarea` の `blur` を出した場合は、その `blur` で確定します（`blur` の扱いは変えていません）
 
-## 8. 関連ドキュメント
+## 8. 写真の翻訳
+
+原文のカードの左のカメラのボタンで、メニュー、看板、案内板などの写真の文字を読み取って訳せます（GOTALK-7）。**選んだ写真は、翻訳のために OpenAI に送ります。サーバーには残しません**（Backend はディスクに書かず、メモリの中だけで扱います。[api.md](api.md) の「8. POST /api/photo」）。
+
+- 大きさと位置：鉛筆のボタンと同じ大きさと見た目（押せる範囲は 44px 角、中のカメラのアイコンは 24px）で、原文のカードの左端の縦の中心に置きます（`top: 50%; transform: translateY(-50%);`、左から 8px。`source-card__camera`）。`aria-label` は「写真から翻訳」です（日本語だけ。[5. 決まりの対象に入っていないもの](#5-決まりの対象に入っていないもの)）
+- 押せるとき：状態が `idle` か `ready` で、原文の入力と編集の間でないときだけです。それ以外（録音中、翻訳中、読み上げ中、編集の間）は押せず、薄く表示します（`opacity: 0.3`）
+- 編集の間：鉛筆のボタンと同じく `source-card__camera--editing`（`pointer-events: none`）を付け、その位置のタップを原文のカードに届けて、編集を確定します（写真を選ぶ画面は開きません）
+- 押したとき：画面に置いた見えない `<input type="file" accept="image/*">`（`photo-input`）の `click()` を、タップの処理の中で呼び、iPhone の標準の選ぶ画面（「写真を撮る」「写真ライブラリ」「ファイルを選択」）を出します。すぐカメラを開かないよう、`capture` 属性は付けません。選ぶ画面で取り消したときは、何もしません（`change` が来ません）。写真が選ばれたら、ファイルを取り出した後に `input` を空に戻します（同じ写真をもう一度選べるように）
+- 写真が選ばれたら、最初の `await` より前に、前の原文、翻訳、逆翻訳、読み上げの文、写真の行、エラーの文言を消し、`processing` にします（国旗、鉛筆、カメラ、読み上げのボタンは押せなくなります。翻訳中の表示は、左の国旗、右の国旗の言語の順です）
+- 前処理：`createImageBitmap(file, { imageOrientation: 'from-image' })` で開き（HEIC も iPhone のブラウザが開きます。写真の向きの情報に従います）、長辺を 1280px 以下に縮めて（小さい写真は拡大しません）、`canvas` から品質 0.8 の JPEG にします。1,032,192 バイト（`MAX_UPLOAD_BYTES`）を超えたら、品質 0.6 で1回だけ作り直し、それでも超えたら送らずに `photo_too_large` を出して `idle` に戻ります。`ImageBitmap.close()` と、`canvas` の幅と高さを 0 に戻す片付けは、成功でも失敗でも行います。開けない、縮められないときは `photo_load_failed` です
+- 問い合わせ：`/api/photo` に `image`（`photo.jpg`）と `languages`（選んだ2言語。`selectedLanguages` の順）を送ります。65 秒のタイマーは送る直前から始めます。問い合わせの失敗の文言は、ほかの API と同じく `code` で決め（`no_text_found`、`photo_too_much_text` など）、ネットワークのエラーは `generic_error`、時間切れは `request_timeout` です（`photo_load_failed` にはしません）。413 は `photo_too_large` です
+- 中断：前処理と問い合わせは、`/api/interpret` と同じ1つの問い合わせの番号で扱います。`pagehide`、戻る、外れるで止め（前処理の途中なら `/api/photo` に送りません）、止めた後の失敗は画面に出しません。裏に回すだけ（`hidden`）では止めません
+- 結果の表示：原文のカードに読み取った文字（全部の行を改行でつないだもの）を入れ、翻訳のカードに、行ごとに「元の行（15px、薄い色）」と「訳の行（今の翻訳の文字と同じ 22px）」を1組ずつ縦に並べます（`photo-lines`）。逆翻訳の欄（見出しを含む）は出しません。読み上げのボタンは、訳を全部まとめて読みます（500 文字を超えたら `tts_too_long`。読み上げの音声の取り置きもそのまま効きます）。履歴には、全部の行の原文と訳を1件にして足します。日付と時刻の表示の言語は、一番多い原文の言語が選んだ2言語のどちらでもない（`other`）ときは、一番多い訳の言語です
+- 写真の行を消すとき：国旗のタップ（録音の開始）、原文の編集の確定（`/api/translate` で訳し直すとき）、次の写真の前処理の開始。原文の編集で訳し直した後は、ふつうの翻訳の表示（逆翻訳あり）になります。原文が 500 文字を超えていれば、今までどおり `/api/translate` の `input_too_large` の文言になります
+
+## 9. 関連ドキュメント
 
 - [api.md](api.md)
 - [speech-flow.md](speech-flow.md)

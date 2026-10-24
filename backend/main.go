@@ -923,7 +923,7 @@ func translateHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // HTTP server settings (docs/rate-limit-design.md 5.10). WriteTimeout is longer than the
-// longest request deadline (interpretDeadline), and shutdownTimeout is shorter than the
+// longest request deadline (interpretDeadline and photoDeadline), and shutdownTimeout is shorter than the
 // stop_grace_period of the backend service in docker-compose.yml (30s).
 const (
 	serverReadHeaderTimeout = 10 * time.Second
@@ -940,6 +940,7 @@ func newMux() *http.ServeMux {
 	mux.HandleFunc("/api/tts", ttsHandler)
 	mux.HandleFunc("/api/interpret", interpretHandler)
 	mux.HandleFunc("/api/translate", translateHandler)
+	mux.HandleFunc("/api/photo", photoHandler)
 	return mux
 }
 
