@@ -276,6 +276,37 @@ describe('InterpreterPage tts cache: not kept after a failure (GOTALK-2)', () =>
     expect(countEvents('tts_cache_hit')).toBe(0)
   })
 
+  it('calls /api/tts again on the next tap after /api/tts times out while the body is being received (PR #38 VV4)', async () => {
+    vi.useFakeTimers()
+    // 応答（ヘッダー）は返し、本文の arrayBuffer() は abort されるまで終わらせない
+    ttsResponse = options => ({
+      ok: true,
+      status: 200,
+      arrayBuffer: () => new Promise<ArrayBuffer>((_, reject) => {
+        options.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+      }),
+    } as unknown as Response)
+    renderPage()
+    await recordAndTranslate()
+    await tapSpeak()
+    expect(countEvents('tts_response')).toBe(1)
+    expect(lastStatus()).toBe('status:speaking')
+    await act(async () => { vi.advanceTimersByTime(API_TIMEOUT_MS.tts) })
+    await flush()
+    // 時間切れで ready に戻り、その回は変換も再生もしない
+    expect(lastStatus()).toBe('status:ready')
+    expect(countEvents('tts_downloaded')).toBe(0)
+    expect(ttsContext().decodeAudioData).not.toHaveBeenCalled()
+    expect(ttsContext().bufferSources).toHaveLength(0)
+    // 取っておかないので、同じ文字の次の読み上げでは /api/tts を呼び直し、変換する
+    ttsResponse = makeTtsOkResponse
+    await tapSpeak()
+    expect(ttsTexts()).toEqual(['Hello', 'Hello'])
+    expect(ttsContext().decodeAudioData).toHaveBeenCalledTimes(1)
+    expect(lastSource().start).toHaveBeenCalledTimes(1)
+    expect(countEvents('tts_cache_hit')).toBe(0)
+  })
+
   it('calls /api/tts and decodeAudioData again on the next tap after decodeAudioData fails', async () => {
     audioContexts = setupAudioContext({ decodeRejects: true }).instances
     renderPage()
