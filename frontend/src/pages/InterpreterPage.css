@@ -154,7 +154,8 @@
 .source-card {
   position: relative;
   background-color: var(--color-surface);
-  padding: 20px 56px 20px 20px;
+  /* 左右とも、カメラのボタンと鉛筆のボタンの分を空ける（原文の文字と textarea がボタンに重ならないように） */
+  padding: 20px 56px;
   border-bottom: 1px solid var(--color-border);
 }
 
@@ -179,6 +180,50 @@
   font-size: 15px;
   font-weight: 400;
   color: var(--color-text-secondary);
+}
+
+/* カメラのボタン（写真から翻訳）。鉛筆のボタンと同じ大きさと見た目で、原文のカードの左端の縦の中心に置く */
+.source-card__camera {
+  position: absolute;
+  top: 50%;
+  left: 8px;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+  transition: background-color 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.source-card__camera:active {
+  background-color: var(--color-border);
+}
+
+.source-card__camera:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* 編集の間は、タップの対象から外し、下の原文のカードにタップを届ける（カードのタップで確定し、写真を選ぶ画面は開かない） */
+.source-card__camera--editing {
+  pointer-events: none;
+}
+
+/* 写真を選ぶ画面を出す input。見えないようにするが、click() で開けるよう display: none にはしない */
+.photo-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 /* 鉛筆のボタン。押せる範囲は 44px 角で、原文のカードの縦の中心に置く */
@@ -277,6 +322,35 @@
   color: var(--color-text);
   line-height: 1.5;
   margin: 0 0 16px;
+  word-break: break-word;
+}
+
+/* 写真の翻訳：元の行（小さめ、薄い色）と訳の行（翻訳の文字の大きさ）を1組ずつ縦に並べる */
+.photo-lines {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+}
+
+.photo-lines__item + .photo-lines__item {
+  margin-top: 12px;
+}
+
+.photo-lines__source {
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin: 0;
+  word-break: break-word;
+}
+
+.photo-lines__translation {
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--color-text);
+  line-height: 1.5;
+  margin: 0;
   word-break: break-word;
 }
 

@@ -6,9 +6,9 @@ GoTalk は、異なる言語を話す 2 人がブラウザ上で会話するた�
 
 現在の GoTalk は、国旗ボタンで開始した発話を `MediaRecorder` で録音し、録音終了時に音声を Backend の `/api/interpret` に送って確定翻訳とバックトランスレーションを取得します（認識テキストがなく、録音のデータがほとんどないときは送りません）。マイクはページ全体で1つ持ち、録音のたびに開き直しません。録音と並行してブラウザの `SpeechRecognition` も動かし、認識テキストが得られた場合はそのテキストを `transcript` として同じリクエストに添えます。Backend は `transcript` があればそれを翻訳し、なければ OpenAI の音声文字起こし API で言語判定と文字起こしを行ってから翻訳します。翻訳文は Frontend に表示され、必要に応じて `/api/tts` で音声合成して `AudioContext` で再生します。
 
-録音中は `SpeechRecognition` の認識テキストを表示するだけで、訳はしません（本番の通訳の画面（`InterpreterPage`）では、録音中のリアルタイム翻訳はしません。Legacy の実験の経路（`LegacyInterpreterPage`）では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残ります）。`/api/translate` は、文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳に使います。
+録音中は `SpeechRecognition` の認識テキストを表示するだけで、訳はしません（本番の通訳の画面（`InterpreterPage`）では、録音中のリアルタイム翻訳はしません。Legacy の実験の経路（`LegacyInterpreterPage`）では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残ります）。`/api/translate` は、文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳に使います。`/api/photo` は、カメラのボタンで選んだ写真の中の文字を読み取って、行ごとに訳します（写真の翻訳。写真は翻訳のために OpenAI に送り、サーバーには残しません）。
 
-Frontend は React / TypeScript / Vite で実装され、言語選択、録音、`SpeechRecognition`、文字の入力と原文の編集、翻訳結果表示、バックトランスレーション表示、TTS 再生、会話履歴表示を担当します。Backend は Go の `net/http` で実装され、OpenAI API キーをサーバー側で扱い、文字起こし、翻訳、バックトランスレーション、固有名詞保護、TTS を実行します。
+Frontend は React / TypeScript / Vite で実装され、言語選択、録音、`SpeechRecognition`、文字の入力と原文の編集、写真の選択と前処理（縮めて JPEG にする）、翻訳結果表示、バックトランスレーション表示、TTS 再生、会話履歴表示を担当します。Backend は Go の `net/http` で実装され、OpenAI API キーをサーバー側で扱い、文字起こし、翻訳、バックトランスレーション、固有名詞保護、写真の文字の読み取りと翻訳、TTS を実行します。
 
 この文書は GoTalk のシステム設計の入口です。翻訳処理、音声処理、固有名詞保護、API 詳細は個別ドキュメントにまとめています。ここでは現在の実装に基づく全体像を整理します。
 
@@ -24,9 +24,11 @@ flowchart LR
   Frontend -->|POST /api/interpret<br/>multipart audio + languages + speaker + optional transcript| Backend[Backend<br/>Go net/http]
   Frontend -->|POST /api/translate<br/>JSON text + languages| Backend
   Frontend -->|POST /api/tts<br/>JSON text| Backend
+  Frontend -->|POST /api/photo<br/>multipart image + languages| Backend
 
   Backend -->|language detection / transcription| Transcriptions[OpenAI Audio Transcriptions API<br/>whisper-1 / WHISPER_MODEL default gpt-4o-transcribe]
   Backend -->|translation / back translation| Responses[OpenAI Responses API<br/>OPENAI_MODEL default gpt-4o-mini]
+  Backend -->|photo text reading and translation| Vision[OpenAI Responses API<br/>OPENAI_VISION_MODEL default gpt-6-luna]
   Backend -->|speech synthesis| TTS[OpenAI Audio Speech API<br/>OPENAI_TTS_MODEL default gpt-4o-mini-tts]
 
   subgraph Runtime[Docker Compose runtime]
@@ -41,9 +43,10 @@ flowchart LR
 | --- | --- | --- |
 | Frontend | `frontend/src/App.tsx` | 言語選択画面と通訳画面の切り替え |
 | Frontend | `frontend/src/pages/LanguageSelectPage.tsx` | 2 言語の選択 |
-| Frontend | `frontend/src/pages/InterpreterPage.tsx` | 録音、`SpeechRecognition`、翻訳 API 呼び出し、TTS 再生、履歴表示 |
+| Frontend | `frontend/src/pages/InterpreterPage.tsx` | 録音、`SpeechRecognition`、写真の選択と前処理、翻訳 API 呼び出し、TTS 再生、履歴表示 |
 | Frontend | `frontend/src/languages.ts` | 対応言語と `SpeechRecognition` 用 locale |
 | Backend | `backend/main.go` | API handler、OpenAI API 呼び出し、文字起こし・翻訳・TTS の制御 |
+| Backend | `backend/photo.go` | `/api/photo` の handler、画像と Structured Outputs の OpenAI 呼び出し（`callOpenAIVision`）、応答の確かめ |
 | Backend | `backend/propnoun.go` | 固有名詞抽出、プレースホルダ保護、復元、検証、リトライ |
 | Runtime | `docker-compose.yml` | frontend / backend / backend-dev の Compose 定義 |
 | Runtime | `docker-compose.staging.yml` | ステージングだけで使う override（`frontend`、`backend` の `mem_limit`） |
@@ -60,6 +63,7 @@ Frontend はブラウザ上の会話 UI と、Backend API へのリクエスト�
 - 録音終了時に音声を `/api/interpret` へ送り、確定翻訳とバックトランスレーションを取得する。タップされた国旗の言語を `myLanguage` と `speaker`、もう一方を `theirLanguage` として送り、認識テキストがあれば `transcript` として添える。認識テキストがなく、録音のデータが 1024 バイト未満のときは送らずに知らせる
 - 原文、翻訳文、バックトランスレーションを表示する
 - 文字の入力（原文が空の状態からの入力と、原文の編集）を確定したとき、`/api/translate` で翻訳する
+- 原文のカードの左のカメラのボタンで写真を選び、長辺 1280px 以下の JPEG に縮めて `/api/photo` に送り、行ごとの「元の行／訳の行」を表示する（逆翻訳は出さない。[ui.md](ui.md) の「8. 写真の翻訳」）
 - `/api/tts` から返る `audio/mpeg` を `AudioContext` で再生する（マイクを開いたまま `<audio>` で鳴らすと次の録音が壊れるため、`<audio>` は使わない）。デコード済みの音声を1組取っておき、同じ文字の2回目からは `/api/tts` を呼ばずに鳴らす
 - 画面内に会話履歴を保持して表示する
 
@@ -74,6 +78,7 @@ Backend は Go の単一 HTTP サーバーとして動作し、OpenAI API キー
 - `/api/interpret` で録音音声を受け取り、確定翻訳とバックトランスレーションを実行する
 - `/api/translate` でテキスト翻訳とバックトランスレーションを実行する
 - `/api/tts` で翻訳文の音声合成を実行する
+- `/api/photo` で写真（JPEG）を受け取り、OpenAI Responses API を1回だけ呼んで、写真の中の文字の読み取りと行ごとの翻訳を実行する（写真はディスクに書かず、メモリの中だけで扱う）
 - OpenAI Audio Transcriptions API、Responses API、Audio Speech API を呼び出す
 - 必要な場合に固有名詞保護を適用し、OpenAI への入力ではプレースホルダを保持させる
 - `/api/interpret` では、`transcript` がある場合は `speaker` に一致する言語を翻訳元にする。`transcript` がない場合は `whisper-1` で判定した言語を選択言語と照合して翻訳元を決め、`WHISPER_MODEL` で文字起こしする
@@ -81,7 +86,7 @@ Backend は Go の単一 HTTP サーバーとして動作し、OpenAI API キー
 - `language_mismatch`、`translation failed`、`tts failed` などのエラーを `{"error","code"}` の JSON で返す
 - 入力の大きさ、OpenAI の出力（`max_output_tokens`）、1リクエストあたりの OpenAI の呼び出しの回数を制限する（[rate-limit-design.md](rate-limit-design.md)）
 
-OpenAI への HTTP リクエストは、OpenAI 用の専用の `http.Client`（`Timeout` 120 秒）で送ります。各エンドポイントは `r.Context()` に deadline（`/api/interpret` 55 秒、`/api/translate` と `/api/tts` 25 秒）を付けた context を OpenAI の呼び出しに渡し、クライアントの切断や deadline で残りの呼び出しをやめます。
+OpenAI への HTTP リクエストは、OpenAI 用の専用の `http.Client`（`Timeout` 120 秒）で送ります。各エンドポイントは `r.Context()` に deadline（`/api/interpret` 55 秒、`/api/translate` と `/api/tts` 25 秒）を付けた context を OpenAI の呼び出しに渡し（`/api/photo` は 55 秒）、クライアントの切断や deadline で残りの呼び出しをやめます。
 
 HTTP サーバーは `http.Server` で起動し、`ReadHeaderTimeout` 10 秒、`ReadTimeout` 30 秒、`WriteTimeout` 90 秒、`IdleTimeout` 60 秒、`MaxHeaderBytes` 16 KiB を設定しています。`SIGTERM` を受けると `Shutdown()` で処理中のリクエストを最大 25 秒待ち（graceful shutdown）、それを超えたら接続を閉じます。
 
@@ -94,8 +99,9 @@ HTTP サーバーは `http.Server` で起動し、`ReadHeaderTimeout` 10 秒、`
 | 翻訳 | Responses API `/v1/responses` | `OPENAI_MODEL`、未設定時 `gpt-4o-mini` | `callOpenAI` |
 | バックトランスレーション | Responses API `/v1/responses` | `OPENAI_MODEL`、未設定時 `gpt-4o-mini` | `callOpenAI` |
 | 音声合成 | Audio Speech API `/v1/audio/speech` | `OPENAI_TTS_MODEL`、未設定時 `gpt-4o-mini-tts` | `callOpenAITTS` / `/api/tts` |
+| 写真の文字の読み取りと翻訳 | Responses API `/v1/responses` | `OPENAI_VISION_MODEL`、未設定時 `gpt-6-luna`（推論の度合いは `OPENAI_VISION_REASONING_EFFORT`、未設定時 `none`） | `callOpenAIVision` / `/api/photo` |
 
-言語判定と文字起こしは、`/api/interpret` に `transcript` がない場合だけ実行します。`OPENAI_TTS_VOICE` は未設定時 `marin` です。
+言語判定と文字起こしは、`/api/interpret` に `transcript` がない場合だけ実行します。`OPENAI_TTS_VOICE` は未設定時 `marin` です。`OPENAI_VISION_MODEL` と `OPENAI_VISION_REASONING_EFFORT` は `docker-compose.yml` が渡していないので、Compose で起動した Backend は未設定時の値で動きます。
 
 ## 6. Docker 構成
 
@@ -221,6 +227,7 @@ Backend では翻訳後に別 prompt でバックトランスレーションを�
 | `POST` | `/api/tts` | テキストを受け取り、読み上げ音声 `audio/mpeg` を返す |
 | `POST` | `/api/interpret` | 録音音声、2 言語、話者、任意の認識テキストを受け取り、原文、翻訳、バックトランスレーションを返す |
 | `POST` | `/api/translate` | テキストと 2 言語を受け取り、翻訳とバックトランスレーションを返す |
+| `POST` | `/api/photo` | 写真（JPEG）と 2 言語を受け取り、写真の中の文字を行ごとに読み取って訳した結果を返す |
 
 各 API の request / response / error の詳細は [api.md](api.md) を参照してください。
 

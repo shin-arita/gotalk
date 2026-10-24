@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { flushSync } from 'react-dom'
 import type { Language } from '../languages'
-import { API_TIMEOUT_MS, ApiError, MAX_INTERPRET_AUDIO_BYTES, MIN_INTERPRET_AUDIO_BYTES, apiErrorCode, apiErrorFromResponse, isTooLongForTts, logApiError, messageKeyForCode, messageKeyForError } from '../api'
+import { API_TIMEOUT_MS, ApiError, MAX_UPLOAD_BYTES, MIN_INTERPRET_AUDIO_BYTES, apiErrorCode, apiErrorFromResponse, isTooLongForTts, logApiError, messageKeyForCode, messageKeyForError } from '../api'
 import { getLocalizedMessage } from '../messages'
 import type { MessageKey } from '../messages'
 import { useInterpreterAudioSession } from '../hooks/useKeptAudioSession'
@@ -135,6 +135,28 @@ const PAGESHOW_RECOVERY_STATUS: Record<InterpreterStatus, InterpreterStatus> = {
   error: 'idle',
 }
 
+// 写真の翻訳（docs/ui.md）の前処理。長辺をこの大きさ（px）以下に縮め（小さい写真は拡大しない）、この品質の JPEG にする。
+// MAX_UPLOAD_BYTES を超えたら、品質を下げて1回だけ作り直す
+const PHOTO_MAX_EDGE_PX = 1280
+const PHOTO_JPEG_QUALITY = 0.8
+const PHOTO_JPEG_RETRY_QUALITY = 0.6
+
+// 写真の翻訳の1行（元の行と訳の行）
+interface PhotoLine {
+  source: string
+  translation: string
+}
+
+// canvas の中身を JPEG の Blob にする。toBlob が null を返したときも失敗にする
+function canvasToJpeg(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(blob => {
+      if (blob) resolve(blob)
+      else reject(new Error('toBlob returned null'))
+    }, 'image/jpeg', quality)
+  })
+}
+
 // 録音の長さを測る時刻（ミリ秒）。callback の中だけで呼ぶ
 const nowMs = () => Date.now()
 
@@ -150,6 +172,8 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   const [translatedText, setTranslatedText] = useState('')
   const [ttsText, setTtsText] = useState('')
   const [backTranslation, setBackTranslation] = useState('')
+  // 写真の翻訳の行の一覧。空でないときは、翻訳のカードに元の行と訳の行を1組ずつ並べる（逆翻訳の欄は出さない）
+  const [photoLines, setPhotoLines] = useState<PhotoLine[]>([])
   const [errorMessage, setErrorMessage] = useState('')
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState('')
@@ -179,13 +203,15 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   // 読み上げの音声（デコード済み）と、その元の文字。同じ文字の読み上げでは /api/tts を呼ばずにこれを鳴らす。
   // 持つのは最後の1組だけ
   const ttsCacheRef = useRef<{ text: string; buffer: AudioBuffer } | null>(null)
-  // 翻訳の問い合わせ（/api/interpret と、編集した文の /api/translate）の番号。今有効な番号を1つだけ持つ
+  // 翻訳の問い合わせ（/api/interpret、編集した文の /api/translate、写真の前処理と /api/photo）の番号。今有効な番号を1つだけ持つ
   const requestSeqRef = useRef(0)
   const activeRequestIdRef = useRef<number | null>(null)
   const requestControllerRef = useRef<AbortController | null>(null)
   // pagehide のときに記録する、bfcache から戻ったときにするべき状態
   const pagehideRecoveryStatusRef = useRef<InterpreterStatus | null>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
+  // 写真を選ぶ画面を出す、見えない input（カメラのボタンのタップの処理の中で click() を呼ぶ）
+  const photoInputRef = useRef<HTMLInputElement>(null)
   // 原文の入力と編集の間か（中断の片付けなど、非同期の listener から最新の値を読むため）
   const isEditingRef = useRef(false)
   const recordingLangRef = useRef<Language | null>(null)
@@ -245,9 +271,10 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     audioSession.logEvent(`status:${next}`)
   }
 
-  const addHistoryEntry = (source: string, translation: string, bt: string, srcId: string, tgtId: string) => {
+  // localeLangId は日付と時刻の表示の言語（省略したときは原文の言語）
+  const addHistoryEntry = (source: string, translation: string, bt: string, srcId: string, tgtId: string, localeLangId = srcId) => {
     const now = new Date()
-    const locale = LANG_LOCALE[srcId] ?? 'ja-JP'
+    const locale = LANG_LOCALE[localeLangId] ?? 'ja-JP'
     setHistory(prev => [{
       id: String(Date.now()),
       date: now.toLocaleDateString(locale, { month: 'short', day: 'numeric' }),
@@ -322,8 +349,8 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     const { id, controller } = beginRequest()
     const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS.interpret)
     try {
-      // 明らかに大きい録音は送らない（nginx の 413 になるため。MAX_INTERPRET_AUDIO_BYTES を参照）
-      if (audioBlob.size > MAX_INTERPRET_AUDIO_BYTES) throw new ApiError('recording_too_long', '/api/interpret', null, 'recording_too_large_before_send')
+      // 明らかに大きい録音は送らない（nginx の 413 になるため。MAX_UPLOAD_BYTES を参照）
+      if (audioBlob.size > MAX_UPLOAD_BYTES) throw new ApiError('recording_too_long', '/api/interpret', null, 'recording_too_large_before_send')
 
       const res = await fetch('/api/interpret', { method: 'POST', body: formData, signal: controller.signal })
       if (!isActiveRequest(id)) return
@@ -395,6 +422,108 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       showMessage(messageKeyForError('/api/translate', e))
       changeStatus('idle')
     } finally {
+      clearTimeout(timer)
+      endRequest(id)
+    }
+  }
+
+  // 写真を選ぶ画面を出す（カメラのボタン）。iPhone では、タップの処理の中で click() を呼ばないと画面が出ないことがある
+  const handleCameraTap = () => {
+    photoInputRef.current?.click()
+  }
+
+  // 写真が選ばれたとき（docs/ui.md、docs/translation-flow.md）。選ぶ画面で取り消したときは change が来ない。
+  // 前処理（開いて縮め、JPEG にする）と /api/photo の問い合わせを、1つの問い合わせの番号で行う
+  const handlePhotoSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.target
+    const file = input.files?.[0]
+    // 同じ写真をもう一度選べるように、空に戻す
+    input.value = ''
+    if (!file) return
+    // 最初の await より前に、同期的に processing にする（国旗、鉛筆、カメラ、読み上げのボタンは押せなくなる）
+    if ((statusRef.current !== 'idle' && statusRef.current !== 'ready') || isEditingRef.current) return
+    const { id, controller } = beginRequest()
+    // 前の結果を、新しい結果のように残さない
+    recognizedTextRef.current = ''
+    hasLiveTranscriptRef.current = false
+    setRecognizedText('')
+    setTranslatedText('')
+    setBackTranslation('')
+    setTtsText('')
+    setPhotoLines([])
+    setErrorMessage('')
+    const languages = selectedLanguages
+    setProcessingLangs([languages[0].id, languages[1].id])
+    changeStatus('processing')
+
+    // 各 await の後に isActiveRequest(id) を確かめ、違えば（pagehide、戻る、外れるで止められた）何もせずに終える
+    let phase: 'preprocess' | 'request' = 'preprocess'
+    let bitmap: ImageBitmap | null = null
+    let canvas: HTMLCanvasElement | null = null
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
+      if (!isActiveRequest(id)) return
+      const scale = Math.min(1, PHOTO_MAX_EDGE_PX / Math.max(bitmap.width, bitmap.height))
+      canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale))
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale))
+      const context = canvas.getContext('2d')
+      if (!context) throw new Error('canvas 2d context is not available')
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+      let jpeg = await canvasToJpeg(canvas, PHOTO_JPEG_QUALITY)
+      if (!isActiveRequest(id)) return
+      if (jpeg.size > MAX_UPLOAD_BYTES) {
+        jpeg = await canvasToJpeg(canvas, PHOTO_JPEG_RETRY_QUALITY)
+        if (!isActiveRequest(id)) return
+      }
+      // 品質を下げても大きすぎる写真は送らない（nginx の 413 になるため。MAX_UPLOAD_BYTES を参照）
+      if (jpeg.size > MAX_UPLOAD_BYTES) {
+        showMessage('photo_too_large')
+        changeStatus('idle')
+        return
+      }
+
+      phase = 'request'
+      const formData = new FormData()
+      formData.append('image', jpeg, 'photo.jpg')
+      formData.append('languages', JSON.stringify(languages.map(l => ({ id: l.id, label: l.label }))))
+      timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS.photo)
+      const res = await fetch('/api/photo', { method: 'POST', body: formData, signal: controller.signal })
+      if (!isActiveRequest(id)) return
+      // 413 は、Backend の JSON（input_too_large）でも nginx の HTML でも、同じ文言にする
+      if (res.status === 413) throw new ApiError('photo_too_large', '/api/photo', 413, 'request_too_large')
+      if (!res.ok) throw await apiErrorFromResponse('/api/photo', res)
+      const data = await res.json()
+      if (!isActiveRequest(id)) return
+      recognizedTextRef.current = data.sourceText
+      setRecognizedText(data.sourceText)
+      setTranslatedText(data.translatedText)
+      setTtsText(data.ttsText)
+      setBackTranslation('')
+      setPhotoLines((data.lines as PhotoLine[]).map(l => ({ source: l.source, translation: l.translation })))
+      changeStatus('ready')
+      // 原文の言語が選んだ2言語のどちらでもない（other）ときは、日付と時刻を訳の言語で表示する
+      const localeLangId = data.primarySourceLanguage === 'other' ? data.primaryTargetLanguage : data.primarySourceLanguage
+      addHistoryEntry(data.sourceText, data.translatedText, '', data.primarySourceLanguage, data.primaryTargetLanguage, localeLangId)
+    } catch (e) {
+      // 止めた処理（pagehide、戻る、外れる）の失敗は、画面に反映しない
+      if (!isActiveRequest(id)) return
+      if (phase === 'preprocess') {
+        // 前処理の失敗（createImageBitmap、canvas、toBlob の失敗、toBlob の null）
+        logApiError('/api/photo', e)
+        showMessage('photo_load_failed')
+      } else {
+        // 問い合わせの失敗（ネットワークの失敗、時間切れの abort、HTTP のエラー）
+        showMessage(messageKeyForError('/api/photo', e))
+      }
+      changeStatus('idle')
+    } finally {
+      bitmap?.close()
+      if (canvas) {
+        canvas.width = 0
+        canvas.height = 0
+      }
       clearTimeout(timer)
       endRequest(id)
     }
@@ -523,6 +652,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     setTranslatedText('')
     setTtsText('')
     setBackTranslation('')
+    setPhotoLines([])
     setErrorMessage('')
     resetTextFlow()
     const lang = selectedLanguages[flagIndex]
@@ -836,6 +966,8 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     setTranslatedText('')
     setTtsText('')
     setBackTranslation('')
+    // 写真の翻訳の後に訳し直すときは、ふつうの翻訳の表示（逆翻訳あり）に戻す
+    setPhotoLines([])
     void callTranslateApi(trimmed)
   }
 
@@ -879,6 +1011,8 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   }
 
   const canEdit = !isEditing && (status === 'idle' || status === 'ready' || status === 'speaking')
+  // 写真を選べるのは idle と ready のときだけ（原文の入力と編集の間も選べない）
+  const canTakePhoto = !isEditing && (status === 'idle' || status === 'ready')
 
   const canTapFlag = (i: 0 | 1): boolean => {
     if (status === 'recording') return recordingFlagIndex === i
@@ -987,6 +1121,15 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
 
       <div className="page-content" inert={underlayInert}>
         <div className={`source-card${isEditing ? ' source-card--editing' : ''}`} onClick={handleSourceCardTap}>
+          <button
+            type="button"
+            className={`source-card__camera${isEditing ? ' source-card__camera--editing' : ''}`}
+            onClick={handleCameraTap}
+            disabled={!canTakePhoto}
+            aria-label="写真から翻訳"
+          >
+            <CameraIcon />
+          </button>
           {isEditing ? (
             <textarea
               ref={editRef}
@@ -1013,35 +1156,59 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
             <EditIcon />
           </button>
         </div>
+        {/* 写真を選ぶ画面（「写真を撮る」「写真ライブラリ」「ファイルを選択」）を出す。すぐカメラを開かないよう、capture は付けない */}
+        <input
+          ref={photoInputRef}
+          type="file"
+          accept="image/*"
+          className="photo-input"
+          onChange={handlePhotoSelected}
+          tabIndex={-1}
+          aria-hidden="true"
+        />
 
         {status !== 'recording' && (
           <div className="translation-card">
             <div className="translation-card__body">
               <div className="translation-card__main">
-                <p
-                  key={status === 'processing' ? processingMsgIdx : 'text'}
-                  className={`translation-card__text${
-                    status === 'processing' ? ' translation-card__text--processing' :
-                    !translatedText ? ' translation-card__text--placeholder' : ''
-                  }`}
-                >
-                  {status === 'processing' && processingLangs
-                    ? [
-                        `${TRANSLATING_MESSAGES[processingLangs[0]] ?? 'ただいま翻訳中です'}\n${TRANSLATING_MESSAGES[processingLangs[1]] ?? 'ただいま翻訳中です'}`,
-                        `${PLEASE_WAIT_MESSAGES[processingLangs[0]] ?? 'しばらくお待ちください'}\n${PLEASE_WAIT_MESSAGES[processingLangs[1]] ?? 'しばらくお待ちください'}`,
-                      ][processingMsgIdx]
-                    : translatedText
-                  }
-                </p>
-                <div className="back-translation-section">
-                  <div className="back-translation-header">
-                    <ChevronIcon />
-                    <span>{backTranslationLabel}</span>
-                  </div>
-                  {backTranslation && (
-                    <p className="back-translation-text">{backTranslation}</p>
-                  )}
-                </div>
+                {photoLines.length > 0 ? (
+                  // 写真の翻訳：元の行と訳の行を1組ずつ並べる。逆翻訳の欄は出さない
+                  <ul className="photo-lines">
+                    {photoLines.map((photoLine, i) => (
+                      <li key={i} className="photo-lines__item">
+                        <p className="photo-lines__source">{photoLine.source}</p>
+                        <p className="photo-lines__translation">{photoLine.translation}</p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <>
+                    <p
+                      key={status === 'processing' ? processingMsgIdx : 'text'}
+                      className={`translation-card__text${
+                        status === 'processing' ? ' translation-card__text--processing' :
+                        !translatedText ? ' translation-card__text--placeholder' : ''
+                      }`}
+                    >
+                      {status === 'processing' && processingLangs
+                        ? [
+                            `${TRANSLATING_MESSAGES[processingLangs[0]] ?? 'ただいま翻訳中です'}\n${TRANSLATING_MESSAGES[processingLangs[1]] ?? 'ただいま翻訳中です'}`,
+                            `${PLEASE_WAIT_MESSAGES[processingLangs[0]] ?? 'しばらくお待ちください'}\n${PLEASE_WAIT_MESSAGES[processingLangs[1]] ?? 'しばらくお待ちください'}`,
+                          ][processingMsgIdx]
+                        : translatedText
+                      }
+                    </p>
+                    <div className="back-translation-section">
+                      <div className="back-translation-header">
+                        <ChevronIcon />
+                        <span>{backTranslationLabel}</span>
+                      </div>
+                      {backTranslation && (
+                        <p className="back-translation-text">{backTranslation}</p>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
 
               {translatedText && (
@@ -1141,6 +1308,15 @@ function EditIcon() {
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function CameraIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="12" cy="13" r="4" stroke="currentColor" strokeWidth="2" />
     </svg>
   )
 }

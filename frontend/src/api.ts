@@ -6,6 +6,7 @@ export const API_TIMEOUT_MS = {
   interpret: 65_000,
   translate: 30_000,
   tts: 30_000,
+  photo: 65_000,
 } as const
 
 // Backend のエラーの応答の code ごとの表示の文言のキー（docs/rate-limit-design.md 5.7、docs/ui.md）。
@@ -15,6 +16,8 @@ export const API_ERROR_MESSAGE_KEYS: Record<string, MessageKey> = {
   service_unavailable: 'service_unavailable',
   upstream_busy: 'upstream_busy',
   timeout: 'timeout',
+  no_text_found: 'no_text_found',
+  photo_too_much_text: 'photo_too_much_text',
 }
 
 // エラーの応答の body（{"error": "...", "code": "..."}）の code を返す。
@@ -89,12 +92,16 @@ export function messageKeyForError(endpoint: string, e: unknown): MessageKey {
   return 'generic_error'
 }
 
-// /api/interpret に送る録音の Blob の最大のバイト数（1,032,192 バイト）。本番の nginx の client_max_body_size
-// （既定の 1m = 1,048,576 バイト）から、multipart のほかのフィールドの分の余白として 16 KiB（16,384 バイト）を引いた値。
-// 明らかに大きい録音の無駄な送信を避けるための、使い勝手のための事前の確認で、nginx の 413 を完全に予測するものでは
+// /api/interpret に送る録音の Blob と、/api/photo に送る写真の JPEG の最大のバイト数（1,032,192 バイト）。
+// 本番の nginx の client_max_body_size（既定の 1m = 1,048,576 バイト）から、multipart のほかのフィールドの分の
+// 余白として 16 KiB（16,384 バイト）を引いた値。
+// 明らかに大きい録音や写真の無駄な送信を避けるための、使い勝手のための事前の確認で、nginx の 413 を完全に予測するものでは
 // ない（multipart の boundary や各 part の header、ほかのフィールドも body に含まれるため）。費用やセキュリティの
 // 境界ではない（境界は Backend と nginx の上限）。第2段階で nginx の上限を Backend と合わせるときに見直すこと
-export const MAX_INTERPRET_AUDIO_BYTES = 1_048_576 - 16_384
+export const MAX_UPLOAD_BYTES = 1_048_576 - 16_384
+
+// MAX_UPLOAD_BYTES の前の名前（同じ値）。LegacyInterpreterPage が使う。GOTALK-3 で Legacy と一緒に消す
+export const MAX_INTERPRET_AUDIO_BYTES = MAX_UPLOAD_BYTES
 
 // 録音のデータがこれより小さく、音声認識の文字がないときは、/api/interpret に送らない（1,024 バイト。docs/speech-flow.md）。
 // 実機の記録で、成功した録音は 74KB 以上、マイクの音が来ていない壊れた録音は 5 バイトだった。1 秒以上の正常な録音は、
