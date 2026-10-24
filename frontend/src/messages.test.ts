@@ -107,7 +107,7 @@ describe('getLocalizedMessage', () => {
       'vi':    'Không thể đọc chữ từ ảnh.',
     })
     expect(MESSAGES.photo_too_much_text).toEqual({
-      'ja':    '写真の文字が多すぎます、訳したいところを撮り直してください',
+      'ja':    '写真の文字が多すぎます\n訳したいところを撮り直してください',
       'en':    'The photo has too much text. Please retake just the part you want translated.',
       'zh-CN': '照片中的文字太多。请只拍摄需要翻译的部分。',
       'zh-TW': '照片中的文字太多。請只拍攝需要翻譯的部分。',
@@ -116,7 +116,7 @@ describe('getLocalizedMessage', () => {
       'vi':    'Ảnh có quá nhiều chữ. Vui lòng chụp lại phần bạn muốn dịch.',
     })
     expect(MESSAGES.photo_load_failed).toEqual({
-      'ja':    '写真を開けませんでした、別の写真でお試しください',
+      'ja':    '写真を開けませんでした\n別の写真でお試しください',
       'en':    'The photo could not be opened. Please try another photo.',
       'zh-CN': '无法打开照片，请换一张照片再试。',
       'zh-TW': '無法開啟照片，請換一張照片再試一次。',
@@ -125,7 +125,7 @@ describe('getLocalizedMessage', () => {
       'vi':    'Không thể mở ảnh. Vui lòng thử ảnh khác.',
     })
     expect(MESSAGES.photo_too_large).toEqual({
-      'ja':    '写真が大きすぎます、別の写真でお試しください',
+      'ja':    '写真が大きすぎます\n別の写真でお試しください',
       'en':    'The photo is too large. Please try another photo.',
       'zh-CN': '照片太大，请换一张照片再试。',
       'zh-TW': '照片太大，請換一張照片再試一次。',
@@ -135,17 +135,24 @@ describe('getLocalizedMessage', () => {
     })
   })
 
-  // 写真の翻訳の日本語の文言は、文末だけでなく文中にも句点（。）を使わない（PR #39 の WW1）
-  it('has no Japanese period anywhere in the photo translation messages', () => {
+  // 写真の翻訳の日本語の文言は、文末に句点（。）を付けない（PR #39 の WW1）
+  it('has no Japanese period at the end of the photo translation messages', () => {
     const keys: MessageKey[] = ['no_text_found', 'photo_too_much_text', 'photo_load_failed', 'photo_too_large']
-    for (const key of keys) expect(MESSAGES[key].ja, key).not.toContain('。')
+    for (const key of keys) expect(MESSAGES[key].ja.endsWith('。'), key).toBe(false)
   })
 
-  // 2つの文からなる日本語の文言は、句点の代わりに読点（、）でつなぐ（PR #39 の WW1 の続き）
-  it('joins the two sentences of the Japanese photo translation messages with a reading mark', () => {
-    expect(getLocalizedMessage('photo_too_much_text', 'ja')).toBe('写真の文字が多すぎます、訳したいところを撮り直してください')
-    expect(getLocalizedMessage('photo_load_failed', 'ja')).toBe('写真を開けませんでした、別の写真でお試しください')
-    expect(getLocalizedMessage('photo_too_large', 'ja')).toBe('写真が大きすぎます、別の写真でお試しください')
+  // 2つの文からなる日本語の文言は、句点も読点も使わず、文と文の間を改行にする（PR #39 の WW1 の続き）
+  it('puts the two sentences of the Japanese photo translation messages on separate lines', () => {
+    expect(getLocalizedMessage('photo_too_much_text', 'ja')).toBe('写真の文字が多すぎます\n訳したいところを撮り直してください')
+    expect(getLocalizedMessage('photo_load_failed', 'ja')).toBe('写真を開けませんでした\n別の写真でお試しください')
+    expect(getLocalizedMessage('photo_too_large', 'ja')).toBe('写真が大きすぎます\n別の写真でお試しください')
+    for (const key of ['photo_too_much_text', 'photo_load_failed', 'photo_too_large'] as MessageKey[]) {
+      const lines = MESSAGES[key].ja.split('\n')
+      expect(lines, key).toHaveLength(2)
+      for (const line of lines) expect(line, key).not.toMatch(/[。、]$/)
+    }
+    // 選んだ2つの言語で出すときも、日本語の中の改行はそのまま残り、言語の間は空行になる
+    expect(getLocalizedMessage('photo_too_large', 'ja', 'en')).toBe('写真が大きすぎます\n別の写真でお試しください\n\nThe photo is too large. Please try another photo.')
   })
 
   it('has messages in all 7 languages for all 17 keys', () => {

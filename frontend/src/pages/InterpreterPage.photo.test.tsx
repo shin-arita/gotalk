@@ -704,6 +704,16 @@ describe('InterpreterPage photo: errors of /api/photo (GOTALK-7 6.1.3)', () => {
   }
 })
 
+// 日本語の文言の、文と文の間の改行を、表示でつぶさない（PR #39 の WW1 の続き）。
+// vitest は CSS を読み込まないので、表示の要素の改行の扱いは CSS の規則を文字として確かめる
+it('shows the line break of the Japanese photo message in the alert, which keeps line breaks', async () => {
+  renderPage()
+  photoResponse = () => Promise.resolve(errorJson(413, 'input_too_large'))
+  await selectPhotoAndWait()
+  expect(alertText()).toBe('写真が大きすぎます\n別の写真でお試しください\n\nThe photo is too large. Please try another photo.')
+  expect(css()).toMatch(/\.error-text\s*\{[^}]*white-space:\s*pre-line;/)
+})
+
 describe('InterpreterPage photo: result (GOTALK-7 6.1.3 to 6.1.5)', () => {
   it('shows the lines in pairs without the back translation, reads ttsText aloud, and adds one history entry', async () => {
     renderPage()

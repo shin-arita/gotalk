@@ -187,7 +187,7 @@ OpenAI Audio Speech API から返った音声は Backend から `audio/mpeg` と
 
 Frontend は `/api/interpret` と `/api/translate`（文字の入力と原文の編集を確定したときの翻訳）のどちらでも、HTTP 422 でエラーが `language_mismatch` の場合は同じ扱いをします。「言語不明、もう一度お話ください」を表示し、翻訳文とバックトランスレーションを空にして `idle` に戻します。それ以外の失敗では、Frontend のタイムアウトの場合は「うまく翻訳できませんでした。もう一度お願いします。」を表示します。エラーの応答の `code` が `input_too_large`、`service_unavailable`、`upstream_busy`、`timeout` の場合は、それぞれ「入力が長すぎます。短くしてもう一度お試しください」「現在サービスを利用できません」「混み合っています。しばらくしてからお試しください」「処理に時間がかかっています。もう一度お試しください」を表示します（[api.md](api.md) の「10. Frontend からの利用」）。それ以外（対応する `code` がない status、ネットワークのエラーなど）は「エラーが発生しました。もう一度お試しください。」を表示し、状態を `idle` に戻します。これらの文言は、選んだ2つの言語で表示し、status やエラーの文字列は表示しません（[ui.md](ui.md)）。本番の通訳の画面（`InterpreterPage`）では録音中のリアルタイム翻訳をしません。Legacy の実験の経路（`LegacyInterpreterPage`）では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残り、その失敗は表示しません。
 
-`/api/photo` では、入力検証エラー（JPEG でない、`languages` の不正）、API キー未設定、文字が見つからない（422 `no_text_found`）、文字が多すぎる（422 `photo_too_much_text`）、OpenAI Responses API の失敗と出力の不正（502 `upstream_error`）が JSON エラーとして返されます。Frontend は `no_text_found` と `photo_too_much_text` をそれぞれの文言で、413 を「写真が大きすぎます、別の写真でお試しください」で表示します。写真を開けない、縮められないときは「写真を開けませんでした、別の写真でお試しください」です（[ui.md](ui.md) の「8. 写真の翻訳」）。
+`/api/photo` では、入力検証エラー（JPEG でない、`languages` の不正）、API キー未設定、文字が見つからない（422 `no_text_found`）、文字が多すぎる（422 `photo_too_much_text`）、OpenAI Responses API の失敗と出力の不正（502 `upstream_error`）が JSON エラーとして返されます。Frontend は `no_text_found` と `photo_too_much_text` をそれぞれの文言で、413 を「写真が大きすぎます」「別の写真でお試しください」の2行で表示します。写真を開けない、縮められないときは「写真を開けませんでした」「別の写真でお試しください」の2行です（[ui.md](ui.md) の「8. 写真の翻訳」）。
 
 `/api/tts` では、入力検証エラー、API キー未設定、OpenAI Audio Speech API の失敗が扱われます。OpenAI Audio Speech API の呼び出しに失敗した場合、Backend は `tts failed` を返します。Frontend の読み上げ処理は TTS 失敗時に状態を `ready` に戻します。
 

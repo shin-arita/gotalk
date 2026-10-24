@@ -46,11 +46,13 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 | `language_unclear` | 言語不明、もう一度お話ください | `/api/interpret` と `/api/translate`（再翻訳）の 422 `language_mismatch` |
 | `request_timeout` | うまく翻訳できませんでした。もう一度お願いします。 | Frontend の `fetch` の timeout（`AbortController` の abort。`/api/interpret` と `/api/photo` は 65 秒、再翻訳の `/api/translate` は 30 秒）。Backend の 504（`timeout`）とは別の文言です |
 | `no_text_found` | 写真から文字を読み取れませんでした | `/api/photo` の 422 `no_text_found`（写真に文字が見つからない） |
-| `photo_too_much_text` | 写真の文字が多すぎます、訳したいところを撮り直してください | `/api/photo` の 422 `photo_too_much_text`（訳の出力が上限で切れた） |
-| `photo_load_failed` | 写真を開けませんでした、別の写真でお試しください | 写真の前処理の失敗（`createImageBitmap()`、canvas、`toBlob()` の失敗と、`toBlob()` が `null` を返した場合）。`/api/photo` の問い合わせの失敗には使いません |
-| `photo_too_large` | 写真が大きすぎます、別の写真でお試しください | 縮めた写真が品質 0.6 でも 1,032,192 バイト（`MAX_UPLOAD_BYTES`）を超える場合（送りません）と、`/api/photo` の 413（本文の形式によらない） |
+| `photo_too_much_text` | 写真の文字が多すぎます<br>訳したいところを撮り直してください | `/api/photo` の 422 `photo_too_much_text`（訳の出力が上限で切れた） |
+| `photo_load_failed` | 写真を開けませんでした<br>別の写真でお試しください | 写真の前処理の失敗（`createImageBitmap()`、canvas、`toBlob()` の失敗と、`toBlob()` が `null` を返した場合）。`/api/photo` の問い合わせの失敗には使いません |
+| `photo_too_large` | 写真が大きすぎます<br>別の写真でお試しください | 縮めた写真が品質 0.6 でも 1,032,192 バイト（`MAX_UPLOAD_BYTES`）を超える場合（送りません）と、`/api/photo` の 413（本文の形式によらない） |
 
 7言語の文言は `frontend/src/messages.ts` の `MESSAGES` を参照してください。
+
+表の `<br>` は改行です。写真の翻訳の日本語の文言のうち2つの文からなるもの（`photo_too_much_text`、`photo_load_failed`、`photo_too_large`）は、句点も読点も使わず、文と文の間を改行（`\n`）にしています。エラーの表示の位置（`error-text`）は `white-space: pre-line` なので、この改行と、2つの言語の間の空行は、そのまま表示されます。
 
 読み上げ（`/api/tts`）のエラーは、`tts_too_long`、`service_unavailable`、`upstream_busy`、`timeout` の場合だけ表示します。表示する文言がないエラー（502、ネットワークのエラー、timeout など）では何も表示せず、ログにだけ残します。本番の通訳の画面（`InterpreterPage`）では、録音中のリアルタイム翻訳はしません（Legacy の実験の経路では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残り、その失敗は表示しません）。
 
