@@ -107,7 +107,7 @@ describe('getLocalizedMessage', () => {
       'vi':    'Không thể đọc chữ từ ảnh.',
     })
     expect(MESSAGES.photo_too_much_text).toEqual({
-      'ja':    '写真の文字が多すぎます。訳したいところを撮り直してください',
+      'ja':    '写真の文字が多すぎます訳したいところを撮り直してください',
       'en':    'The photo has too much text. Please retake just the part you want translated.',
       'zh-CN': '照片中的文字太多。请只拍摄需要翻译的部分。',
       'zh-TW': '照片中的文字太多。請只拍攝需要翻譯的部分。',
@@ -116,7 +116,7 @@ describe('getLocalizedMessage', () => {
       'vi':    'Ảnh có quá nhiều chữ. Vui lòng chụp lại phần bạn muốn dịch.',
     })
     expect(MESSAGES.photo_load_failed).toEqual({
-      'ja':    '写真を開けませんでした。別の写真でお試しください',
+      'ja':    '写真を開けませんでした別の写真でお試しください',
       'en':    'The photo could not be opened. Please try another photo.',
       'zh-CN': '无法打开照片，请换一张照片再试。',
       'zh-TW': '無法開啟照片，請換一張照片再試一次。',
@@ -125,7 +125,7 @@ describe('getLocalizedMessage', () => {
       'vi':    'Không thể mở ảnh. Vui lòng thử ảnh khác.',
     })
     expect(MESSAGES.photo_too_large).toEqual({
-      'ja':    '写真が大きすぎます。別の写真でお試しください',
+      'ja':    '写真が大きすぎます別の写真でお試しください',
       'en':    'The photo is too large. Please try another photo.',
       'zh-CN': '照片太大，请换一张照片再试。',
       'zh-TW': '照片太大，請換一張照片再試一次。',
@@ -133,6 +133,12 @@ describe('getLocalizedMessage', () => {
       'th':    'รูปภาพมีขนาดใหญ่เกินไป กรุณาลองใช้รูปภาพอื่น',
       'vi':    'Ảnh quá lớn. Vui lòng thử ảnh khác.',
     })
+  })
+
+  // 写真の翻訳の日本語の文言は、文末だけでなく文中にも句点（。）を使わない（PR #39 の WW1）
+  it('has no Japanese period anywhere in the photo translation messages', () => {
+    const keys: MessageKey[] = ['no_text_found', 'photo_too_much_text', 'photo_load_failed', 'photo_too_large']
+    for (const key of keys) expect(MESSAGES[key].ja, key).not.toContain('。')
   })
 
   it('has messages in all 7 languages for all 17 keys', () => {

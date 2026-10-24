@@ -169,7 +169,7 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   },
   // 写真の文字が多く、訳の出力が上限で切れた場合（Backend の photo_too_much_text）
   photo_too_much_text: {
-    'ja':    '写真の文字が多すぎます。訳したいところを撮り直してください',
+    'ja':    '写真の文字が多すぎます訳したいところを撮り直してください',
     'en':    'The photo has too much text. Please retake just the part you want translated.',
     'zh-CN': '照片中的文字太多。请只拍摄需要翻译的部分。',
     'zh-TW': '照片中的文字太多。請只拍攝需要翻譯的部分。',
@@ -179,7 +179,7 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   },
   // 選んだ写真を開けない、縮められない場合（Frontend の前処理の失敗）
   photo_load_failed: {
-    'ja':    '写真を開けませんでした。別の写真でお試しください',
+    'ja':    '写真を開けませんでした別の写真でお試しください',
     'en':    'The photo could not be opened. Please try another photo.',
     'zh-CN': '无法打开照片，请换一张照片再试。',
     'zh-TW': '無法開啟照片，請換一張照片再試一次。',
@@ -189,7 +189,7 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   },
   // 縮めた写真が送れる大きさを超えた場合と、/api/photo の 413
   photo_too_large: {
-    'ja':    '写真が大きすぎます。別の写真でお試しください',
+    'ja':    '写真が大きすぎます別の写真でお試しください',
     'en':    'The photo is too large. Please try another photo.',
     'zh-CN': '照片太大，请换一张照片再试。',
     'zh-TW': '照片太大，請換一張照片再試一次。',

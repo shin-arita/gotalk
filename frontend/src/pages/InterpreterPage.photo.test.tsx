@@ -475,6 +475,152 @@ describe('InterpreterPage photo: interruptions (GOTALK-7 6.1.2, 6.1.3)', () => {
     expect(alertText()).toBeNull()
   })
 
+  // 戻った後に前処理が失敗しても、文言も状態も変えない（PR #39 の WW2）
+  it('does not show photo_load_failed nor change the state when the preprocessing fails after back', async () => {
+    const { onBack } = renderPage()
+    const pending = deferred<FakeBitmap>()
+    createImageBitmapImpl = () => pending.promise
+    await act(async () => { selectPhoto() })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'トップ画面へ戻る' })) })
+    expect(onBack).toHaveBeenCalled()
+    const statusEvents = captured.session!.getDiagnostics().events.filter(e => e.type.startsWith('status:')).length
+    await act(async () => { pending.reject(new DOMException('cannot decode', 'InvalidStateError')) })
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    expect(photoCalls()).toHaveLength(0)
+    expect(alertText()).toBeNull()
+    expect(captured.session!.getDiagnostics().events.filter(e => e.type.startsWith('status:')).length).toBe(statusEvents)
+  })
+
+  // bfcache から戻った後（pagehide → pageshow の persisted）に新しい写真を始めてから、古い処理が終わる場合（PR #39 の WW2）。
+  // 古い処理の結果、失敗、片付け（endRequest）が、新しい処理の状態、文言、有効な問い合わせの番号を妨げないこと
+  describe('when an old photo finishes after pagehide, pageshow (persisted) and a new photo', () => {
+    // createImageBitmap と /api/photo の呼び出しごとに、終わらせ方をテストが決める
+    let bitmapCalls: ReturnType<typeof deferred<FakeBitmap>>[]
+    let photoCallsPending: ReturnType<typeof deferred<Response>>[]
+    const NEW_RESULT = { ...PHOTO_OK, lines: [PHOTO_OK.lines[1]], sourceText: 'ラーメン', translatedText: 'Ramen', ttsText: 'Ramen' }
+    const OLD_RESULT = { ...PHOTO_OK, lines: [PHOTO_OK.lines[2]], sourceText: 'Coffee', translatedText: 'コーヒー', ttsText: 'コーヒー' }
+
+    beforeEach(() => {
+      bitmapCalls = []
+      photoCallsPending = []
+      createImageBitmapImpl = () => {
+        const d = deferred<FakeBitmap>()
+        bitmapCalls.push(d)
+        return d.promise
+      }
+      photoResponse = () => {
+        const d = deferred<Response>()
+        photoCallsPending.push(d)
+        return d.promise
+      }
+    })
+
+    const settle = () => act(async () => { await new Promise(r => setTimeout(r, 0)) })
+
+    // 写真を選び、pagehide と pageshow（persisted）を起こしてから、新しい写真を選ぶ
+    async function leaveAndComeBackThenSelectNewPhoto() {
+      await act(async () => { firePageTransition('pagehide', true) })
+      expect(lastStatus()).toBe('status:idle')
+      await act(async () => { firePageTransition('pageshow', true) })
+      expect(lastStatus()).toBe('status:idle')
+      expect(cameraButton()).not.toBeDisabled()
+      await act(async () => { selectPhoto() })
+      expect(lastStatus()).toBe('status:processing')
+    }
+
+    // 新しい処理を終わらせ、その結果が出ること（新しい処理の番号が有効なまま）を確かめる
+    async function finishNewPhoto(bitmapIndex: number) {
+      await act(async () => { bitmapCalls[bitmapIndex].resolve(bitmapOf(800, 600)) })
+      await settle()
+      expect(photoCalls()).toHaveLength(1)
+      await act(async () => { photoCallsPending[0].resolve(okJson(NEW_RESULT)) })
+      await settle()
+      expect(lastStatus()).toBe('status:ready')
+      expect(sourceText()).toBe('ラーメン')
+      expect(photoLineTexts()).toEqual([['ラーメン', 'Ramen']])
+      expect(alertText()).toBeNull()
+      expect(historyItems().map(h => h.source)).toEqual(['ラーメン'])
+    }
+
+    it('ignores the old preprocessing that completes', async () => {
+      renderPage()
+      await act(async () => { selectPhoto() })
+      await leaveAndComeBackThenSelectNewPhoto()
+      // 古い前処理が終わる：送らず、新しい処理の processing のまま
+      await act(async () => { bitmapCalls[0].resolve(bitmapOf(4000, 3000)) })
+      await settle()
+      expect(photoCalls()).toHaveLength(0)
+      expect(bitmaps[0].close).toHaveBeenCalledTimes(1)
+      expect(lastStatus()).toBe('status:processing')
+      await finishNewPhoto(1)
+    })
+
+    it('ignores the old preprocessing that fails', async () => {
+      renderPage()
+      await act(async () => { selectPhoto() })
+      await leaveAndComeBackThenSelectNewPhoto()
+      await act(async () => { bitmapCalls[0].reject(new DOMException('cannot decode', 'InvalidStateError')) })
+      await settle()
+      expect(alertText()).toBeNull()
+      expect(lastStatus()).toBe('status:processing')
+      await finishNewPhoto(1)
+    })
+
+    it('ignores the old request that succeeds or fails', async () => {
+      for (const finishOld of [
+        (d: ReturnType<typeof deferred<Response>>) => d.resolve(okJson(OLD_RESULT)),
+        (d: ReturnType<typeof deferred<Response>>) => d.reject(new TypeError('Failed to fetch')),
+      ]) {
+        cleanup()
+        bitmapCalls = []
+        photoCallsPending = []
+        fetchMock.mockClear()
+        renderPage()
+        await act(async () => { selectPhoto() })
+        await act(async () => { bitmapCalls[0].resolve(bitmapOf(4000, 3000)) })
+        await settle()
+        expect(photoCalls()).toHaveLength(1)
+        const oldSignal = (photoCalls()[0][1] as RequestInit).signal!
+        await leaveAndComeBackThenSelectNewPhoto()
+        expect(oldSignal.aborted).toBe(true)
+        // 古い問い合わせが終わる（止めた後に応答や失敗が届く）：新しい処理の processing のまま
+        await act(async () => { finishOld(photoCallsPending[0]) })
+        await settle()
+        expect(alertText()).toBeNull()
+        expect(sourceText()).toBe('')
+        expect(lastStatus()).toBe('status:processing')
+        // 新しい処理を終わらせる
+        await act(async () => { bitmapCalls[1].resolve(bitmapOf(800, 600)) })
+        await settle()
+        expect(photoCalls()).toHaveLength(2)
+        const newSignal = (photoCalls()[1][1] as RequestInit).signal!
+        expect(newSignal.aborted).toBe(false)
+        await act(async () => { photoCallsPending[1].resolve(okJson(NEW_RESULT)) })
+        await settle()
+        expect(lastStatus()).toBe('status:ready')
+        expect(sourceText()).toBe('ラーメン')
+        expect(photoLineTexts()).toEqual([['ラーメン', 'Ramen']])
+        expect(alertText()).toBeNull()
+      }
+    })
+
+    // 古い処理の片付けが、新しい処理の番号を空にしないこと：新しい処理の途中の pagehide で、新しい問い合わせが止まる
+    it('keeps the new request active after the old one is cleaned up', async () => {
+      renderPage()
+      await act(async () => { selectPhoto() })
+      await leaveAndComeBackThenSelectNewPhoto()
+      await act(async () => { bitmapCalls[0].reject(new DOMException('cannot decode', 'InvalidStateError')) })
+      await settle()
+      await act(async () => { bitmapCalls[1].resolve(bitmapOf(800, 600)) })
+      await settle()
+      expect(photoCalls()).toHaveLength(1)
+      const newSignal = (photoCalls()[0][1] as RequestInit).signal!
+      await act(async () => { firePageTransition('pagehide', true) })
+      expect(newSignal.aborted).toBe(true)
+      expect(lastStatus()).toBe('status:idle')
+    })
+  })
+
   it('does not send, change the state or warn when unmounted during the preprocessing, even if it then fails', async () => {
     const { unmount } = renderPage()
     const pending = deferred<FakeBitmap>()

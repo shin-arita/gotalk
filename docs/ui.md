@@ -46,9 +46,9 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 | `language_unclear` | 言語不明、もう一度お話ください | `/api/interpret` と `/api/translate`（再翻訳）の 422 `language_mismatch` |
 | `request_timeout` | うまく翻訳できませんでした。もう一度お願いします。 | Frontend の `fetch` の timeout（`AbortController` の abort。`/api/interpret` と `/api/photo` は 65 秒、再翻訳の `/api/translate` は 30 秒）。Backend の 504（`timeout`）とは別の文言です |
 | `no_text_found` | 写真から文字を読み取れませんでした | `/api/photo` の 422 `no_text_found`（写真に文字が見つからない） |
-| `photo_too_much_text` | 写真の文字が多すぎます。訳したいところを撮り直してください | `/api/photo` の 422 `photo_too_much_text`（訳の出力が上限で切れた） |
-| `photo_load_failed` | 写真を開けませんでした。別の写真でお試しください | 写真の前処理の失敗（`createImageBitmap()`、canvas、`toBlob()` の失敗と、`toBlob()` が `null` を返した場合）。`/api/photo` の問い合わせの失敗には使いません |
-| `photo_too_large` | 写真が大きすぎます。別の写真でお試しください | 縮めた写真が品質 0.6 でも 1,032,192 バイト（`MAX_UPLOAD_BYTES`）を超える場合（送りません）と、`/api/photo` の 413（本文の形式によらない） |
+| `photo_too_much_text` | 写真の文字が多すぎます訳したいところを撮り直してください | `/api/photo` の 422 `photo_too_much_text`（訳の出力が上限で切れた） |
+| `photo_load_failed` | 写真を開けませんでした別の写真でお試しください | 写真の前処理の失敗（`createImageBitmap()`、canvas、`toBlob()` の失敗と、`toBlob()` が `null` を返した場合）。`/api/photo` の問い合わせの失敗には使いません |
+| `photo_too_large` | 写真が大きすぎます別の写真でお試しください | 縮めた写真が品質 0.6 でも 1,032,192 バイト（`MAX_UPLOAD_BYTES`）を超える場合（送りません）と、`/api/photo` の 413（本文の形式によらない） |
 
 7言語の文言は `frontend/src/messages.ts` の `MESSAGES` を参照してください。
 
