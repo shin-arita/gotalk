@@ -267,7 +267,7 @@ transcript 経路と Whisper 経路のどちらでも、翻訳元と翻訳先が
 | Request Content-Type | `application/json` |
 | Response Content-Type | `application/json` |
 
-Frontend は録音中のリアルタイム翻訳と、原文を編集した後の再翻訳でこの API を使います。
+Frontend は、文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳にこの API を使います。本番の通訳の画面（`InterpreterPage`）では、録音中の入力中の翻訳には使いません（Legacy の実験の経路（`LegacyInterpreterPage`）では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残ります）。
 
 Request body:
 
@@ -343,7 +343,7 @@ Response 例:
 
 ### ttsText
 
-`ttsText` は Frontend が読み上げ時に `/api/tts` へ送る文字列です。保護なし経路では `translatedText` と同じです。固有名詞保護が有効な場合は、翻訳結果の raw text を TTS 用に復元した文字列になります。
+`ttsText` は Frontend が読み上げ時に `/api/tts` へ送る文字列です（同じ文字の2回目からは、取っておいた音声を鳴らし、送りません）。保護なし経路では `translatedText` と同じです。固有名詞保護が有効な場合は、翻訳結果の raw text を TTS 用に復元した文字列になります。
 
 ### 固有名詞保護との関係
 
@@ -475,17 +475,18 @@ Frontend の API 呼び出しは `frontend/src/pages/InterpreterPage.tsx` に実
 | 利用経路 | 関数 | API | 送信内容 | タイムアウト |
 | --- | --- | --- | --- | --- |
 | 録音終了後の確定翻訳 | `callInterpretApi` | `POST /api/interpret` | `audio`、`myLanguage`、`theirLanguage`、`speaker`、認識テキストがあれば `transcript` | 65 秒 |
-| 録音中のリアルタイム翻訳 | `useEffect` 内の処理 | `POST /api/translate` | `text`、`languages` | 30 秒 |
-| 原文編集後の再翻訳 | `callTranslateApi` | `POST /api/translate` | `text`、`languages` | 30 秒 |
-| TTS 再生 | `handleSpeak` | `POST /api/tts` | `text: ttsText` | 30 秒 |
+| 文字の入力と原文の編集を確定したときの翻訳 | `callTranslateApi` | `POST /api/translate` | `text`、`languages` | 30 秒 |
+| TTS 再生 | `handleSpeak` | `POST /api/tts`（同じ文字の2回目からは呼ばない） | `text: ttsText` | 30 秒 |
 
 すべての `fetch` に `AbortController` の `signal` を渡し、タイムアウトになったら実際の `fetch` を abort します。タイムアウトの値は `frontend/src/api.ts` の `API_TIMEOUT_MS` にあり、Backend の deadline と nginx の `proxy_read_timeout`（60 秒）より長くしています（`/api/interpret` は Backend 55 秒 < nginx 60 秒 < Frontend 65 秒）。
 
 確定翻訳は、録音を止めたときに `MediaRecorder` の `onstop` から `callInterpretApi(blob)` で実行されます。Frontend はタップされた国旗の言語を `myLanguage` と `speaker`、もう一方の言語を `theirLanguage` として送ります。録音中に `SpeechRecognition` の認識テキストが得られていれば `transcript` として添えます。認識テキストがなく、録音の Blob が 1024 バイト（`MIN_INTERPRET_AUDIO_BYTES`）未満のときは `/api/interpret` を呼ばず、録音が 1 秒以上なら「マイクの音を受け取れませんでした。ブラウザを一度終了してから、開き直してください」（`microphone_no_audio`）を、1 秒未満なら「うまく録音できませんでした。もう一度お願いします」（`recording_failed`）を表示します（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。成功レスポンスから `translatedText`、`backTranslation`、`ttsText` を state に保存します。録音中に `SpeechRecognition` の `onresult` が一度も呼ばれなかった場合（`hasLiveTranscriptRef.current` が `false`）は、`text` を原文として表示します。`onresult` は呼ばれたが認識テキストが空だった場合は、`transcript` を送らず、`text` も原文として表示しません。`ttsText` がない場合は `translatedText` を読み上げ用テキストとして使います。
 
-リアルタイム翻訳は録音中に `recognizedText` の変更に対して 800ms のデバウンスで実行されます。成功し、`translatedText` が存在し、`sourceLanguage` が `unknown` でない場合に `liveTranslatedText` を更新します。認識テキストが変わったときや録音を止めたときは、送信中の `fetch` を abort します。リアルタイム翻訳中の abort や network error は UI エラーとして表示しません。
+録音中は `/api/translate` を呼びません（録音中のリアルタイム翻訳はしません。[speech-flow.md](speech-flow.md) の「7. リアルタイム翻訳」）。Legacy の実験の経路（`LegacyInterpreterPage`）では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残ります。
 
-再翻訳は、原文を編集して確定した場合に `callTranslateApi(trimmed)` で実行されます。翻訳方向は Backend が決めます。
+読み上げは、デコード済みの音声と、その元の文字（`ttsText`）の組を1つだけ取っておき、同じ文字の2回目からは `/api/tts` を呼ばずに鳴らします（[speech-flow.md](speech-flow.md) の「9. TTS」）。
+
+文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳は、`callTranslateApi(trimmed)` で実行されます。翻訳方向は Backend が決めます。
 
 エラーの文言は、選んだ2つの言語で、選んだ順に空行をはさんで表示します（文言がない言語は英語）。Frontend はエラーを文言のキー（`frontend/src/api.ts` の `ApiError` の `messageKey`）で扱い、表示の直前に `frontend/src/messages.ts` の `getLocalizedMessage` で文言にします。HTTP の status、`e.message`、Backend の `error` の文字列は表示せず、エンドポイント、status、エラーの種類を `console.warn` に残します。文言のキーと7言語の文言の決まりは [ui.md](ui.md) を参照してください。以下の表示の文言は、日本語の文言で示します。
 
@@ -504,7 +505,7 @@ Frontend の API 呼び出しは `frontend/src/pages/InterpreterPage.tsx` に実
 | `upstream_busy` | `upstream_busy` | 混み合っています。しばらくしてからお試しください |
 | `timeout` | `timeout` | 処理に時間がかかっています。もう一度お試しください |
 
-TTS 再生は読み上げボタンから実行されます。Frontend は `/api/tts` の `audio/mpeg` response を `arrayBuffer()` で受け取り、`AudioContext` の `decodeAudioData` と `AudioBufferSourceNode` で再生します（`<audio>` は使いません。[speech-flow.md](speech-flow.md) の「9. TTS」）。
+TTS 再生は読み上げボタンから実行されます。Frontend は `/api/tts` の `audio/mpeg` response を `arrayBuffer()` で受け取り、`AudioContext` の `decodeAudioData` と `AudioBufferSourceNode` で再生します（`<audio>` は使いません。[speech-flow.md](speech-flow.md) の「9. TTS」）。読み上げる文字が取っておいた音声の文字と同じときは、`/api/tts` と `decodeAudioData` を呼ばずに、取っておいた `AudioBuffer` を再生します。
 
 `/api/tts` の 500 文字の上限は、読み上げる翻訳の結果（`ttsText`）に掛かります。500 文字を超える翻訳の結果も、画面には全文を表示しますが、読み上げはできません。Frontend は読み上げボタンが押されたときに `ttsText` の文字数を数え、500 文字を超える場合は `/api/tts` を呼ばずに「この翻訳は長いため、読み上げできません（500文字まで）」（`tts_too_long`）を選んだ2つの言語で表示します。数え方は Backend と同じく、前後の空白を除かずに Unicode のコードポイント単位です（`frontend/src/api.ts` の `isTooLongForTts`。上限の値 `TTS_MAX_CHARS` は Backend の `maxTextRunes` と同じ値にする必要があります）。Backend の上限は費用を守るためのもので、Frontend の確認があっても残します。`/api/tts` が `input_too_large` を返した場合も、同じ文言を表示します。
 

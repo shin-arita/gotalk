@@ -93,9 +93,10 @@ Frontend のテストファイルは次のとおりです。
 | `frontend/src/pages/InterpreterPage.lifecycle.test.tsx` | 通訳画面の録音のライフサイクル（マイクを閉じないセッション）：二重のタップ、中断（`hidden`、`pagehide`、戻る、外れる）で track を止めず次の録音で使い回すこと、古いセッションと古い問い合わせの結果、読み上げの中断（`AudioBufferSourceNode` の `stop()` と `disconnect()`、外れるときの `AudioContext` の `close()`）、bfcache から戻ったとき |
 | `frontend/src/pages/InterpreterPage.keptMic.test.tsx` | 10 回続けて録音しても（間に読み上げをはさんでも）`getUserMedia` は1回、読み上げの `AudioContext`（`resume()` をタップの中で `fetch` の前に呼ぶ、`resume()` の拒否と `running` でないとき、古い `resume()` の拒否、見張りのタイマー、`decodeAudioData` と `start()` の失敗）、マイクの音が来ないときの検出、`?exp=` のときの「コピー」の JSON、スイッチがあるときは `useAudioSession` を使うこと |
 | `frontend/src/App.keptMic.test.tsx` | 言語の選択の画面に戻り、もう一度選んで録音しても `getUserMedia` を呼ばないこと |
-| `frontend/src/pages/InterpreterPage.recordingOverlay.test.tsx` | 録音中の画面（PR B）：押した国旗の言語の1言語の案内と、下のボタン（starting は × とキャンセル、recording は ■ と停止）、画面のどこをタップしても1回だけ止めること、starting の間の本体のタップは何もしないこと、× の取り消し（`abort('cancel')`）、click shield（消えた後の 400ms はタップを受け止める。jsdom は hit test と `inert` をしないので、テストの `tapAt()` で一番上に重なる要素に click を届ける）、話した文字と入力中の翻訳、末尾へのスクロール、棒グラフ、中断と失敗で消えること、`inert` とフォーカス、読み上げの時間の記録（`tts_tap` から `tts_started` まで） |
+| `frontend/src/pages/InterpreterPage.recordingOverlay.test.tsx` | 録音中の画面（PR B）：押した国旗の言語の1言語の案内と、下のボタン（starting は × とキャンセル、recording は ■ と停止）、画面のどこをタップしても1回だけ止めること、starting の間の本体のタップは何もしないこと、× の取り消し（`abort('cancel')`）、click shield（消えた後の 400ms はタップを受け止める。jsdom は hit test と `inert` をしないので、テストの `tapAt()` で一番上に重なる要素に click を届ける）、話した文字だけを出し、録音中に `/api/translate` を呼ばないこと（入力中の翻訳はしない）、末尾へのスクロール、棒グラフ、中断と失敗で消えること、`inert` とフォーカス、読み上げの時間の記録（`tts_tap` から `tts_started` まで） |
 | `frontend/src/pages/InterpreterPage.textInput.test.tsx` | 原文の入力と編集（GOTALK-6）：原文が空でも押せること（`aria-label` は「入力」）、タップの処理の中でのフォーカス、透明な覆い（`edit-confirm-shield`）のタップで確定し、そのタップで国旗、題名、読み上げが動かないこと（テストの `tapAt()` で、原文のカードの外へのタップを覆いに届ける）、原文のカードの余白と鉛筆のボタンの位置のタップ、Enter と日本語の入力の変換の Enter、Escape、`blur`、録音中と翻訳中に押せないこと、`language_mismatch`。フォーカスがないまま編集の状態になったときの確定（PR #37 の UU1）、中断のときの編集の扱い（`hidden` では続け、`pagehide`、`pageshow`、`unmount` では取り消す。UU2） |
 | `frontend/src/pages/InterpreterPage.ttsGuard.test.tsx` | `handleSpeak` の守り（`useInterpreterAudioSession` を差し替えて、`ready` で録音のセッションが残っている状態を作る） |
+| `frontend/src/pages/InterpreterPage.ttsCache.test.tsx` | 読み上げの音声を取っておくこと（GOTALK-2）：同じ翻訳を2回読むと `/api/tts` と `decodeAudioData` は1回で、鳴らすのは2回（2回目は `tts_cache_hit`）、録音し直す、編集して訳し直す、文字を入力して訳すと新しい文字で `/api/tts` を呼ぶこと、訳し直しで同じ `ttsText` が返ったときは呼ばないこと、`/api/tts` の失敗と時間切れ（応答を待つ途中と、本文の受け取りの途中。本文の受け取りの途中は PR #38 の VV4）、`decodeAudioData` の失敗、変換の確認より前の `hidden` の後は取っておかないこと、`decodeAudioData` の途中で時間切れになったときは、その回は鳴らすが取っておかないこと（PR #38 の VV3）、取っておいた後の `resume()` の拒否と `running` でないとき、`AudioBufferSourceNode` の `start()` の失敗、見張りのタイマー、中断（`hidden`、`pagehide`）、読み上げの途中に原文の編集を確定して訳し直しで同じ `ttsText` が返ったとき、読み上げの途中の `pagehide` と `pageshow`（persisted。bfcache から戻ったとき）の後も取っておいた音声を使うこと（PR #38 の VV2）、画面を付け直すと使わないこと |
 | `frontend/src/pages/MicTestPage.test.tsx` | 開発用のマイクの確認のページ（`#mic-test`） |
 | `frontend/src/experiments.test.ts` | 切り分けの実験のスイッチの指定（`ExperimentConfig`）の読み取りと組み合わせ（[切り分けの実験のスイッチ](#切り分けの実験のスイッチ原因の特定の後に外す)） |
 | `frontend/src/hooks/useAudioSession.callLog.test.ts` | `useAudioSession` に、スイッチがないとき（と `?exp=` のとき）の設定を渡したときに、ブラウザの API の呼び出しの順番と回数が、スイッチを入れる前（`782635e`）と同じであること（PR A から、通訳の画面は、スイッチがないときに `useAudioSession` を使いません） |
@@ -146,9 +147,8 @@ npm test
 - `/api/tts` に `ttsText` を送ること
 - TTS fetch 中の button disabled、読み上げの `AudioBufferSourceNode` の `onended` 後の復帰、TTS 失敗後の復帰
 - `recording` 中は翻訳カードを隠し、録音終了後に表示すること
-- すべての `fetch`（`/api/interpret`、リアルタイム翻訳と再翻訳の `/api/translate`、`/api/tts`）に `AbortSignal` が渡され、Backend が受け付けるフィールドだけを送ること
+- すべての `fetch`（`/api/interpret`、再翻訳の `/api/translate`、`/api/tts`）に `AbortSignal` が渡され、Backend が受け付けるフィールドだけを送ること
 - `/api/interpret` は 65 秒、`/api/translate` と `/api/tts` は 30 秒で `fetch` が abort されること。`/api/interpret` と再翻訳の `/api/translate` の abort では「うまく翻訳できませんでした」の文言を表示すること
-- リアルタイム翻訳の `fetch` が、認識テキストが変わったときと録音を止めたときに abort されること
 - エラーの応答の `code`（`input_too_large`、`service_unavailable`、`upstream_busy`、`timeout`）に応じた表示をし、それ以外の `code` では OpenAI の内部のエラーコードや status を表示せずに汎用のエラーの文言を表示すること。`/api/tts` のエラーは、表示のない `code` では何も表示しないこと
 - `isTooLongForTts` が、Backend の `textTooLong` と同じく、前後の空白を除かずに Unicode のコードポイント単位で数えること（500 文字は可、501 文字は不可。サロゲートペアと対になっていないサロゲートは 1 文字）
 - 500 文字ちょうどの翻訳の結果では `/api/tts` を呼ぶこと。500 文字を超える翻訳の結果では `/api/tts` を呼ばずに読み上げ用の文言を表示し、翻訳の結果の全文は表示されたままで、読み上げボタンも押せること。前後の空白と、サロゲートペアの文字（絵文字）の数え方が Backend と同じであること

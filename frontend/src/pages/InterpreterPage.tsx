@@ -147,7 +147,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   const [status, setStatus] = useState<InterpreterStatus>('idle')
   const [recordingFlagIndex, setRecordingFlagIndex] = useState<0 | 1 | null>(null)
   const [recognizedText, setRecognizedText] = useState('')
-  const [liveTranslatedText, setLiveTranslatedText] = useState('')
   const [translatedText, setTranslatedText] = useState('')
   const [ttsText, setTtsText] = useState('')
   const [backTranslation, setBackTranslation] = useState('')
@@ -177,6 +176,9 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   const ttsSeqRef = useRef(0)
   const activeTtsIdRef = useRef<number | null>(null)
   const ttsControllerRef = useRef<AbortController | null>(null)
+  // 読み上げの音声（デコード済み）と、その元の文字。同じ文字の読み上げでは /api/tts を呼ばずにこれを鳴らす。
+  // 持つのは最後の1組だけ
+  const ttsCacheRef = useRef<{ text: string; buffer: AudioBuffer } | null>(null)
   // 翻訳の問い合わせ（/api/interpret と、編集した文の /api/translate）の番号。今有効な番号を1つだけ持つ
   const requestSeqRef = useRef(0)
   const activeRequestIdRef = useRef<number | null>(null)
@@ -398,30 +400,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     }
   }
 
-  // 録音中のリアルタイム翻訳（800ms デバウンス）。テキストや画面の状態が変わったら、送信中の fetch も abort する
-  useEffect(() => {
-    if (status !== 'recording' || !recognizedText) return
-    const controller = new AbortController()
-    let timeoutTimer: ReturnType<typeof setTimeout> | undefined
-    const timer = setTimeout(async () => {
-      timeoutTimer = setTimeout(() => controller.abort(), API_TIMEOUT_MS.translate)
-      try {
-        const res = await fetch('/api/translate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: recognizedText, languages: selectedLanguages.map(l => ({ id: l.id, label: l.label })) }),
-          signal: controller.signal,
-        })
-        if (!res.ok) return
-        const data = await res.json()
-        if (data.translatedText && data.sourceLanguage !== 'unknown') setLiveTranslatedText(data.translatedText)
-      } catch { /* AbortError やネットワークエラーは無視 */ } finally {
-        clearTimeout(timeoutTimer)
-      }
-    }, 800)
-    return () => { clearTimeout(timer); clearTimeout(timeoutTimer); controller.abort() }
-  }, [recognizedText, status, selectedLanguages])
-
   useEffect(() => {
     if (status !== 'processing') return
     const id = setInterval(() => setProcessingMsgIdx(i => (i + 1) % 2), 1200)
@@ -542,7 +520,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     recognizedTextRef.current = ''
     hasLiveTranscriptRef.current = false
     setRecognizedText('')
-    setLiveTranslatedText('')
     setTranslatedText('')
     setTtsText('')
     setBackTranslation('')
@@ -610,31 +587,44 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     ttsSeqRef.current += 1
     const ttsId = ttsSeqRef.current
     activeTtsIdRef.current = ttsId
+    const text = ttsText
     const controller = new AbortController()
     ttsControllerRef.current = controller
     const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS.tts)
     try {
-      const res = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: ttsText }),
-        signal: controller.signal,
-      })
-      audioSession.logEvent(`tts_response:status=${res.status}`)
-      if (activeTtsIdRef.current !== ttsId) return
-      if (!res.ok) {
-        // 利用者に知らせるべきエラー（混み合っている、など）だけを表示する。
-        // input_too_large は、Frontend と Backend の文字数の判定がずれた場合などへの備え
-        const code = await apiErrorCode(res)
-        const messageKey = code === 'input_too_large' ? 'tts_too_long' : messageKeyForCode(code)
-        throw new ApiError(messageKey, '/api/tts', res.status, code)
+      let buffer: AudioBuffer
+      const cached = ttsCacheRef.current
+      if (cached?.text === text) {
+        // 取っておいた音声を使う（/api/tts と decodeAudioData() を呼ばない）
+        buffer = cached.buffer
+        audioSession.logEvent(`tts_cache_hit:ms=${Math.round(buffer.duration * 1000)}`)
+      } else {
+        const res = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+          signal: controller.signal,
+        })
+        audioSession.logEvent(`tts_response:status=${res.status}`)
+        if (activeTtsIdRef.current !== ttsId) return
+        if (!res.ok) {
+          // 利用者に知らせるべきエラー（混み合っている、など）だけを表示する。
+          // input_too_large は、Frontend と Backend の文字数の判定がずれた場合などへの備え
+          const code = await apiErrorCode(res)
+          const messageKey = code === 'input_too_large' ? 'tts_too_long' : messageKeyForCode(code)
+          throw new ApiError(messageKey, '/api/tts', res.status, code)
+        }
+        const data = await res.arrayBuffer()
+        audioSession.logEvent(`tts_downloaded:bytes=${data.byteLength}`)
+        if (activeTtsIdRef.current !== ttsId) return
+        buffer = await ctx.decodeAudioData(data)
+        audioSession.logEvent(`tts_decoded:ms=${Math.round(buffer.duration * 1000)}`)
+        if (activeTtsIdRef.current !== ttsId) return
+        // 番号の確認を通ったら取っておく（前の組は捨てる）。この後に鳴らせなくても捨てず、次の同じ文字の読み上げで使う。
+        // ただし、decodeAudioData() の途中で /api/tts の時間切れになったときは、その回は鳴らすが取っておかない
+        // （次の同じ文字の読み上げでは、/api/tts を呼び直す）
+        if (!controller.signal.aborted) ttsCacheRef.current = { text, buffer }
       }
-      const data = await res.arrayBuffer()
-      audioSession.logEvent(`tts_downloaded:bytes=${data.byteLength}`)
-      if (activeTtsIdRef.current !== ttsId) return
-      const buffer = await ctx.decodeAudioData(data)
-      audioSession.logEvent(`tts_decoded:ms=${Math.round(buffer.duration * 1000)}`)
-      if (activeTtsIdRef.current !== ttsId) return
       // resume() の結果を確かめる。拒否されたとき、または running でないときは鳴らさず、読み上げの失敗とする
       // （文言は出さない）
       let resumeError: unknown = null
@@ -714,7 +704,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       abortTranslationRequest()
       stopSpeaking()
     }
-    // 画面が外れるときは、読み上げ用の AudioContext を閉じる（読み上げの出力用で、マイクではない）。盾のタイマーも消す
+    // 画面が外れるときは、読み上げ用の AudioContext を閉じ、取っておいた読み上げの音声を捨てる（読み上げの出力用で、マイクではない）。盾のタイマーも消す
     if (reason === 'unmount') {
       if (shieldTimerRef.current !== null) {
         clearTimeout(shieldTimerRef.current)
@@ -722,6 +712,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       }
       const ctx = ttsContextRef.current
       ttsContextRef.current = null
+      ttsCacheRef.current = null
       if (ctx) void ctx.close().catch(() => { /* close() の拒否は捨てる */ })
     }
   }
@@ -925,7 +916,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     const el = overlayTextRef.current
     if (!el) return
     el.scrollTop = el.scrollHeight
-  }, [recognizedText, liveTranslatedText, overlayVisible])
+  }, [recognizedText, overlayVisible])
 
   // 録音中の画面の本体のタップ。recording のときだけ止める（stopRecording は recording のときだけ止めるので、
   // 2回目以降のタップは何もしない）。starting の間は、許可のダイアログの操作の間の誤タップで取り消さないよう、何もしない
@@ -1119,9 +1110,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
           <p className="recording-overlay__guide">{recordingGuide}</p>
           <div className="recording-overlay__text" ref={overlayTextRef} aria-live="polite">
             <p className="recording-overlay__source">{recognizedText}</p>
-            {liveTranslatedText && (
-              <p className="recording-overlay__live-translation">{liveTranslatedText}</p>
-            )}
           </div>
           <div
             className={`recording-overlay__bars${isTextFlowing ? ' recording-overlay__bars--flowing' : ''}`}

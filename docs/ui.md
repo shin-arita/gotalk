@@ -48,7 +48,7 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 
 7言語の文言は `frontend/src/messages.ts` の `MESSAGES` を参照してください。
 
-読み上げ（`/api/tts`）のエラーは、`tts_too_long`、`service_unavailable`、`upstream_busy`、`timeout` の場合だけ表示します。表示する文言がないエラー（502、ネットワークのエラー、timeout など）では何も表示せず、ログにだけ残します。録音中のリアルタイム翻訳の失敗も表示しません。
+読み上げ（`/api/tts`）のエラーは、`tts_too_long`、`service_unavailable`、`upstream_busy`、`timeout` の場合だけ表示します。表示する文言がないエラー（502、ネットワークのエラー、timeout など）では何も表示せず、ログにだけ残します。本番の通訳の画面（`InterpreterPage`）では、録音中のリアルタイム翻訳はしません（Legacy の実験の経路では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残り、その失敗は表示しません）。
 
 ## 4. まだ共通の関数に寄せていない文言
 
@@ -95,7 +95,7 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
      | `th` | เมื่อพูดจบแล้ว กรุณาแตะหน้าจอ |
      | `vi` | Khi nói xong, vui lòng chạm vào màn hình. |
 
-  2. 文字の領域：話した文字（`recognizedText`）を大きめの白の文字で、その下に入力中の翻訳（`liveTranslatedText`）を小さく少し薄い色で出します（届いているときだけ）。領域の高さには上限を付け（`flex: 1`、`min-height: 0`、`overflow-y: auto`）、長くなったらこの領域だけが縦にスクロールします。新しい文字が届くたびに（話した文字、入力中の翻訳のどちらでも）、末尾（最新の行）までスクロールします。利用者が自分でスクロールして戻している場合も、新しい文字が届けば末尾に戻します（話している本人が最新の文字を見ることを優先します）。`aria-live="polite"` です
+  2. 文字の領域：話した文字（`recognizedText`）を大きめの白の文字で出します。訳は出しません（録音中に `/api/translate` は呼びません）。領域の高さには上限を付け（`flex: 1`、`min-height: 0`、`overflow-y: auto`）、長くなったらこの領域だけが縦にスクロールします。話した文字が届くたびに、末尾（最新の行）までスクロールします。利用者が自分でスクロールして戻している場合も、新しい文字が届けば末尾に戻します（話している本人が最新の文字を見ることを優先します）。`aria-live="polite"` です
   3. 棒グラフ（[6.1](#61-棒グラフ)）
   4. 下のボタン：画面の下の中央（親指の届く位置）の、直径 72px の円です。下の余白は `calc(24px + env(safe-area-inset-bottom))` です。`recording` のときは白の四角（■、停止）、`starting` のときは白の ×（キャンセル）です。`aria-label` は、押した国旗の言語の「停止」（`STOP_BUTTON_LABELS`）か「キャンセル」（`CANCEL_BUTTON_LABELS`）です
 
@@ -112,7 +112,7 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 - タップの扱い
   - `recording` のとき：録音中の画面のどこをタップしても（下のボタン、案内の文言、文字の領域、透けて見える国旗や題名の上を含む）、録音を止めます（今までの、同じ国旗の2回目のタップと同じ `stopRecording()`）。`stopRecording()` は `recording` のときだけ止めるので、2回目以降のタップは何もしません
   - `starting` のとき：録音中の画面の本体のタップは何もしません（マイクの許可のダイアログの操作の間の誤タップで、取り消さないためです）。下のボタン（×）だけが、取り消し（`abort('cancel')` で録音のセッションを片付けて `idle` に戻す。文言は出さない。[speech-flow.md](speech-flow.md) の「5. 音声入力状態」）をします
-- 録音中は、録音中の画面のほかに動くものを出しません。国旗の波紋、国旗の下の横に流れる文字、入力中の翻訳のカード（`live-translation-card`）は出しません（入力中の翻訳は録音中の画面に出します）。録音中の国旗は、赤い縁取り（`lang-flags-bar__btn--recording-static`）だけで、赤い影の脈打ちはしません（`LegacyInterpreterPage` の `lang-flags-bar__btn--recording` は今までどおりです）
+- 録音中は、録音中の画面のほかに動くものを出しません。国旗の波紋、国旗の下の横に流れる文字、入力中の翻訳のカード（`live-translation-card`）は出しません。録音中の国旗は、赤い縁取り（`lang-flags-bar__btn--recording-static`）だけで、赤い影の脈打ちはしません（`LegacyInterpreterPage` の `lang-flags-bar__btn--recording` は今までどおりです）
 - 下の要素を操作できないようにする：録音中の画面と、下の click shield を出している間は、題名の `header`、国旗の帯（`lang-flags-bar`）、本文（`page-content`）、実験の表示に `inert` を付けます（キーボードやスクリーンリーダーでも操作できません）。録音中の画面は `role="dialog"`、`aria-modal="true"` で、`aria-label` は案内の文言と同じ文字です。録音中の画面が出たら、下のボタンにフォーカスを移します（`preventScroll`）
 
 ### 6.1 棒グラフ
