@@ -662,9 +662,9 @@ Frontend の API 呼び出しは `frontend/src/pages/InterpreterPage.tsx` に実
 | `upstream_busy` | `upstream_busy` | 混み合っています。しばらくしてからお試しください |
 | `timeout` | `timeout` | 処理に時間がかかっています。もう一度お試しください |
 | `no_text_found` | `no_text_found` | 写真から文字を読み取れませんでした |
-| `photo_too_much_text` | `photo_too_much_text` | 写真の文字が多すぎます訳したいところを撮り直してください |
+| `photo_too_much_text` | `photo_too_much_text` | 写真の文字が多すぎます、訳したいところを撮り直してください |
 
-写真の翻訳（`/api/photo`）の成功の応答では、原文のカードに `sourceText`、翻訳のカードに行の一覧（元の行と訳の行を1組ずつ）を出し、`ttsText` を読み上げ用テキストにします。逆翻訳は出しません。`/api/photo` の 413 は、`code` を見ずに「写真が大きすぎます別の写真でお試しください」（`photo_too_large`）を表示します。縮めた写真が品質 0.6 でも 1,032,192 バイトを超える場合は、`/api/photo` を呼ばずに同じ文言を表示します。写真を開けない、縮められない（前処理の失敗）場合は「写真を開けませんでした別の写真でお試しください」（`photo_load_failed`）です。`/api/photo` のネットワークのエラーは `generic_error`、Frontend の timeout は `request_timeout` で、`photo_load_failed` にはしません（[ui.md](ui.md) の「8. 写真の翻訳」）。
+写真の翻訳（`/api/photo`）の成功の応答では、原文のカードに `sourceText`、翻訳のカードに行の一覧（元の行と訳の行を1組ずつ）を出し、`ttsText` を読み上げ用テキストにします。逆翻訳は出しません。`/api/photo` の 413 は、`code` を見ずに「写真が大きすぎます、別の写真でお試しください」（`photo_too_large`）を表示します。縮めた写真が品質 0.6 でも 1,032,192 バイトを超える場合は、`/api/photo` を呼ばずに同じ文言を表示します。写真を開けない、縮められない（前処理の失敗）場合は「写真を開けませんでした、別の写真でお試しください」（`photo_load_failed`）です。`/api/photo` のネットワークのエラーは `generic_error`、Frontend の timeout は `request_timeout` で、`photo_load_failed` にはしません（[ui.md](ui.md) の「8. 写真の翻訳」）。
 
 TTS 再生は読み上げボタンから実行されます。Frontend は `/api/tts` の `audio/mpeg` response を `arrayBuffer()` で受け取り、`AudioContext` の `decodeAudioData` と `AudioBufferSourceNode` で再生します（`<audio>` は使いません。[speech-flow.md](speech-flow.md) の「9. TTS」）。読み上げる文字が取っておいた音声の文字と同じときは、`/api/tts` と `decodeAudioData` を呼ばずに、取っておいた `AudioBuffer` を再生します。
 
