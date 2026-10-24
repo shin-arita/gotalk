@@ -620,8 +620,10 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
         buffer = await ctx.decodeAudioData(data)
         audioSession.logEvent(`tts_decoded:ms=${Math.round(buffer.duration * 1000)}`)
         if (activeTtsIdRef.current !== ttsId) return
-        // 番号の確認を通ったら取っておく（前の組は捨てる）。この後に鳴らせなくても捨てず、次の同じ文字の読み上げで使う
-        ttsCacheRef.current = { text, buffer }
+        // 番号の確認を通ったら取っておく（前の組は捨てる）。この後に鳴らせなくても捨てず、次の同じ文字の読み上げで使う。
+        // ただし、decodeAudioData() の途中で /api/tts の時間切れになったときは、その回は鳴らすが取っておかない
+        // （次の同じ文字の読み上げでは、/api/tts を呼び直す）
+        if (!controller.signal.aborted) ttsCacheRef.current = { text, buffer }
       }
       // resume() の結果を確かめる。拒否されたとき、または running でないときは鳴らさず、読み上げの失敗とする
       // （文言は出さない）

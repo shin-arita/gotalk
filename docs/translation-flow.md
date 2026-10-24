@@ -161,7 +161,7 @@ Frontend は読み上げボタンが押されたときに、読み上げる文�
 
 OpenAI Audio Speech API から返った音声は Backend から `audio/mpeg` として Frontend に返されます。Frontend はその音声を `AudioContext` で再生し、再生終了、再生の失敗、`onended` が来ないときの見張りのタイマーで状態を `ready` に戻します。取っておいた音声を再生するときも、同じく `ready` に戻します。
 
-読み上げの音声を取っておく仕組み：Frontend は、デコード済みの `AudioBuffer` と、その元の文字（読み上げる `ttsText`）の組 `{ text, buffer }` を1組だけ持ちます。読み上げる文字が取っておいた組の文字と同じなら、`/api/tts`、`arrayBuffer()`、`decodeAudioData()` を呼ばずに、その `AudioBuffer` を鳴らします。違えば `/api/tts` を呼び、`decodeAudioData()` の後の読み上げの番号の確認を通ったときだけ取っておきます（前の組は捨てます）。取っておいた後に鳴らせなかったとき（`resume()` の拒否、`running` でない、`start()` の失敗）や、読み上げを中断したとき（`hidden`、`pagehide`、原文の編集の確定など）も捨てず、画面が外れるときに捨てます。詳しくは [speech-flow.md](speech-flow.md) の「9. TTS」を参照してください。
+読み上げの音声を取っておく仕組み：Frontend は、デコード済みの `AudioBuffer` と、その元の文字（読み上げる `ttsText`）の組 `{ text, buffer }` を1組だけ持ちます。読み上げる文字が取っておいた組の文字と同じなら、`/api/tts`、`arrayBuffer()`、`decodeAudioData()` を呼ばずに、その `AudioBuffer` を鳴らします。違えば `/api/tts` を呼び、`decodeAudioData()` の後の読み上げの番号の確認を通り、`/api/tts` の時間切れでないときだけ取っておきます（前の組は捨てます。`decodeAudioData()` の途中で時間切れになったときは、その回は鳴らしますが取っておきません）。取っておいた後に鳴らせなかったとき（`resume()` の拒否、`running` でない、`start()` の失敗）や、読み上げを中断したとき（`hidden`、`pagehide`、原文の編集の確定など）も捨てず、画面が外れるときに捨てます。詳しくは [speech-flow.md](speech-flow.md) の「9. TTS」を参照してください。
 
 ## 9. エラー処理
 

@@ -408,10 +408,10 @@ Frontend は、読み上げを `AudioContext` で鳴らします。マイクを�
 5. `createBufferSource()` に `AudioBuffer` を入れて `destination` につなぎ、`start()` します。今鳴らしている `AudioBufferSourceNode` を `ttsSourceRef` に持ちます
 6. `onended` で `ready` に戻します。再生を始めた後に、見張りのタイマー（`AudioBuffer.duration` × 1000 ＋ 3000 ミリ秒）を始め、それまでに `onended` が来なければ、診断のログに `tts_ended_timeout` を残して `ready` に戻します（iPhone の割り込みなどで再生が止まり、`onended` が来ないまま `speaking` に残らないため）
 
-読み上げの音声を取っておく：デコード済みの `AudioBuffer` と、その元の文字（読み上げを始めるときの `ttsText`）の組を1つだけ持ちます（`ttsCacheRef`）。読み上げる文字が取っておいた組の文字と同じなら、`/api/tts`、`arrayBuffer()`、`decodeAudioData()` を飛ばして、その `AudioBuffer` を鳴らします。違えば今までどおり `/api/tts` を呼び、`decodeAudioData()` の後の読み上げの番号の確認を通ったら、その組を取っておきます（前の組は捨てます）。
+読み上げの音声を取っておく：デコード済みの `AudioBuffer` と、その元の文字（読み上げを始めるときの `ttsText`）の組を1つだけ持ちます（`ttsCacheRef`）。読み上げる文字が取っておいた組の文字と同じなら、`/api/tts`、`arrayBuffer()`、`decodeAudioData()` を飛ばして、その `AudioBuffer` を鳴らします。違えば今までどおり `/api/tts` を呼び、`decodeAudioData()` の後の読み上げの番号の確認を通り、`/api/tts` の時間切れでなければ、その組を取っておきます（前の組は捨てます）。
 
 - 取っておいた音声を使うときも、`resume()` の確かめ、`speaking`、`onended`、見張りのタイマー、各 `await` の後の番号の確認は同じです。鳴らすたびに新しい `AudioBufferSourceNode` を作ります。`resume()` の呼び出しから鳴らすまでの間の `await` は、`resume()` の結果を待つことだけになります
-- 取っておかないとき：`/api/tts` の失敗、時間切れ、`decodeAudioData()` の失敗、`decodeAudioData()` の後の番号の確認より前に読み上げを止めたとき（番号が変わったとき）。次のタップで取り直します
+- 取っておかないとき：`/api/tts` の失敗、時間切れ（`/api/tts` の受け取りの途中でも、`decodeAudioData()` の途中でも。変換の途中で時間切れになったときは、その回は鳴らしますが取っておきません）、`decodeAudioData()` の失敗、`decodeAudioData()` の後の番号の確認より前に読み上げを止めたとき（番号が変わったとき）。次のタップで取り直します
 - 取っておいた後に、`resume()` が拒否された、`running` でなかった、`start()` に失敗した、読み上げを止めた（`hidden`、`pagehide`、原文の編集の確定など）ときも、取っておいた音声は捨てず、次の同じ文字の読み上げで使います
 - 読み上げる文字が変われば、文字の比較で使われなくなり、新しい翻訳の読み上げで上書きします。訳し直しで同じ文字の翻訳が返ったときは、取っておいた音声を使います。国旗のタップや原文の編集の確定で `ttsText` を空にするとき、`stopSpeaking()` のときは捨てません。画面が外れるとき（`AudioContext` を `close()` するところ）に捨てます
 

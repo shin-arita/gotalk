@@ -337,6 +337,43 @@ describe('InterpreterPage tts cache: not kept after a failure (GOTALK-2)', () =>
     expect(lastSource().start).toHaveBeenCalledTimes(1)
     expect(countEvents('tts_cache_hit')).toBe(0)
   })
+
+  it('plays but does not keep the audio when /api/tts times out while decodeAudioData is in flight (PR #38 VV3)', async () => {
+    vi.useFakeTimers()
+    let respond: (res: Response) => void = () => {}
+    let ttsSignal: AbortSignal | null | undefined
+    ttsResponse = options => {
+      ttsSignal = options.signal
+      return new Promise<Response>(resolve => { respond = resolve })
+    }
+    renderPage()
+    await recordAndTranslate()
+    await tapSpeak()
+    // 読み上げの AudioContext ができた後に、decodeAudioData をテストが終わらせるまで待たせる
+    let decoded: (buffer: { duration: number }) => void = () => {}
+    ttsContext().decodeAudioData.mockImplementationOnce(() => new Promise(resolve => { decoded = resolve }))
+    await act(async () => { respond(makeTtsOkResponse()) })
+    await flush()
+    expect(ttsContext().decodeAudioData).toHaveBeenCalledTimes(1)
+    // 変換の途中で /api/tts の時間切れになる
+    await act(async () => { vi.advanceTimersByTime(API_TIMEOUT_MS.tts) })
+    expect(ttsSignal?.aborted).toBe(true)
+    expect(lastStatus()).toBe('status:speaking')
+    // 変換が終わると、その回は鳴らす
+    await act(async () => { decoded({ duration: 1 }) })
+    await flush()
+    expect(ttsContext().createBufferSource).toHaveBeenCalledTimes(1)
+    expect(lastSource().start).toHaveBeenCalledTimes(1)
+    expect(countEvents('tts_started')).toBe(1)
+    endPlayback()
+    // 取っておかないので、同じ文字の次の読み上げでは /api/tts と decodeAudioData を呼び直す
+    ttsResponse = makeTtsOkResponse
+    await tapSpeak()
+    expect(ttsTexts()).toEqual(['Hello', 'Hello'])
+    expect(ttsContext().decodeAudioData).toHaveBeenCalledTimes(2)
+    expect(lastSource().start).toHaveBeenCalledTimes(1)
+    expect(countEvents('tts_cache_hit')).toBe(0)
+  })
 })
 
 describe('InterpreterPage tts cache: kept after the audio is decoded (GOTALK-2)', () => {
