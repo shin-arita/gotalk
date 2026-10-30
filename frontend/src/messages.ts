@@ -27,7 +27,7 @@ const FALLBACK_LANGUAGE = 'en'
 export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   // Backend の input_too_large（/api/interpret の 413 と、/api/tts の場合を除く）
   input_too_large: {
-    'ja':    '入力が長すぎます。短くしてもう一度お試しください',
+    'ja':    '入力が長すぎます\n短くしてもう一度お試しください',
     'en':    'The input is too long. Please shorten it and try again.',
     'zh-CN': '输入内容过长，请缩短后重试。',
     'zh-TW': '輸入內容過長，請縮短後再試一次。',
@@ -47,7 +47,7 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   },
   // Backend の upstream_busy
   upstream_busy: {
-    'ja':    '混み合っています。しばらくしてからお試しください',
+    'ja':    '混み合っています\nしばらくしてからお試しください',
     'en':    'The service is busy. Please try again later.',
     'zh-CN': '当前繁忙，请稍后再试。',
     'zh-TW': '目前忙碌中，請稍後再試。',
@@ -57,7 +57,7 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   },
   // Backend の timeout（504）
   timeout: {
-    'ja':    '処理に時間がかかっています。もう一度お試しください',
+    'ja':    '処理に時間がかかっています\nもう一度お試しください',
     'en':    'Processing is taking too long. Please try again.',
     'zh-CN': '处理时间过长，请重试。',
     'zh-TW': '處理時間過長，請再試一次。',
@@ -67,7 +67,7 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   },
   // 読み上げる翻訳が /api/tts の上限を超える場合（Frontend の確認と、/api/tts の input_too_large）
   tts_too_long: {
-    'ja':    `この翻訳は長いため、読み上げできません（${TTS_MAX_CHARS}文字まで）`,
+    'ja':    `この翻訳は長すぎます\n読み上げは${TTS_MAX_CHARS}文字までです`,
     'en':    `This translation is too long to be read aloud (up to ${TTS_MAX_CHARS} characters).`,
     'zh-CN': `该译文过长，无法朗读（最多${TTS_MAX_CHARS}个字符）。`,
     'zh-TW': `此譯文過長，無法朗讀（最多${TTS_MAX_CHARS}個字元）。`,
@@ -77,7 +77,7 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   },
   // /api/interpret の 413 と、送る前の録音のサイズの確認で超えた場合
   recording_too_long: {
-    'ja':    '録音が長すぎます。短く区切って話してください。',
+    'ja':    '録音が長すぎます\n短く区切って話してください',
     'en':    'The recording is too long. Please speak in shorter parts.',
     'zh-CN': '录音太长，请分成较短的段落来说。',
     'zh-TW': '錄音太長，請分成較短的段落來說。',
@@ -97,7 +97,7 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   },
   // 対応する文言がない status やネットワークのエラーなど
   generic_error: {
-    'ja':    'エラーが発生しました。もう一度お試しください。',
+    'ja':    'エラーが発生しました\nもう一度お試しください',
     'en':    'An error occurred. Please try again.',
     'zh-CN': '发生错误，请重试。',
     'zh-TW': '發生錯誤，請再試一次。',
@@ -107,7 +107,7 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   },
   // Backend の language_mismatch（422）
   language_unclear: {
-    'ja':    '言語不明、もう一度お話ください',
+    'ja':    '言語を聞き取れませんでした\nもう一度お話しください',
     'en':    'Language unclear. Please speak again.',
     'zh-CN': '语言不明，请再说一次',
     'zh-TW': '語言不明，請再說一次',
@@ -117,7 +117,7 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   },
   // Frontend の fetch の timeout（AbortController の abort）。Backend の 504（timeout）とは別の文言にする
   request_timeout: {
-    'ja':    'うまく翻訳できませんでした。もう一度お願いします。',
+    'ja':    'うまく翻訳できませんでした\nもう一度お願いします',
     'en':    'The translation didn’t work. Please try again.',
     'zh-CN': '翻译没有成功，请再试一次。',
     'zh-TW': '翻譯沒有成功，請再試一次。',
@@ -128,7 +128,7 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   // マイクを開いた後、録音の成立までに失敗した場合（track がない、live でない、MediaRecorder の作成や start() の例外）。
   // getUserMedia の失敗は microphone_denied、録音の成立の後の失敗は recording_failed
   recording_start_failed: {
-    'ja':    'うまく録音を始められませんでした。もう一度お願いします',
+    'ja':    'うまく録音を始められませんでした\nもう一度お願いします',
     'en':    'Recording could not be started. Please try again.',
     'zh-CN': '未能开始录音，请再试一次。',
     'zh-TW': '無法開始錄音，請再試一次。',
@@ -138,7 +138,7 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   },
   // 録音の成立の後に、録音が失敗した場合（録音の途中の MediaRecorder の onerror など。docs/speech-flow.md の 10.）
   recording_failed: {
-    'ja':    'うまく録音できませんでした。もう一度お願いします',
+    'ja':    'うまく録音できませんでした\nもう一度お願いします',
     'en':    'Recording failed. Please try again.',
     'zh-CN': '录音失败，请再试一次。',
     'zh-TW': '錄音失敗，請再試一次。',
@@ -149,7 +149,7 @@ export const MESSAGES: Record<MessageKey, Record<string, string>> = {
   // 音声認識の文字がなく、1 秒以上録音したのに、録音のデータがほとんどない場合（マイクの音が来ていない。docs/speech-flow.md）。
   // ブラウザを終了して開き直すと直ることがあるので、それを案内する
   microphone_no_audio: {
-    'ja':    'マイクの音を受け取れませんでした。ブラウザを一度終了してから、開き直してください',
+    'ja':    'マイクの音を受け取れませんでした\nブラウザを一度終了してから開き直してください',
     'en':    'The microphone audio could not be received. Please close the browser completely and open it again.',
     'zh-CN': '未能接收到麦克风的声音。请完全关闭浏览器后重新打开。',
     'zh-TW': '無法接收麥克風的聲音。請完全關閉瀏覽器後重新開啟。',

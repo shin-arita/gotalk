@@ -78,7 +78,7 @@ const BACK_TRANSLATION_LABELS: Record<string, string> = {
 }
 
 const FLAG_TAP_MESSAGES: Record<string, string> = {
-  'ja':    '国旗をタップして話してください。',
+  'ja':    '国旗をタップして話してください',
   'en':    'Tap the flag to speak.',
   'zh-CN': '点击国旗开始说话。',
   'zh-TW': '點擊國旗開始說話。',

@@ -2,6 +2,7 @@
 
 - 状態：ChatGPT の設計レビュー5回目で **承認**（2026年10月11日）
 - この文書は、承認された5回目の版に、承認時の非ブロッキングの指摘（C0 の①から⑦）を反映したものです
+- 2026年10月30日に、GOTALK-20 で、Frontend の表示の文言の引用（「B0. 4回目の指摘への対応」の「軽微な指摘と推奨」の表の `context.Canceled` と `context.DeadlineExceeded` を区別する行と、「5.7 応答の形と Frontend の表示」の表の「Frontend の表示（案）」の列）を、今の文言に合わせました。承認された設計の中身は変えていません
 
 ---
 
@@ -35,7 +36,7 @@
 | --- | --- | --- |
 | TTS の Frontend の timeout を明示し、Backend の deadline（25 秒）より長くする | Frontend の `/api/tts` に 30 秒の timeout を加える | 5.11 |
 | OpenAI 用の専用の `http.Client` を作り、`http.DefaultClient` に依存しない | 採用。専用の `http.Client`（`Timeout` 120 秒は安全弁）を作る | 5.11 |
-| `context.Canceled`（クライアントの切断）と `context.DeadlineExceeded`（Backend 自身の deadline）を区別し、後者は 504 を返す | 採用。504（`code: "timeout"`）を返し、Frontend は「処理に時間がかかっています。もう一度お試しください」と表示する | 5.7、5.11 |
+| `context.Canceled`（クライアントの切断）と `context.DeadlineExceeded`（Backend 自身の deadline）を区別し、後者は 504 を返す | 採用。504（`code: "timeout"`）を返し、Frontend は「処理に時間がかかっています」「もう一度お試しください」の2行を表示する | 5.7、5.11 |
 | `ffmpeg` の `format_whitelist` の名前は、Alpine に入る実際の `ffmpeg` で確かめ、本物の Chrome の WebM/Opus と Safari の MP4/AAC で integration test をする | 採用 | 5.2 |
 | WAV の長さは、WAV の data chunk の sample 数で判定する。960,000 samples を超えたら拒否。境界をテストする | 採用 | 5.2 |
 | nginx の `client_max_body_size` の既定は 1m で、Backend の 1.5 MiB と合っていない | 第2段階で、nginx の `client_max_body_size` と Backend の `MaxBytesReader` を意図して合わせる。第1段階の間は nginx の 1m が先に効く（安全側）ことを記録する | 6 |
@@ -284,15 +285,15 @@ ffmpeg -nostdin -hide_banner -loglevel error
 
 | 状況 | status | body の `code` | `Retry-After` | Frontend の表示（案） |
 | --- | --- | --- | --- | --- |
-| GoTalk の全体の短時間の制限 | 429 | `rate_limited` | 固定の秒数（例：5） | 混み合っています。しばらくしてからお試しください |
-| GoTalk の同時実行数の満杯（メディアの処理、OpenAI の呼び出し） | 503 | `busy` | 1 | 混み合っています。しばらくしてからお試しください |
+| GoTalk の全体の短時間の制限 | 429 | `rate_limited` | 固定の秒数（例：5） | 混み合っています<br>しばらくしてからお試しください |
+| GoTalk の同時実行数の満杯（メディアの処理、OpenAI の呼び出し） | 503 | `busy` | 1 | 混み合っています<br>しばらくしてからお試しください |
 | GoTalk の日次の枠 | 429 | `daily_limit_reached` | 次の日本時間の0時まで | 本日の利用上限に達しました。明日またお試しください |
 | GoTalk の日次の枠のファイルの異常（fail closed） | 503 | `service_unavailable` | なし | 現在サービスを利用できません |
-| GoTalk の IP ごとの制限（第2段階） | 429 | `rate_limited` | 固定の秒数 | 混み合っています。しばらくしてからお試しください |
+| GoTalk の IP ごとの制限（第2段階） | 429 | `rate_limited` | 固定の秒数 | 混み合っています<br>しばらくしてからお試しください |
 | 入力が大きすぎる、長すぎる、音声が 60 秒を超える、音声の形式が不正 | 413 / 400 | `input_too_large`、`audio_too_long`、`invalid_audio` など | なし | 録音が長すぎます、などの個別の表示 |
 | OpenAI の支出上限、クレジットの枯渇（`organization_spend_limit_exceeded`、`project_spend_limit_exceeded`、`insufficient_quota` など） | 503 | `service_unavailable` | なし | 現在サービスを利用できません |
-| OpenAI の一時的な rate limit | 503 | `upstream_busy` | OpenAI の `Retry-After` が 60 秒以下なら、その値 | 混み合っています。しばらくしてからお試しください |
-| Backend 自身の処理の deadline に達した（`context.DeadlineExceeded`） | 504 | `timeout` | なし | 処理に時間がかかっています。もう一度お試しください |
+| OpenAI の一時的な rate limit | 503 | `upstream_busy` | OpenAI の `Retry-After` が 60 秒以下なら、その値 | 混み合っています<br>しばらくしてからお試しください |
+| Backend 自身の処理の deadline に達した（`context.DeadlineExceeded`） | 504 | `timeout` | なし | 処理に時間がかかっています<br>もう一度お試しください |
 | OpenAI の障害など | 502 | 既存の扱い | なし | 既存の表示 |
 
 - body は `{"error": "<人が読む文>", "code": "<機械が読む値>"}` の形にする

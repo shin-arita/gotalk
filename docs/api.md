@@ -58,7 +58,7 @@ Backend は CORS のヘッダ（`Access-Control-Allow-*`）を付けません。
 
 `/api/interpret` は、フィールドの値を multipart の body からだけ読みます（`r.PostFormValue`）。URL の query の値（例：`/api/interpret?transcript=...`）は使いません。そのため、上限を確かめた値だけが使われます。
 
-第1段階では、本番の nginx の `client_max_body_size`（既定の 1m）が Backend の上限（body 全体 1.5 MiB）より先に効き、HTML の 413 を返します。費用の防御としては安全側ですが、Backend の構造化されたエラー（JSON の `code`）が返らないため、利用者への表示に問題があることが、本番の確認で分かりました。Frontend は `/api/interpret` の 413 を、本文の形式にかかわらず「録音が長すぎます。短く区切って話してください。」として表示します。また、送る前に録音の Blob のサイズを確かめ、1,032,192 バイト（nginx の 1 MiB から、ほかのフィールドの分の余白として 16 KiB を引いた値。`frontend/src/api.ts` の `MAX_UPLOAD_BYTES`。前の名前の `MAX_INTERPRET_AUDIO_BYTES` は同じ値の別名で、`LegacyInterpreterPage` が使っています。GOTALK-3 で Legacy と一緒に消します）を超える場合は送らずに同じ文言を表示します。`/api/photo` に送る写真の JPEG も、同じ値で確かめます（[8. POST /api/photo](#8-post-apiphoto)）。この確認は使い勝手のための事前の確認で、nginx の 413 を完全に予測するものではありません（multipart の boundary や各 part の header、ほかのフィールドも body に含まれるため）。費用やセキュリティの境界でもありません。nginx の上限は第2段階で Backend の上限と合わせます。
+第1段階では、本番の nginx の `client_max_body_size`（既定の 1m）が Backend の上限（body 全体 1.5 MiB）より先に効き、HTML の 413 を返します。費用の防御としては安全側ですが、Backend の構造化されたエラー（JSON の `code`）が返らないため、利用者への表示に問題があることが、本番の確認で分かりました。Frontend は `/api/interpret` の 413 を、本文の形式にかかわらず「録音が長すぎます」「短く区切って話してください」の2行として表示します。また、送る前に録音の Blob のサイズを確かめ、1,032,192 バイト（nginx の 1 MiB から、ほかのフィールドの分の余白として 16 KiB を引いた値。`frontend/src/api.ts` の `MAX_UPLOAD_BYTES`。前の名前の `MAX_INTERPRET_AUDIO_BYTES` は同じ値の別名で、`LegacyInterpreterPage` が使っています。GOTALK-3 で Legacy と一緒に消します）を超える場合は送らずに同じ文言を表示します。`/api/photo` に送る写真の JPEG も、同じ値で確かめます（[8. POST /api/photo](#8-post-apiphoto)）。この確認は使い勝手のための事前の確認で、nginx の 413 を完全に予測するものではありません（multipart の boundary や各 part の header、ほかのフィールドも body に含まれるため）。費用やセキュリティの境界でもありません。nginx の上限は第2段階で Backend の上限と合わせます。
 
 JSON の request body は、表にないフィールド（例：`/api/tts` の `speed` や `instructions`）があるとき、または 1つ目の JSON の値の後ろに別の値があるときに、400 `invalid_request` になります。`/api/interpret` の `myLanguage` と `theirLanguage` の JSON も同じです。
 
@@ -637,7 +637,7 @@ Frontend の API 呼び出しは `frontend/src/pages/InterpreterPage.tsx` に実
 
 すべての `fetch` に `AbortController` の `signal` を渡し、タイムアウトになったら実際の `fetch` を abort します。タイムアウトの値は `frontend/src/api.ts` の `API_TIMEOUT_MS` にあり、Backend の deadline と nginx の `proxy_read_timeout`（60 秒）より長くしています（`/api/interpret` と `/api/photo` は Backend 55 秒 < nginx 60 秒 < Frontend 65 秒）。
 
-確定翻訳は、録音を止めたときに `MediaRecorder` の `onstop` から `callInterpretApi(blob)` で実行されます。Frontend はタップされた国旗の言語を `myLanguage` と `speaker`、もう一方の言語を `theirLanguage` として送ります。録音中に `SpeechRecognition` の認識テキストが得られていれば `transcript` として添えます。認識テキストがなく、録音の Blob が 1024 バイト（`MIN_INTERPRET_AUDIO_BYTES`）未満のときは `/api/interpret` を呼ばず、録音が 1 秒以上なら「マイクの音を受け取れませんでした。ブラウザを一度終了してから、開き直してください」（`microphone_no_audio`）を、1 秒未満なら「うまく録音できませんでした。もう一度お願いします」（`recording_failed`）を表示します（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。成功レスポンスから `translatedText`、`backTranslation`、`ttsText` を state に保存します。録音中に `SpeechRecognition` の `onresult` が一度も呼ばれなかった場合（`hasLiveTranscriptRef.current` が `false`）は、`text` を原文として表示します。`onresult` は呼ばれたが認識テキストが空だった場合は、`transcript` を送らず、`text` も原文として表示しません。`ttsText` がない場合は `translatedText` を読み上げ用テキストとして使います。
+確定翻訳は、録音を止めたときに `MediaRecorder` の `onstop` から `callInterpretApi(blob)` で実行されます。Frontend はタップされた国旗の言語を `myLanguage` と `speaker`、もう一方の言語を `theirLanguage` として送ります。録音中に `SpeechRecognition` の認識テキストが得られていれば `transcript` として添えます。認識テキストがなく、録音の Blob が 1024 バイト（`MIN_INTERPRET_AUDIO_BYTES`）未満のときは `/api/interpret` を呼ばず、録音が 1 秒以上なら「マイクの音を受け取れませんでした」「ブラウザを一度終了してから開き直してください」の2行（`microphone_no_audio`）を、1 秒未満なら「うまく録音できませんでした」「もう一度お願いします」の2行（`recording_failed`）を表示します（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。成功レスポンスから `translatedText`、`backTranslation`、`ttsText` を state に保存します。録音中に `SpeechRecognition` の `onresult` が一度も呼ばれなかった場合（`hasLiveTranscriptRef.current` が `false`）は、`text` を原文として表示します。`onresult` は呼ばれたが認識テキストが空だった場合は、`transcript` を送らず、`text` も原文として表示しません。`ttsText` がない場合は `translatedText` を読み上げ用テキストとして使います。
 
 録音中は `/api/translate` を呼びません（録音中のリアルタイム翻訳はしません。[speech-flow.md](speech-flow.md) の「7. リアルタイム翻訳」）。Legacy の実験の経路（`LegacyInterpreterPage`）では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残ります。
 
@@ -647,20 +647,20 @@ Frontend の API 呼び出しは `frontend/src/pages/InterpreterPage.tsx` に実
 
 エラーの文言は、選んだ2つの言語で、選んだ順に空行をはさんで表示します（文言がない言語は英語）。Frontend はエラーを文言のキー（`frontend/src/api.ts` の `ApiError` の `messageKey`）で扱い、表示の直前に `frontend/src/messages.ts` の `getLocalizedMessage` で文言にします。HTTP の status、`e.message`、Backend の `error` の文字列は表示せず、エンドポイント、status、エラーの種類を `console.warn` に残します。文言のキーと7言語の文言の決まりは [ui.md](ui.md) を参照してください。以下の表示の文言は、日本語の文言で示します。
 
-`/api/interpret` と `/api/translate`（再翻訳）が HTTP 422 で `language_mismatch` を返した場合、Frontend は「言語不明、もう一度お話ください」（`language_unclear`）を表示し、翻訳文とバックトランスレーションを空にして `idle` に戻します。
+`/api/interpret` と `/api/translate`（再翻訳）が HTTP 422 で `language_mismatch` を返した場合、Frontend は「言語を聞き取れませんでした」「もう一度お話しください」の2行（`language_unclear`）を表示し、翻訳文とバックトランスレーションを空にして `idle` に戻します。
 
-それ以外のエラーでは、エラーの応答の `code` に応じて次の表示をします（`frontend/src/api.ts` の `API_ERROR_MESSAGE_KEYS`）。表にない `code`（502 `upstream_error` など）や、本文が JSON でない場合は、汎用のエラー「エラーが発生しました。もう一度お試しください。」（`generic_error`）を表示します。ネットワークのエラー（`fetch` の reject）も汎用のエラーです。Frontend の `fetch` の timeout（`AbortController` の abort）では「うまく翻訳できませんでした。もう一度お願いします。」（`request_timeout`）を表示し、Backend の 504 `timeout` の表示とは区別します。
+それ以外のエラーでは、エラーの応答の `code` に応じて次の表示をします（`frontend/src/api.ts` の `API_ERROR_MESSAGE_KEYS`）。表にない `code`（502 `upstream_error` など）や、本文が JSON でない場合は、汎用のエラー「エラーが発生しました」「もう一度お試しください」の2行（`generic_error`）を表示します。ネットワークのエラー（`fetch` の reject）も汎用のエラーです。Frontend の `fetch` の timeout（`AbortController` の abort）では「うまく翻訳できませんでした」「もう一度お願いします」の2行（`request_timeout`）を表示し、Backend の 504 `timeout` の表示とは区別します。
 
-`/api/tts` のエラーは、表にある `code` の場合だけ表示します。ただし `/api/tts` の `input_too_large` では、表の文言ではなく「この翻訳は長いため、読み上げできません（500文字まで）」（`tts_too_long`）を表示します。表にない `code`、ネットワークのエラー、timeout では何も表示しません（ログには残します）。
+`/api/tts` のエラーは、表にある `code` の場合だけ表示します。ただし `/api/tts` の `input_too_large` では、表の文言ではなく「この翻訳は長すぎます」「読み上げは500文字までです」の2行（`tts_too_long`）を表示します。表にない `code`、ネットワークのエラー、timeout では何も表示しません（ログには残します）。
 
-`/api/interpret` の 413 は、`code` を見ずに（Backend の JSON の `input_too_large` でも、nginx の HTML でも）「録音が長すぎます。短く区切って話してください。」（`recording_too_long`）を表示します。録音の Blob が 1,032,192 バイトを超える場合は、`/api/interpret` を呼ばずに同じ文言を表示します。表示した後の画面の状態は、`/api/interpret` のほかのエラーのときと同じです（`idle` に戻ります）。`/api/interpret` の 400 `input_too_large`（`transcript` が長すぎる場合）と、`/api/translate` の 413 は、表の `input_too_large` の表示です。
+`/api/interpret` の 413 は、`code` を見ずに（Backend の JSON の `input_too_large` でも、nginx の HTML でも）「録音が長すぎます」「短く区切って話してください」の2行（`recording_too_long`）を表示します。録音の Blob が 1,032,192 バイトを超える場合は、`/api/interpret` を呼ばずに同じ文言を表示します。表示した後の画面の状態は、`/api/interpret` のほかのエラーのときと同じです（`idle` に戻ります）。`/api/interpret` の 400 `input_too_large`（`transcript` が長すぎる場合）と、`/api/translate` の 413 は、表の `input_too_large` の表示です。
 
 | `code` | 文言のキー | 表示（日本語） |
 | --- | --- | --- |
-| `input_too_large` | `input_too_large` | 入力が長すぎます。短くしてもう一度お試しください |
+| `input_too_large` | `input_too_large` | 入力が長すぎます<br>短くしてもう一度お試しください |
 | `service_unavailable` | `service_unavailable` | 現在サービスを利用できません |
-| `upstream_busy` | `upstream_busy` | 混み合っています。しばらくしてからお試しください |
-| `timeout` | `timeout` | 処理に時間がかかっています。もう一度お試しください |
+| `upstream_busy` | `upstream_busy` | 混み合っています<br>しばらくしてからお試しください |
+| `timeout` | `timeout` | 処理に時間がかかっています<br>もう一度お試しください |
 | `no_text_found` | `no_text_found` | 写真から文字を読み取れませんでした |
 | `photo_too_much_text` | `photo_too_much_text` | 写真の文字が多すぎます<br>訳したいところを撮り直してください |
 
@@ -668,7 +668,7 @@ Frontend の API 呼び出しは `frontend/src/pages/InterpreterPage.tsx` に実
 
 TTS 再生は読み上げボタンから実行されます。Frontend は `/api/tts` の `audio/mpeg` response を `arrayBuffer()` で受け取り、`AudioContext` の `decodeAudioData` と `AudioBufferSourceNode` で再生します（`<audio>` は使いません。[speech-flow.md](speech-flow.md) の「9. TTS」）。iPhone のマナーモードでも鳴るよう、再生の前に、音の扱い（`navigator.audioSession.type`）を `play-and-record` と宣言します（対応していないブラウザでは何もしません。Backend の API は変わりません）。読み上げる文字が取っておいた音声の文字と同じときは、`/api/tts` と `decodeAudioData` を呼ばずに、取っておいた `AudioBuffer` を再生します。
 
-`/api/tts` の 500 文字の上限は、読み上げる翻訳の結果（`ttsText`）に掛かります。500 文字を超える翻訳の結果も、画面には全文を表示しますが、読み上げはできません。Frontend は読み上げボタンが押されたときに `ttsText` の文字数を数え、500 文字を超える場合は `/api/tts` を呼ばずに「この翻訳は長いため、読み上げできません（500文字まで）」（`tts_too_long`）を選んだ2つの言語で表示します。数え方は Backend と同じく、前後の空白を除かずに Unicode のコードポイント単位です（`frontend/src/api.ts` の `isTooLongForTts`。上限の値 `TTS_MAX_CHARS` は Backend の `maxTextRunes` と同じ値にする必要があります）。Backend の上限は費用を守るためのもので、Frontend の確認があっても残します。`/api/tts` が `input_too_large` を返した場合も、同じ文言を表示します。
+`/api/tts` の 500 文字の上限は、読み上げる翻訳の結果（`ttsText`）に掛かります。500 文字を超える翻訳の結果も、画面には全文を表示しますが、読み上げはできません。Frontend は読み上げボタンが押されたときに `ttsText` の文字数を数え、500 文字を超える場合は `/api/tts` を呼ばずに「この翻訳は長すぎます」「読み上げは500文字までです」の2行（`tts_too_long`）を選んだ2つの言語で表示します。数え方は Backend と同じく、前後の空白を除かずに Unicode のコードポイント単位です（`frontend/src/api.ts` の `isTooLongForTts`。上限の値 `TTS_MAX_CHARS` は Backend の `maxTextRunes` と同じ値にする必要があります）。Backend の上限は費用を守るためのもので、Frontend の確認があっても残します。`/api/tts` が `input_too_large` を返した場合も、同じ文言を表示します。
 
 ## 11. OpenAI API との関係
 
