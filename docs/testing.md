@@ -189,6 +189,7 @@ npm test
 - 診断の情報に、`stop()` から `onstop` までの時間（`stopLatencyMs`。`MediaRecorder` がすでに `inactive` のときは、止める指示を記録してから）が残ること。見張りのタイマーで片付けた場合は、`stopTimedOut` と待った時間（`stopWaitedMs`）が残り、後から届いた `onstop` までの時間も残ること
 - 録音の途中で track が `ended` になり、`MediaRecorder` が自分で止まると、`recording_failed` を表示して `idle` に戻り、Backend に送らないこと。診断のログに `recorder_stopped_unexpectedly` が残ること。次の録音の開始で、`ended` の track を止めてから `getUserMedia` で取り直すこと。`ended` は `keptMic` の `endedEvents` に記録され、録音のセッションは track に listener を付けないこと（`useAudioSession` の単体テストでは、今までどおり `track_ended` が残り、利用者の停止の後の `ended` と、古いセッションの `ended` では何もしないこと）
 - `ready` 以外では読み上げを押せないこと。読み上げの途中に `hidden`、`pagehide`、戻る、外れる、編集が起きたら、今鳴らしている `AudioBufferSourceNode` の `stop()` と `disconnect()` を呼び、後から来た `onended` が画面を変えないこと（`hidden` と `pagehide` では `ready` に戻ること。外れるときは読み上げの `AudioContext` を `close()` すること）。`/api/tts` を待っている間に止めた場合は、後から来た音声を `decodeAudioData` せず、再生しないこと。`<audio>` を使わないこと
+- 音の扱いの宣言（GOTALK-17。`audioSessionType.test.ts` と `InterpreterPage.audioSessionType.test.tsx`）：`navigator.audioSession` があるとき、読み上げのタップの処理の中で、`new AudioContext()` と `resume()` より前に `type` を `play-and-record` にすること（setter の spy と、呼ばれた順番で確かめます）。話さずに入力した後、写真の後（`InterpreterPage.photo.test.tsx`）、話した後、実験のスイッチのとき（`?exp=norecog`）の読み上げでも設定すること。すでに `play-and-record` なら設定し直さず（冪等）、診断の出来事 `audio_session_type:play-and-record` をタップごとに残すこと。`navigator.audioSession` がないときは `audio_session_unsupported`、setter が例外を出したときは `audio_session_set_failed:<name>` を残し、どちらも今までどおり鳴らし、文言を出さないこと。500 文字を超えて読み上げないときは設定しないこと。読み上げの後に初めて話しても、`getUserMedia` は1回だけで、track の `stop()` を呼ばず、`enabled` も変えないこと。`LegacyInterpreterPage` と `MicTestPage` の再生では設定しないこと
 - 古いセッションの callback（`getUserMedia` の完了、`ondataavailable`、`onstop`、`onerror`、音声認識の `onresult` と `onend`、`requestAnimationFrame`）が新しいセッションを壊さないこと
 - `processing` の間に `hidden` になっても状態は `processing` のままで、国旗を押せず、結果が来たら `ready` になること。戻るや `pagehide` のときは問い合わせを止め、後から結果や失敗が来ても画面に反映しないこと
 - 止めた問い合わせ1の結果が遅れて戻っても、画面には問い合わせ2の結果だけが出ること
@@ -209,7 +210,7 @@ npm test
 
 `/api/interpret` の結果表示やエラー処理のテストは、`MediaRecorder` と `navigator.mediaDevices.getUserMedia` を mock し、国旗をタップして録音を開始し、同じ国旗をタップして停止することで `/api/interpret` を呼びます（停止は `handleFlagTap` の `recording` の分岐を通ります。録音中の画面のタップと同じ `stopRecording()` を呼ぶ守りの分岐で、実際の操作の停止（録音中の画面のタップ）は `InterpreterPage.recordingOverlay.test.tsx` で確かめます）（共通の手順は helper `renderAndInterpret` にまとめています）。これらのテストでは `SpeechRecognition` を mock していないため、`transcript` は送られません。`transcript` の送信は、`SpeechRecognition` を mock した国旗タップのテスト 1 件で検証します。
 
-通訳の画面の TTS のテストでは、`frontend/src/test/audioMocks.ts` の `setupAudioContext()` で、`AudioContext` の `resume()`、`decodeAudioData()`、`createBufferSource()`、`destination`、`close()` と、`createBufferSource()` が返す `AudioBufferSourceNode` の `connect()`、`start()`、`stop()`、`disconnect()`、`onended` を差し替え、`/api/tts` の応答は `arrayBuffer()` で返します（`makeTtsOkResponse()`）。`Audio` を置くテスト（`InterpreterPage.lifecycle.test.tsx`、`InterpreterPage.keptMic.test.tsx`、`InterpreterPage.ttsGuard.test.tsx` の QQ1 のテスト）では、`Audio` は再生に使う mock ではなく、`<audio>` の経路に戻っていないこと（呼ばれないこと）を確かめるための spy です。通訳の画面の TTS のテストでは object URL（`URL.createObjectURL`、`URL.revokeObjectURL`）は使いません（object URL と `<audio>` を使うのは、開発用の `MicTestPage` と、実験の `LegacyInterpreterPage` のテストです）。`navigator.mediaDevices`、`AudioContext`、`Audio` などは各テストの前の状態を `beforeEach` で保存し、`afterEach` で元に戻します。`MediaRecorder` と `window.SpeechRecognition` は `afterEach` で削除します。API 呼び出しは `fetch` mock で検証します。
+通訳の画面の TTS のテストでは、`frontend/src/test/audioMocks.ts` の `setupAudioContext()` で、`AudioContext` の `resume()`、`decodeAudioData()`、`createBufferSource()`、`destination`、`close()` と、`createBufferSource()` が返す `AudioBufferSourceNode` の `connect()`、`start()`、`stop()`、`disconnect()`、`onended` を差し替え、`/api/tts` の応答は `arrayBuffer()` で返します（`makeTtsOkResponse()`）。`Audio` を置くテスト（`InterpreterPage.lifecycle.test.tsx`、`InterpreterPage.keptMic.test.tsx`、`InterpreterPage.ttsGuard.test.tsx` の QQ1 のテスト）では、`Audio` は再生に使う mock ではなく、`<audio>` の経路に戻っていないこと（呼ばれないこと）を確かめるための spy です。通訳の画面の TTS のテストでは object URL（`URL.createObjectURL`、`URL.revokeObjectURL`）は使いません（object URL と `<audio>` を使うのは、開発用の `MicTestPage` と、実験の `LegacyInterpreterPage` のテストです）。音の扱いの宣言（GOTALK-17）は、`setupAudioSessionType()` で `navigator.audioSession` を差し替え（`type` の setter は spy。`initialType`、`throwOnSet` を指定できます）、`removeAudioSessionType()` で、ないブラウザにします。`navigator.mediaDevices`、`navigator.audioSession`、`AudioContext`、`Audio` などは各テストの前の状態を `beforeEach` で保存し（`AUDIO_GLOBALS`）、`afterEach` で元に戻します。`MediaRecorder` と `window.SpeechRecognition` は `afterEach` で削除します。API 呼び出しは `fetch` mock で検証します。
 
 開発用のマイクの確認のページ（`#mic-test`、`MicTestPage.test.tsx`）のテストでは、`getUserMedia`、`MediaRecorder`、`SpeechRecognition`、`navigator.permissions`、`URL.createObjectURL`、`URL.revokeObjectURL`、`HTMLMediaElement` の `play()` と `pause()`、`window.AudioContext`（`decodeAudioData`、`createBufferSource`、`resume`、`close`、`state`、`onstatechange`）を mock し（`URL` の2つは `beforeEach` で保存し、`afterEach` で元に戻します。`window.AudioContext` は `afterEach` で削除します）、次を確かめます。ページの使い方は [development.md](development.md) の「8. 注意点」に書いています。
 
@@ -436,6 +437,23 @@ GOTALK-7 で、原文のカードの左にカメラのボタンを足し、写�
 - 写真を撮る、写真ライブラリ、スクリーンショット、横向きの写真、HEIC、文字のない写真、文字の多い写真
 - 上限の近く（1,032,192 バイト）の JPEG を multipart で送って、nginx を通ること（Shin の Mac から `curl` で確かめる。手順は Claude.ai が用意する）
 - 費用は、OpenAI のステージングの Project の使用量で確かめる
+
+#### GOTALK-17（マナーモードでも読み上げが鳴るようにする）の実機の確認
+
+GOTALK-17 で、読み上げの前に音の扱いを `play-and-record` と宣言するようにしました（[speech-flow.md](speech-flow.md) の「9. TTS」）。マージの前に、ステージング（`https://staging.gotalk.chiemaru.com/?exp=`）で、iPhone の Safari と Chrome のそれぞれで、マナーモードのオンとオフの両方で確かめます。どの手順も、ブラウザを一度終了して開き直してから始めます（マイクを開いていない状態から始めるため）。「コピー」の JSON の `diagnostics.events` に、`audio_session_type:play-and-record` が残るか（Chrome で `audio_session_unsupported` にならないか）も見ます。
+
+1. 話さずに鉛筆のボタンで文字を打って翻訳し、読み上げを押す
+   - 期待値：マナーモードでも聞こえる。スピーカーから出て（受話口からではなく）、音量はマイクを開いた後の読み上げと同じくらい
+2. 写真の翻訳の後に、読み上げを押す
+   - 期待値：1 と同じ
+3. 国旗をタップして話し、その翻訳の読み上げを押す
+   - 期待値：今までどおり聞こえる
+4. 1 の後に、初めて国旗をタップして話す。続けて「話す → 読み上げ」を 10 回繰り返す
+   - 期待値：毎回録音でき、原文と翻訳が出る。「マイクの音を受け取れませんでした」が出ない。2回目から「マイクへのアクセスが許可されています」のお知らせが出ない（`diagnostics.keptMic.getUserMediaCalls` が 1 のまま）
+5. マイクを開く前（1 の読み上げの間と後）のオレンジ色のマイクの表示を見る
+   - 期待値：マイクを開く前は点かない
+6. ほかのアプリ（ミュージックなど）で音楽を流したまま、GoTalk で読み上げを押す
+   - 期待値：音楽が止まるか小さくなるかを記録する（マイクを開いた後の読み上げと同じ動きなら問題なし）
 
 #### スイッチと診断
 

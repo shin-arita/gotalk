@@ -12,7 +12,7 @@ GoTalk の音声処理は、利用者が国旗ボタンから開始した発話�
 - 文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳（`/api/translate`）
 - Backend の `/api/tts`
 - OpenAI Audio Speech API
-- Frontend の `AudioContext` での再生（`<audio>` は使いません）
+- Frontend の `AudioContext` での再生（`<audio>` は使いません）。再生の前に、音の扱いを `play-and-record` と宣言します（Audio Session API。マナーモードでも鳴らすため。[9. TTS](#9-tts)）
 
 `SpeechRecognition` は録音と並行して動き、認識テキストを表示と、`/api/interpret` に添える `transcript` に使います。本番の通訳の画面（`InterpreterPage`）では、録音中に `/api/translate` で話している途中の文字を訳すこと（リアルタイム翻訳）はしません（[7. リアルタイム翻訳](#7-リアルタイム翻訳)）。録音終了時は、録音音声を `/api/interpret` に送ります。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは、マイクの音が来ていない（または押してすぐ止めた）ものとして送りません（[8.1](#81-マイクの音が来ないときの検出)）。認識テキストが得られている場合は `transcript` として同じリクエストに添え、Backend はそのテキストを翻訳します。認識テキストがない場合は、Backend が OpenAI の音声文字起こし API で言語判定と文字起こしを行います。
 
@@ -44,6 +44,7 @@ sequenceDiagram
   FE->>IN: 確定翻訳 audio + myLanguage + theirLanguage + speaker + transcript（認識テキストがある場合）
   IN-->>FE: text + translatedText + backTranslation + ttsText
   User->>FE: 読み上げボタンをタップ
+  FE->>FE: 音の扱いを play-and-record と宣言（navigator.audioSession があるとき。タップの処理の中で、AudioContext を作る前）
   FE->>Audio: resume（タップの処理の中）
   alt 取っておいた音声の文字と ttsText が同じ
     FE->>FE: 取っておいた AudioBuffer を使う（/api/tts と decodeAudioData は呼ばない）
@@ -86,7 +87,7 @@ Frontend の音声処理は、画面の `frontend/src/pages/InterpreterPage.tsx`
 
 録音終了時の流れは [8. 録音終了後](#8-録音終了後) を、中断のときの片付けは [6. 録音のライフサイクル](#6-録音のライフサイクル) を参照してください。
 
-音声再生は `handleSpeak` が担当します。`ready` のときだけ押せます。`/api/tts` に `{ text: ttsText }` を送信し、返却された `audio/mpeg` を `AudioContext` で鳴らします（`<audio>` は使いません。[9. TTS](#9-tts)）。同じ文字の2回目からは、`/api/tts` を呼ばずに、取っておいた音声を鳴らします。
+音声再生は `handleSpeak` が担当します。`ready` のときだけ押せます。`/api/tts` に `{ text: ttsText }` を送信し、返却された `audio/mpeg` を `AudioContext` で鳴らします（`<audio>` は使いません。[9. TTS](#9-tts)）。同じ文字の2回目からは、`/api/tts` を呼ばずに、取っておいた音声を鳴らします。マナーモードでも鳴るよう、`AudioContext` を作る前に、音の扱いを `play-and-record` と宣言します（`frontend/src/audio/audioSessionType.ts` の `declarePlayAndRecord`。[9. TTS](#9-tts)）。
 
 ## 4. 録音と SpeechRecognition
 
@@ -159,6 +160,8 @@ stateDiagram-v2
 `status` を `recording` にするのは録音の成立の後です。`getUserMedia` や録音の成立までの処理に失敗した場合は、`recording` を経由せず、`error` を経て `idle` に戻り、メッセージを表示します（[10. エラー処理](#10-エラー処理)）。
 
 「録音のセッションを片付けない限り `processing` に進まず、`ready` にならない限り読み上げを押せない」という状態の順番で、録音の途中に読み上げを鳴らさないことを保証します。マイク（stream）は開いたままが正常です。マイクを開いたまま `<audio>` で鳴らすと次の録音が壊れるため、読み上げは `AudioContext` で鳴らします。
+
+iPhone は、マイクを開いていないときの `AudioContext` を効果音（Ambient）の扱いにするため、マナーモードでは鳴りません（マイクを開いた後は「録音と再生」の扱いになり、マナーモードでも鳴ります。WebKit Bug 252746）。話さずに文字を入力したときや、写真の翻訳の後は、マイクを開かないので、この扱いのままになります。そのため、読み上げの前に、Audio Session API（`navigator.audioSession.type`）で音の扱いを `play-and-record`（マイクを開いた後と同じ扱い）と宣言します（[9. TTS](#9-tts)）。マイクを開いた後の扱いと同じ値を最初から宣言するので、録音の途中で音の扱いは変わりません。読み上げのたびに `playback` に切り替えて戻すことはしません（マイクを開いたままの間に音の扱いを変えると、`<audio>` のときと同じく録音が壊れるおそれがあるためです）。
 
 ## 6. 録音のライフサイクル
 
@@ -320,7 +323,7 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 - `MediaRecorder` の state、mimeType、録音の時間、録音の大きさ、エラー、利用者の停止から `onstop` までの時間（`stopLatencyMs`）、見張りのタイマーで片付けたか（`stopTimedOut`）と待った時間（`stopWaitedMs`）
 - `AudioContext` の state、音量の RMS と最大値と、取れたサンプルの数
 - 音声認識の結果があったかと、その文字数（本文は残しません）
-- 画面が残す出来事：マイクの音が来ないと判断した録音（`no_audio_detected:bytes=<大きさ>,ms=<長さ>`）、読み上げの見張りのタイマーで `ready` に戻したこと（`tts_ended_timeout`）、読み上げの `resume()` の失敗（拒否されたとき（同期の例外を含む）は `tts_resume_rejected:<例外の name>`、解決したが `running` でないときは `tts_resume_not_running:<state>`）、読み上げ用の `AudioContext` を作れなかったこと（`tts_context_create_failed:<例外の name>`）、読み上げの時間の記録（`tts_tap`、`tts_response:status=<HTTP の状態>`、`tts_downloaded:bytes=<大きさ>`、`tts_decoded:ms=<音声の長さ>`、`tts_started`。[9. TTS](#9-tts) の「読み上げの時間の記録」）
+- 画面が残す出来事：マイクの音が来ないと判断した録音（`no_audio_detected:bytes=<大きさ>,ms=<長さ>`）、読み上げの見張りのタイマーで `ready` に戻したこと（`tts_ended_timeout`）、読み上げの `resume()` の失敗（拒否されたとき（同期の例外を含む）は `tts_resume_rejected:<例外の name>`、解決したが `running` でないときは `tts_resume_not_running:<state>`）、読み上げ用の `AudioContext` を作れなかったこと（`tts_context_create_failed:<例外の name>`）、読み上げの前の音の扱いの宣言（設定の後の値は `audio_session_type:<値>`、`navigator.audioSession` がないときは `audio_session_unsupported`、例外のときは `audio_session_set_failed:<例外の name>`。[9. TTS](#9-tts)）、読み上げの時間の記録（`tts_tap`、`tts_response:status=<HTTP の状態>`、`tts_downloaded:bytes=<大きさ>`、`tts_decoded:ms=<音声の長さ>`、`tts_started`。[9. TTS](#9-tts) の「読み上げの時間の記録」）
 
 `keptMic` は、`getUserMedia` を呼んだ回数（`getUserMediaCalls()`）と、track の `ended` の記録（`endedEvents()`）を持ちます。`useKeptAudioSession` の `getDiagnostics()` の結果に `keptMic: { getUserMediaCalls, endedEvents }` として入り、「コピー」の JSON にも入ります（診断の表示の画面には出しません。実験のスイッチのとき（`useAudioSession`）は入りません）。iPhone が track を止めたか（`ended` が来たか）を確かめ、`microphone_no_audio` が出たときの原因の切り分けに使います。
 
@@ -399,14 +402,15 @@ TTS model は `OPENAI_TTS_MODEL` を使い、未設定時は `gpt-4o-mini-tts` �
 
 `/api/tts` のタイムアウトは 30 秒で、タイムアウトになったら `AbortController` で `fetch` を abort します。
 
-Frontend は、読み上げを `AudioContext` で鳴らします。マイクを開いたまま `<audio>` で鳴らすと、次の録音が壊れるためです。`<audio>`（`new Audio()`、オブジェクト URL）は使わず、失敗しても `<audio>` に切り替えて鳴らし直すことはしません。
+Frontend は、読み上げを `AudioContext` で鳴らします。マイクを開いたまま `<audio>` で鳴らすと、次の録音が壊れるためです。`<audio>`（`new Audio()`、オブジェクト URL）は使わず、失敗しても `<audio>` に切り替えて鳴らし直すことはしません。マナーモードで鳴らない問題（[5. 音声入力状態](#5-音声入力状態) の最後の段落）は、`<audio>` ではなく、音の扱いの宣言（下の 1）で解決します。
 
-1. 読み上げ用の `AudioContext` を、画面で1つ持ちます（`ttsContextRef`）。最初の読み上げのタップのときに作り、画面が外れるまで使い回します。作れないとき（`new AudioContext()` の例外。`AudioContext` がない、作れる数の上限など）は、読み上げの失敗として、ログ（`logApiError` と診断の出来事 `tts_context_create_failed:<例外の name>`）を残し、文言は出さず、`ready` のまま戻ります。鳴らせないので `/api/tts` は呼ばず、`speaking` にもしません。`ttsContextRef` は空のままにし、次の読み上げのタップでもう一度作るのを試します。戻る前に、録音のセッションが残っていれば、`unexpected_active_audio_session_before_tts` を残して片付けます（[6.8](#68-冪等な片付け) の守りと同じ処理）
-2. タップの処理の中（`await` の前）で `resume()` を呼び、Promise を持っておきます（ここでは待ちません。iPhone では、利用者の操作の中でないと鳴らせないためです）。`resume()` が同期の例外を出したときは、拒否された Promise と同じに扱います
-3. `/api/tts` の結果を `arrayBuffer()` で受け取り、`decodeAudioData` で `AudioBuffer` にします。読み上げる文字が取っておいた音声の文字と同じときは、`/api/tts` と `decodeAudioData` を呼ばずに、取っておいた `AudioBuffer` を使います（下の「読み上げの音声を取っておく」）
-4. 再生を始める直前に `resume()` の結果を確かめます。拒否されたとき、または解決しても `state` が `running` でないときは、再生を始めず、読み上げの失敗として扱います（文言は出さず、診断のログに、拒否されたとき（同期の例外を含む）は `tts_resume_rejected:<例外の name>` を、解決したが `running` でないときは `tts_resume_not_running:<state>` を残し、`ready` に戻します）
-5. `createBufferSource()` に `AudioBuffer` を入れて `destination` につなぎ、`start()` します。今鳴らしている `AudioBufferSourceNode` を `ttsSourceRef` に持ちます
-6. `onended` で `ready` に戻します。再生を始めた後に、見張りのタイマー（`AudioBuffer.duration` × 1000 ＋ 3000 ミリ秒）を始め、それまでに `onended` が来なければ、診断のログに `tts_ended_timeout` を残して `ready` に戻します（iPhone の割り込みなどで再生が止まり、`onended` が来ないまま `speaking` に残らないため）
+1. マナーモードでも鳴るよう、タップの処理の中（`await` の前）で、`AudioContext` を作る前と `resume()` の前に、音の扱いを宣言します（`declarePlayAndRecord()`）。`navigator.audioSession` があれば、その `type` を `play-and-record` にします（すでに `play-and-record` なら設定し直しません）。診断の出来事に、設定の後の値（`audio_session_type:<値>`）を残します。`navigator.audioSession` がないブラウザ（Android、PC、古い iPhone など）では何もせず、`audio_session_unsupported` を残します。設定が例外を出したときは、例外を捨てて `audio_session_set_failed:<例外の name>` を残します。どちらのときも、そのまま今までどおり鳴らします（文言は出しません）。宣言するのは通訳の画面（`InterpreterPage`）の読み上げのときだけで、録音の部品（`keptMic`、`useKeptAudioSession`、`useAudioSession`）は触りません。読み上げは実験のスイッチのとき（`useAudioSession`）も同じ `handleSpeak` を通るので、そのときも宣言します。実験の画面（`LegacyInterpreterPage`）と開発用のマイクの確認のページ（`MicTestPage`）では宣言しません（実験の条件を変えないため）。500 文字を超えて読み上げないときは、宣言しません
+2. 読み上げ用の `AudioContext` を、画面で1つ持ちます（`ttsContextRef`）。最初の読み上げのタップのときに作り、画面が外れるまで使い回します。作れないとき（`new AudioContext()` の例外。`AudioContext` がない、作れる数の上限など）は、読み上げの失敗として、ログ（`logApiError` と診断の出来事 `tts_context_create_failed:<例外の name>`）を残し、文言は出さず、`ready` のまま戻ります。鳴らせないので `/api/tts` は呼ばず、`speaking` にもしません。`ttsContextRef` は空のままにし、次の読み上げのタップでもう一度作るのを試します。戻る前に、録音のセッションが残っていれば、`unexpected_active_audio_session_before_tts` を残して片付けます（[6.8](#68-冪等な片付け) の守りと同じ処理）
+3. タップの処理の中（`await` の前）で `resume()` を呼び、Promise を持っておきます（ここでは待ちません。iPhone では、利用者の操作の中でないと鳴らせないためです）。`resume()` が同期の例外を出したときは、拒否された Promise と同じに扱います
+4. `/api/tts` の結果を `arrayBuffer()` で受け取り、`decodeAudioData` で `AudioBuffer` にします。読み上げる文字が取っておいた音声の文字と同じときは、`/api/tts` と `decodeAudioData` を呼ばずに、取っておいた `AudioBuffer` を使います（下の「読み上げの音声を取っておく」）
+5. 再生を始める直前に `resume()` の結果を確かめます。拒否されたとき、または解決しても `state` が `running` でないときは、再生を始めず、読み上げの失敗として扱います（文言は出さず、診断のログに、拒否されたとき（同期の例外を含む）は `tts_resume_rejected:<例外の name>` を、解決したが `running` でないときは `tts_resume_not_running:<state>` を残し、`ready` に戻します）
+6. `createBufferSource()` に `AudioBuffer` を入れて `destination` につなぎ、`start()` します。今鳴らしている `AudioBufferSourceNode` を `ttsSourceRef` に持ちます
+7. `onended` で `ready` に戻します。再生を始めた後に、見張りのタイマー（`AudioBuffer.duration` × 1000 ＋ 3000 ミリ秒）を始め、それまでに `onended` が来なければ、診断のログに `tts_ended_timeout` を残して `ready` に戻します（iPhone の割り込みなどで再生が止まり、`onended` が来ないまま `speaking` に残らないため）
 
 読み上げの音声を取っておく：デコード済みの `AudioBuffer` と、その元の文字（読み上げを始めるときの `ttsText`）の組を1つだけ持ちます（`ttsCacheRef`）。読み上げる文字が取っておいた組の文字と同じなら、`/api/tts`、`arrayBuffer()`、`decodeAudioData()` を飛ばして、その `AudioBuffer` を鳴らします。違えば今までどおり `/api/tts` を呼び、`decodeAudioData()` の後の読み上げの番号の確認を通り、`/api/tts` の時間切れでなければ、その組を取っておきます（前の組は捨てます）。
 
@@ -422,6 +426,7 @@ Frontend は、読み上げを `AudioContext` で鳴らします。マイクを�
 | 出来事 | 記録する場所 |
 | --- | --- |
 | `tts_tap` | `handleSpeak` の最初（`ready` の確認の後） |
+| `audio_session_type:<値>`、`audio_session_unsupported`、`audio_session_set_failed:<例外の name>` | 音の扱いの宣言の直後（500 文字の確認の後、`AudioContext` を作る前。上の手順の 1） |
 | `tts_response:status=<HTTP の状態>` | `fetch` が返った直後（今有効な読み上げの番号の確認の前） |
 | `tts_downloaded:bytes=<大きさ>` | `arrayBuffer()` の後 |
 | `tts_decoded:ms=<音声の長さ（ms、整数）>` | `decodeAudioData()` の後 |

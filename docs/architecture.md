@@ -64,7 +64,7 @@ Frontend はブラウザ上の会話 UI と、Backend API へのリクエスト�
 - 原文、翻訳文、バックトランスレーションを表示する
 - 文字の入力（原文が空の状態からの入力と、原文の編集）を確定したとき、`/api/translate` で翻訳する
 - 原文のカードの左のカメラのボタンで写真を選び、長辺 1280px 以下の JPEG に縮めて `/api/photo` に送り、行ごとの「元の行／訳の行」を表示する（逆翻訳は出さない。[ui.md](ui.md) の「8. 写真の翻訳」）
-- `/api/tts` から返る `audio/mpeg` を `AudioContext` で再生する（マイクを開いたまま `<audio>` で鳴らすと次の録音が壊れるため、`<audio>` は使わない）。デコード済みの音声を1組取っておき、同じ文字の2回目からは `/api/tts` を呼ばずに鳴らす
+- `/api/tts` から返る `audio/mpeg` を `AudioContext` で再生する（マイクを開いたまま `<audio>` で鳴らすと次の録音が壊れるため、`<audio>` は使わない）。マナーモードでも鳴るよう、再生の前に Audio Session API（`navigator.audioSession.type`）で音の扱いを `play-and-record` と宣言する（対応していないブラウザでは何もしない。`frontend/src/audio/audioSessionType.ts`）。デコード済みの音声を1組取っておき、同じ文字の2回目からは `/api/tts` を呼ばずに鳴らす
 - 画面内に会話履歴を保持して表示する
 
 Vite の開発サーバーでは `frontend/vite.config.ts` の proxy により、`/api` リクエストを `VITE_BACKEND_URL` または `http://localhost:8080` へ転送します。

@@ -11,7 +11,7 @@ import { LANGUAGES } from '../languages'
 import type { Language } from '../languages'
 import {
   AUDIO_GLOBALS, firePageTransition, makeTtsOkResponse, saveGlobals, setupAudioContext, setupDeferredGetUserMedia, setupMediaRecorder,
-  setupSpeechRecognition, setVisibility,
+  setupAudioSessionType, setupSpeechRecognition, setVisibility,
 } from '../test/audioMocks'
 import type { AudioSession } from '../hooks/useAudioSession'
 
@@ -680,6 +680,23 @@ describe('InterpreterPage photo: interruptions (GOTALK-7 6.1.2, 6.1.3)', () => {
     expect(signal.aborted).toBe(true)
     await waitFor(() => expect(alertText()).toBe(message('request_timeout', 'th', 'vi')))
     expect(lastStatus()).toBe('status:idle')
+  })
+})
+
+// 写真の翻訳の後はマイクを開かないので、マナーモードで鳴るよう、読み上げのときに音の扱いを宣言する（GOTALK-17）
+describe('InterpreterPage photo: audio session type for reading (GOTALK-17)', () => {
+  it('sets navigator.audioSession.type to play-and-record when reading the photo translation, without opening the microphone', async () => {
+    const audioSession = setupAudioSessionType()
+    renderPage()
+    await reachReadyByPhoto()
+    expect(audioSession.setType).not.toHaveBeenCalled()
+    await act(async () => { fireEvent.click(speakButton()!) })
+    expect(audioSession.setType).toHaveBeenCalledWith('play-and-record')
+    expect(audioSession.type).toBe('play-and-record')
+    expect(lastStatus()).toBe('status:speaking')
+    expect(ttsCalls()).toHaveLength(1)
+    expect(gum.getUserMedia).not.toHaveBeenCalled()
+    expect(captured.session!.getDiagnostics().events.map(e => e.type)).toContain('audio_session_type:play-and-record')
   })
 })
 

@@ -5,6 +5,7 @@ import { LANGUAGES } from '../languages'
 import type { Language } from '../languages'
 import { MESSAGES, getLocalizedMessage } from '../messages'
 import type { MessageKey } from '../messages'
+import { setupAudioSessionType } from '../test/audioMocks'
 
 // --- Shared fixtures ---
 
@@ -184,6 +185,7 @@ beforeEach(() => {
   saveProperty(globalThis.URL, 'createObjectURL')
   saveProperty(globalThis.URL, 'revokeObjectURL')
   saveProperty(globalThis, 'Audio')
+  saveProperty(globalThis.navigator, 'audioSession')
 })
 
 afterEach(() => {
@@ -419,6 +421,25 @@ describe('InterpreterPage TTS (OpenAI)', () => {
     await waitFor(() => expect(mockAudioInstance).not.toBeNull())
     act(() => { mockAudioInstance!.onended?.() })
     expect(screen.getByRole('button', { name: '発声する' })).not.toBeDisabled()
+  })
+
+  // 音の扱いの宣言（GOTALK-17）は通訳の画面（InterpreterPage）の読み上げだけで行い、実験の画面の条件は変えない
+  it('does not set navigator.audioSession.type when speak is clicked (GOTALK-17)', async () => {
+    const audioSession = setupAudioSessionType()
+    setupAudioMock()
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock.mockResolvedValueOnce(makeOkResponse(makeInterpretResponse()))
+    fetchMock.mockResolvedValueOnce(makeAudioOkResponse())
+
+    await renderAndInterpret()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '発声する' })).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: '発声する' }))
+    await waitFor(() => expect(mockAudioInstance?.play).toHaveBeenCalled())
+
+    expect(audioSession.setType).not.toHaveBeenCalled()
+    expect(audioSession.type).toBe('auto')
   })
 
   it('speak button re-enables after TTS fetch error', async () => {

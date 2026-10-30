@@ -4,6 +4,7 @@ import type { Language } from '../languages'
 import { API_TIMEOUT_MS, ApiError, MAX_UPLOAD_BYTES, MIN_INTERPRET_AUDIO_BYTES, apiErrorCode, apiErrorFromResponse, isTooLongForTts, logApiError, messageKeyForCode, messageKeyForError } from '../api'
 import { getLocalizedMessage } from '../messages'
 import type { MessageKey } from '../messages'
+import { declarePlayAndRecord } from '../audio/audioSessionType'
 import { useInterpreterAudioSession } from '../hooks/useKeptAudioSession'
 import type { AudioSessionAbortReason, AudioSessionStartFailure } from '../hooks/useAudioSession'
 import { DEFAULT_EXPERIMENT_CONFIG } from '../experiments'
@@ -682,6 +683,12 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
       showMessage('tts_too_long')
       return
     }
+    // マナーモードでも鳴るよう、AudioContext を作る前と resume() の前（タップの処理の中）に、音の扱いを
+    // play-and-record と宣言する（docs/speech-flow.md の「9. TTS」）。対応していないブラウザでは何もしない
+    const declared = declarePlayAndRecord()
+    audioSession.logEvent(declared.kind === 'set' ? `audio_session_type:${declared.type}`
+      : declared.kind === 'unsupported' ? 'audio_session_unsupported'
+        : `audio_session_set_failed:${declared.errorName}`)
     // await の前（タップの処理の中）で resume() を呼ぶ（iPhone では、利用者の操作の中でないと鳴らせないため）。
     // ここでは待たず、再生を始める直前に結果を確かめる。拒否が未処理にならないよう、catch を付けておく
     if (!ttsContextRef.current) {
