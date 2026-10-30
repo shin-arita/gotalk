@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import App from '../App'
 import MicTestPage from './MicTestPage'
+import { setupAudioSessionType } from '../test/audioMocks'
 
 const DESCRIPTION =
   'マイク動作確認用の開発ページです。録音した音声と音声認識の結果は、GoTalk の Backend や OpenAI API には送信・保存しません。音声認識を使うテスト（S3、S4、S5）では、ブラウザまたは OS の音声認識サービスへ音声が送信される場合があります。録音した音声は、このページの中で再生するためだけにメモリに持ちます。送信も保存もしません。次の録音を始めたとき、S6 を押したとき、ページを閉じたときに捨てます。「AudioContext で再生」は、<audio> とは別の方法（Web Audio API）で鳴らし、再生の後もマイクから音が取れるかを確かめるためのものです。試すときは、ページを読み込み直してから、「直前の録音を再生」を押さずに試してください。'
@@ -433,6 +434,7 @@ beforeEach(() => {
   savedProperties = []
   saveProperty(globalThis.navigator, 'mediaDevices')
   saveProperty(globalThis.navigator, 'permissions')
+  saveProperty(globalThis.navigator, 'audioSession')
   saveProperty(URL, 'createObjectURL')
   saveProperty(URL, 'revokeObjectURL')
   let urlCount = 0
@@ -1509,6 +1511,21 @@ describe('MicTestPage: AudioContext で再生', () => {
     await click('S2 開始')
     expect(contextPlayButton()).toBeDisabled()
     expect(Ctor).not.toHaveBeenCalled()
+  })
+
+  // 音の扱いの宣言（GOTALK-17）は通訳の画面の読み上げだけで行い、このページの実験の条件は変えない
+  it('<audio> での再生でも AudioContext での再生でも、音の扱い（navigator.audioSession.type）を設定しない（GOTALK-17）', async () => {
+    const audioSession = setupAudioSessionType()
+    const { play } = setupPlayMock()
+    setupAudioContextMock()
+    await record()
+    await click('直前の録音を再生')
+    await clickContextPlay()
+
+    expect(play).toHaveBeenCalledTimes(1)
+    expect(sources[0].start).toHaveBeenCalledTimes(1)
+    expect(audioSession.setType).not.toHaveBeenCalled()
+    expect(audioSession.type).toBe('auto')
   })
 
   it('押すと decodeAudioData と start() を呼び、再生の前の track の状態と再生の開始をログに出す。<audio> では再生しない', async () => {

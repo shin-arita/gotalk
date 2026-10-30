@@ -91,7 +91,7 @@ Frontend の翻訳処理は `frontend/src/pages/InterpreterPage.tsx` に実装�
 
 `processing` 中の翻訳カードには、話者側と相手側の両言語の「翻訳中」と「お待ちください」のメッセージを 1.2 秒ごとに切り替えて表示します。
 
-読み上げは `handleSpeak` が担当します。Frontend は `/api/tts` に `{ text: ttsText }` を送信し、返却された `audio/mpeg` を `AudioContext` で再生します（`<audio>` は使いません。[speech-flow.md](speech-flow.md) の「9. TTS」）。読み上げる文字が取っておいた音声の文字と同じときは、`/api/tts` と `decodeAudioData()` を呼ばずに、取っておいた `AudioBuffer` を再生します（[8. TTS](#8-tts)）。
+読み上げは `handleSpeak` が担当します。Frontend は `/api/tts` に `{ text: ttsText }` を送信し、返却された `audio/mpeg` を `AudioContext` で再生します（`<audio>` は使いません。[speech-flow.md](speech-flow.md) の「9. TTS」）。話さずに入力した文や写真の翻訳の読み上げは、マイクを開かずに鳴らすので、iPhone のマナーモードでも鳴るよう、`AudioContext` を作る前に、音の扱いを `play-and-record` と宣言します（`navigator.audioSession` があるときだけ）。読み上げる文字が取っておいた音声の文字と同じときは、`/api/tts` と `decodeAudioData()` を呼ばずに、取っておいた `AudioBuffer` を再生します（[8. TTS](#8-tts)）。
 
 ## 4. Backend の処理
 

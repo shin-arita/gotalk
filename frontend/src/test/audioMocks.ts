@@ -307,7 +307,37 @@ export const AUDIO_GLOBALS: [object, string][] = [
   [globalThis.URL, 'createObjectURL'],
   [globalThis.URL, 'revokeObjectURL'],
   [document, 'visibilityState'],
+  [globalThis.navigator, 'audioSession'],
 ]
+
+export interface FakeAudioSession {
+  // 今の type（setter の spy を通して変わる）
+  readonly type: string
+  // type の setter に渡された値の列
+  setType: ReturnType<typeof vi.fn>
+}
+
+// Audio Session API（navigator.audioSession）の代わり（GOTALK-17）。initialType は最初の type（既定は auto）。
+// throwOnSet：type の setter が例外を出す / onSet：setter が呼ばれたときに呼ぶ（呼ばれた順番を確かめるため）
+export function setupAudioSessionType(options: { initialType?: string; throwOnSet?: boolean; onSet?: (value: string) => void } = {}): FakeAudioSession {
+  let type = options.initialType ?? 'auto'
+  const setType = vi.fn((value: string) => {
+    options.onSet?.(value)
+    if (options.throwOnSet) throw new DOMException('not allowed', 'InvalidStateError')
+    type = value
+  })
+  const session = {
+    get type() { return type },
+    set type(value: string) { setType(value) },
+  }
+  Object.defineProperty(globalThis.navigator, 'audioSession', { value: session, writable: true, configurable: true })
+  return { get type() { return type }, setType }
+}
+
+// navigator.audioSession がないブラウザにする（テストの前の状態は AUDIO_GLOBALS で戻す）
+export function removeAudioSessionType() {
+  delete (globalThis.navigator as unknown as Record<string, unknown>).audioSession
+}
 
 export function setVisibility(state: 'visible' | 'hidden') {
   Object.defineProperty(document, 'visibilityState', { value: state, configurable: true })
