@@ -32,19 +32,19 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 
 | キー | 文言（日本語） | 出る場面 |
 | --- | --- | --- |
-| `input_too_large` | 入力が長すぎます。短くしてもう一度お試しください | Backend の `input_too_large`（`/api/interpret` の 400、`/api/translate` の 400 と 413）。`/api/interpret` の 413 と `/api/tts` の場合を除く |
+| `input_too_large` | 入力が長すぎます<br>短くしてもう一度お試しください | Backend の `input_too_large`（`/api/interpret` の 400、`/api/translate` の 400 と 413）。`/api/interpret` の 413 と `/api/tts` の場合を除く |
 | `service_unavailable` | 現在サービスを利用できません | Backend の `service_unavailable`（503） |
-| `upstream_busy` | 混み合っています。しばらくしてからお試しください | Backend の `upstream_busy`（503） |
-| `timeout` | 処理に時間がかかっています。もう一度お試しください | Backend の `timeout`（504） |
-| `tts_too_long` | この翻訳は長いため、読み上げできません（500文字まで） | 読み上げる翻訳が 500 文字を超える場合（Frontend の確認）と、`/api/tts` の `input_too_large`。500 は `TTS_MAX_CHARS` から作ります |
-| `recording_too_long` | 録音が長すぎます。短く区切って話してください。 | `/api/interpret` の 413（本文の形式によらない）と、送る前の録音のサイズの確認で上限を超えた場合 |
+| `upstream_busy` | 混み合っています<br>しばらくしてからお試しください | Backend の `upstream_busy`（503） |
+| `timeout` | 処理に時間がかかっています<br>もう一度お試しください | Backend の `timeout`（504） |
+| `tts_too_long` | この翻訳は長すぎます<br>読み上げは500文字までです | 読み上げる翻訳が 500 文字を超える場合（Frontend の確認）と、`/api/tts` の `input_too_large`。500 は `TTS_MAX_CHARS` から作ります |
+| `recording_too_long` | 録音が長すぎます<br>短く区切って話してください | `/api/interpret` の 413（本文の形式によらない）と、送る前の録音のサイズの確認で上限を超えた場合 |
 | `microphone_denied` | マイクへのアクセスが許可されていません | `getUserMedia` が失敗した場合（エラーの `name` によらない。`NotAllowedError`、`SecurityError`、`NotFoundError`、`NotReadableError` など） |
-| `recording_start_failed` | うまく録音を始められませんでした。もう一度お願いします | 録音の成立の**前**の失敗：`getUserMedia` の成功の後、録音の成立までに失敗した場合（audio track がない、track が `live` でない、`MediaRecorder` の作成や `start()` の例外）。録音の成立の後の失敗には使いません |
-| `recording_failed` | うまく録音できませんでした。もう一度お願いします | 録音の成立の**後**の失敗：録音の途中の `MediaRecorder` の `onerror`、利用者の停止で `MediaRecorder` の `stop()` が例外を出した場合、`onstop` が見張りの時間（`RECORDER_STOP_TIMEOUT_MS`、今は 10 秒）以内に届かなかった場合、利用者の停止の前に `MediaRecorder` が自分で止まった場合（マイクの track が終わったときなど）。音声認識の文字がなく、録音のデータが 1024 バイト未満で、録音の長さが 1 秒未満の場合（押してすぐ止めた）。どの場合も録音は Backend に送りません（[speech-flow.md](speech-flow.md) の「10. エラー処理」） |
-| `microphone_no_audio` | マイクの音を受け取れませんでした。ブラウザを一度終了してから、開き直してください | 音声認識の文字がなく、録音のデータが 1024 バイト（`MIN_INTERPRET_AUDIO_BYTES`）未満で、録音の長さが 1 秒以上の場合（マイクの音が来ていない）。録音は Backend に送りません。1 秒未満のとき（押してすぐ止めた）は `recording_failed` を出します（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」） |
-| `generic_error` | エラーが発生しました。もう一度お試しください。 | 対応する文言がない status や `code`（502 `upstream_error` など）、ネットワークのエラー（`fetch` の reject）、応答が JSON として読めない場合など |
-| `language_unclear` | 言語不明、もう一度お話ください | `/api/interpret` と `/api/translate`（再翻訳）の 422 `language_mismatch` |
-| `request_timeout` | うまく翻訳できませんでした。もう一度お願いします。 | Frontend の `fetch` の timeout（`AbortController` の abort。`/api/interpret` と `/api/photo` は 65 秒、再翻訳の `/api/translate` は 30 秒）。Backend の 504（`timeout`）とは別の文言です |
+| `recording_start_failed` | うまく録音を始められませんでした<br>もう一度お願いします | 録音の成立の**前**の失敗：`getUserMedia` の成功の後、録音の成立までに失敗した場合（audio track がない、track が `live` でない、`MediaRecorder` の作成や `start()` の例外）。録音の成立の後の失敗には使いません |
+| `recording_failed` | うまく録音できませんでした<br>もう一度お願いします | 録音の成立の**後**の失敗：録音の途中の `MediaRecorder` の `onerror`、利用者の停止で `MediaRecorder` の `stop()` が例外を出した場合、`onstop` が見張りの時間（`RECORDER_STOP_TIMEOUT_MS`、今は 10 秒）以内に届かなかった場合、利用者の停止の前に `MediaRecorder` が自分で止まった場合（マイクの track が終わったときなど）。音声認識の文字がなく、録音のデータが 1024 バイト未満で、録音の長さが 1 秒未満の場合（押してすぐ止めた）。どの場合も録音は Backend に送りません（[speech-flow.md](speech-flow.md) の「10. エラー処理」） |
+| `microphone_no_audio` | マイクの音を受け取れませんでした<br>ブラウザを一度終了してから開き直してください | 音声認識の文字がなく、録音のデータが 1024 バイト（`MIN_INTERPRET_AUDIO_BYTES`）未満で、録音の長さが 1 秒以上の場合（マイクの音が来ていない）。録音は Backend に送りません。1 秒未満のとき（押してすぐ止めた）は `recording_failed` を出します（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」） |
+| `generic_error` | エラーが発生しました<br>もう一度お試しください | 対応する文言がない status や `code`（502 `upstream_error` など）、ネットワークのエラー（`fetch` の reject）、応答が JSON として読めない場合など |
+| `language_unclear` | 言語を聞き取れませんでした<br>もう一度お話しください | `/api/interpret` と `/api/translate`（再翻訳）の 422 `language_mismatch` |
+| `request_timeout` | うまく翻訳できませんでした<br>もう一度お願いします | Frontend の `fetch` の timeout（`AbortController` の abort。`/api/interpret` と `/api/photo` は 65 秒、再翻訳の `/api/translate` は 30 秒）。Backend の 504（`timeout`）とは別の文言です |
 | `no_text_found` | 写真から文字を読み取れませんでした | `/api/photo` の 422 `no_text_found`（写真に文字が見つからない） |
 | `photo_too_much_text` | 写真の文字が多すぎます<br>訳したいところを撮り直してください | `/api/photo` の 422 `photo_too_much_text`（訳の出力が上限で切れた） |
 | `photo_load_failed` | 写真を開けませんでした<br>別の写真でお試しください | 写真の前処理の失敗（`createImageBitmap()`、canvas、`toBlob()` の失敗と、`toBlob()` が `null` を返した場合）。`/api/photo` の問い合わせの失敗には使いません |
@@ -52,7 +52,7 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 
 7言語の文言は `frontend/src/messages.ts` の `MESSAGES` を参照してください。
 
-表の `<br>` は改行です。写真の翻訳の日本語の文言のうち2つの文からなるもの（`photo_too_much_text`、`photo_load_failed`、`photo_too_large`）は、句点も読点も使わず、文と文の間を改行（`\n`）にしています。エラーの表示の位置（`error-text`）は `white-space: pre-line` なので、この改行と、2つの言語の間の空行は、そのまま表示されます。
+表の `<br>` は改行です。日本語の文言のうち2つの文からなるもの（`input_too_large`、`upstream_busy`、`timeout`、`tts_too_long`、`recording_too_long`、`recording_start_failed`、`recording_failed`、`microphone_no_audio`、`generic_error`、`language_unclear`、`request_timeout` と、写真の翻訳の `photo_too_much_text`、`photo_load_failed`、`photo_too_large`）は、句点も読点も使わず、文と文の間を改行（`\n`）にしています。エラーの表示の位置（`error-text`）は `white-space: pre-line` なので、この改行と、2つの言語の間の空行は、そのまま表示されます。
 
 読み上げ（`/api/tts`）のエラーは、`tts_too_long`、`service_unavailable`、`upstream_busy`、`timeout` の場合だけ表示します。表示する文言がないエラー（502、ネットワークのエラー、timeout など）では何も表示せず、ログにだけ残します。本番の通訳の画面（`InterpreterPage`）では、録音中のリアルタイム翻訳はしません（Legacy の実験の経路では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残り、その失敗は表示しません）。
 

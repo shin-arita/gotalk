@@ -6,10 +6,10 @@ import { LANGUAGES } from './languages'
 describe('getLocalizedMessage', () => {
   it('joins the messages of the two languages in the selected order with a blank line', () => {
     expect(getLocalizedMessage('generic_error', 'ja', 'en')).toBe(
-      'エラーが発生しました。もう一度お試しください。\n\nAn error occurred. Please try again.',
+      'エラーが発生しました\nもう一度お試しください\n\nAn error occurred. Please try again.',
     )
     expect(getLocalizedMessage('generic_error', 'en', 'ja')).toBe(
-      'An error occurred. Please try again.\n\nエラーが発生しました。もう一度お試しください。',
+      'An error occurred. Please try again.\n\nエラーが発生しました\nもう一度お試しください',
     )
     expect(getLocalizedMessage('recording_too_long', 'th', 'vi')).toBe(
       'การบันทึกเสียงยาวเกินไป กรุณาพูดเป็นช่วงสั้น ๆ\n\nBản ghi âm quá dài. Vui lòng nói ngắn gọn từng đoạn.',
@@ -18,7 +18,7 @@ describe('getLocalizedMessage', () => {
 
   it('uses English for a language without a message', () => {
     expect(getLocalizedMessage('upstream_busy', 'fr', 'ja')).toBe(
-      'The service is busy. Please try again later.\n\n混み合っています。しばらくしてからお試しください',
+      'The service is busy. Please try again later.\n\n混み合っています\nしばらくしてからお試しください',
     )
     expect(getLocalizedMessage('upstream_busy', 'ko', 'toString')).toBe(
       '혼잡합니다. 잠시 후 다시 시도해 주세요.\n\nThe service is busy. Please try again later.',
@@ -26,7 +26,7 @@ describe('getLocalizedMessage', () => {
   })
 
   it('shows only the selected language when one language is selected', () => {
-    expect(getLocalizedMessage('timeout', 'ja')).toBe('処理に時間がかかっています。もう一度お試しください')
+    expect(getLocalizedMessage('timeout', 'ja')).toBe('処理に時間がかかっています\nもう一度お試しください')
     expect(getLocalizedMessage('timeout', undefined, 'vi')).toBe('Quá trình xử lý mất quá nhiều thời gian. Vui lòng thử lại.')
   })
 
@@ -37,7 +37,7 @@ describe('getLocalizedMessage', () => {
 
   it('builds the TTS message from TTS_MAX_CHARS', () => {
     expect(getLocalizedMessage('tts_too_long', 'ja', 'en')).toBe(
-      'この翻訳は長いため、読み上げできません（500文字まで）\n\nThis translation is too long to be read aloud (up to 500 characters).',
+      'この翻訳は長すぎます\n読み上げは500文字までです\n\nThis translation is too long to be read aloud (up to 500 characters).',
     )
   })
 
@@ -47,10 +47,10 @@ describe('getLocalizedMessage', () => {
 
   it('has the recording start failure messages (ja without a period, the others with one)', () => {
     expect(getLocalizedMessage('recording_start_failed', 'ja', 'en')).toBe(
-      'うまく録音を始められませんでした。もう一度お願いします\n\nRecording could not be started. Please try again.',
+      'うまく録音を始められませんでした\nもう一度お願いします\n\nRecording could not be started. Please try again.',
     )
     expect(MESSAGES.recording_start_failed).toEqual({
-      'ja':    'うまく録音を始められませんでした。もう一度お願いします',
+      'ja':    'うまく録音を始められませんでした\nもう一度お願いします',
       'en':    'Recording could not be started. Please try again.',
       'zh-CN': '未能开始录音，请再试一次。',
       'zh-TW': '無法開始錄音，請再試一次。',
@@ -62,10 +62,10 @@ describe('getLocalizedMessage', () => {
 
   it('has the recording failure messages (ja without a period, the others with one)', () => {
     expect(getLocalizedMessage('recording_failed', 'ja', 'en')).toBe(
-      'うまく録音できませんでした。もう一度お願いします\n\nRecording failed. Please try again.',
+      'うまく録音できませんでした\nもう一度お願いします\n\nRecording failed. Please try again.',
     )
     expect(MESSAGES.recording_failed).toEqual({
-      'ja':    'うまく録音できませんでした。もう一度お願いします',
+      'ja':    'うまく録音できませんでした\nもう一度お願いします',
       'en':    'Recording failed. Please try again.',
       'zh-CN': '录音失败，请再试一次。',
       'zh-TW': '錄音失敗，請再試一次。',
@@ -77,10 +77,10 @@ describe('getLocalizedMessage', () => {
 
   it('has the microphone no audio messages (ja without a period, the others with one)', () => {
     expect(getLocalizedMessage('microphone_no_audio', 'ja', 'en')).toBe(
-      'マイクの音を受け取れませんでした。ブラウザを一度終了してから、開き直してください\n\nThe microphone audio could not be received. Please close the browser completely and open it again.',
+      'マイクの音を受け取れませんでした\nブラウザを一度終了してから開き直してください\n\nThe microphone audio could not be received. Please close the browser completely and open it again.',
     )
     expect(MESSAGES.microphone_no_audio).toEqual({
-      'ja':    'マイクの音を受け取れませんでした。ブラウザを一度終了してから、開き直してください',
+      'ja':    'マイクの音を受け取れませんでした\nブラウザを一度終了してから開き直してください',
       'en':    'The microphone audio could not be received. Please close the browser completely and open it again.',
       'zh-CN': '未能接收到麦克风的声音。请完全关闭浏览器后重新打开。',
       'zh-TW': '無法接收麥克風的聲音。請完全關閉瀏覽器後重新開啟。',
@@ -90,9 +90,9 @@ describe('getLocalizedMessage', () => {
     })
   })
 
-  it('keeps the existing language unclear messages', () => {
+  it('has the language unclear messages', () => {
     expect(getLocalizedMessage('language_unclear', 'ja', 'en')).toBe(
-      '言語不明、もう一度お話ください\n\nLanguage unclear. Please speak again.',
+      '言語を聞き取れませんでした\nもう一度お話しください\n\nLanguage unclear. Please speak again.',
     )
   })
 
@@ -153,6 +153,36 @@ describe('getLocalizedMessage', () => {
     }
     // 選んだ2つの言語で出すときも、日本語の中の改行はそのまま残り、言語の間は空行になる
     expect(getLocalizedMessage('photo_too_large', 'ja', 'en')).toBe('写真が大きすぎます\n別の写真でお試しください\n\nThe photo is too large. Please try another photo.')
+  })
+
+  // 写真のほかの、2つの文からなる日本語の文言も、句点も読点も使わず、文と文の間を改行にする（GOTALK-20）
+  it('puts the two sentences of the Japanese messages on separate lines', () => {
+    const expected: [MessageKey, string][] = [
+      ['input_too_large',        '入力が長すぎます\n短くしてもう一度お試しください'],
+      ['upstream_busy',          '混み合っています\nしばらくしてからお試しください'],
+      ['timeout',                '処理に時間がかかっています\nもう一度お試しください'],
+      ['tts_too_long',           'この翻訳は長すぎます\n読み上げは500文字までです'],
+      ['recording_too_long',     '録音が長すぎます\n短く区切って話してください'],
+      ['generic_error',          'エラーが発生しました\nもう一度お試しください'],
+      ['language_unclear',       '言語を聞き取れませんでした\nもう一度お話しください'],
+      ['request_timeout',        'うまく翻訳できませんでした\nもう一度お願いします'],
+      ['recording_start_failed', 'うまく録音を始められませんでした\nもう一度お願いします'],
+      ['recording_failed',       'うまく録音できませんでした\nもう一度お願いします'],
+      ['microphone_no_audio',    'マイクの音を受け取れませんでした\nブラウザを一度終了してから開き直してください'],
+    ]
+    for (const [key, message] of expected) {
+      expect(getLocalizedMessage(key, 'ja'), key).toBe(message)
+      const lines = MESSAGES[key].ja.split('\n')
+      expect(lines, key).toHaveLength(2)
+      for (const line of lines) expect(line, key).not.toMatch(/[。、]$/)
+    }
+  })
+
+  // 日本語の文言は、句点（。）も読点（、）も使わない（GOTALK-20）
+  it('has no Japanese period or comma in any message', () => {
+    for (const key of Object.keys(MESSAGES) as MessageKey[]) {
+      expect(MESSAGES[key].ja, key).not.toMatch(/[。、]/)
+    }
   })
 
   it('has messages in all 7 languages for all 17 keys', () => {
