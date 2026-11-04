@@ -861,9 +861,9 @@ func TestInterpretHandler_TranscriptPath_PromptForbidsSpeechCorrection(t *testin
 	}
 }
 
-// TestInterpretHandler_TranscriptPath_EmptyAudio verifies the request shape of the recogonly
-// experiment (frontend): a 0-byte audio part with a non-empty transcript and a valid speaker
-// returns 200 without calling transcription (Whisper).
+// TestInterpretHandler_TranscriptPath_EmptyAudio verifies that the handler accepts a 0-byte
+// audio part with a non-empty transcript and a valid speaker, and returns 200 without calling
+// transcription (Whisper).
 func TestInterpretHandler_TranscriptPath_EmptyAudio(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	whisperCalls := 0

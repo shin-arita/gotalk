@@ -1,19 +1,22 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
-import type { ExperimentConfig } from './experiments'
 
-// 切り分けの実験の legacy で、通訳の画面の代わりに LegacyInterpreterPage を使うこと（docs/testing.md の「実験のスイッチ」）
+// 画面の経路と、診断の表示（?diag）を読むこと（docs/testing.md の「診断の表示（?diag）」）。
+// ?exp= は外した後は何もしない。#mic-test のページはなく、ふつうの画面になる
 
-const rendered = vi.hoisted(() => ({ current: [] as { name: string; experiment?: ExperimentConfig }[] }))
+const rendered = vi.hoisted(() => ({ current: [] as { name: string; showDiagnostics?: boolean }[] }))
 
 vi.mock('./pages/LanguageSelectPage', () => ({
   default: ({ onNavigate }: { onNavigate: () => void }) => <button type="button" onClick={onNavigate}>next</button>,
 }))
 vi.mock('./pages/InterpreterPage', () => ({
-  default: ({ experiment }: { experiment?: ExperimentConfig }) => { rendered.current.push({ name: 'InterpreterPage', experiment }); return <p>current</p> },
+  default: ({ showDiagnostics, onBack }: { showDiagnostics?: boolean; onBack: () => void }) => {
+    rendered.current.push({ name: 'InterpreterPage', showDiagnostics })
+    return <button type="button" onClick={onBack}>back</button>
+  },
 }))
-vi.mock('./pages/LegacyInterpreterPage', () => ({
-  default: ({ experiment }: { experiment?: ExperimentConfig }) => { rendered.current.push({ name: 'LegacyInterpreterPage', experiment }); return <p>legacy</p> },
+vi.mock('./pages/TtsTestPage', () => ({
+  default: () => <p>tts-test</p>,
 }))
 
 const { default: App } = await import('./App')
@@ -24,86 +27,66 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
 })
 
-function openInterpreter(search: string) {
-  window.history.replaceState(null, '', `/${search}`)
+function openInterpreter(url: string) {
+  window.history.replaceState(null, '', url)
   render(<App />)
   fireEvent.click(screen.getByRole('button', { name: 'next' }))
 }
 
-describe('App experiment routing', () => {
-  it('uses the current InterpreterPage without exp', () => {
-    openInterpreter('')
-    expect(screen.getByText('current')).toBeInTheDocument()
-    expect(rendered.current.every(r => r.name === 'InterpreterPage')).toBe(true)
-    expect(rendered.current[0].experiment?.enabled).toBe(false)
+const lastShowDiagnostics = () => rendered.current.at(-1)?.showDiagnostics
+
+describe('App routing and ?diag', () => {
+  it.each([
+    ['/', false],
+    ['/?diag', true],
+    ['/?diag=', true],
+    ['/?diag=0', true],
+    ['/?diag=1', true],
+    ['/?DIAG', false],
+    ['/#diag', false],
+    ['/?exp=', false],
+    ['/?exp=legacy', false],
+    ['/?exp=legacykeep', false],
+    ['/?exp=legacymute', false],
+    ['/?exp=recogonly', false],
+    ['/?exp=trace', false],
+    ['/?exp=trace&diag', true],
+  ])('opens the interpreter page for %s with showDiagnostics=%s', (url, expected) => {
+    openInterpreter(url)
+    expect(screen.getByRole('button', { name: 'back' })).toBeInTheDocument()
+    expect(rendered.current.length).toBeGreaterThan(0)
+    expect(rendered.current.every(r => r.name === 'InterpreterPage' && r.showDiagnostics === expected)).toBe(true)
   })
 
-  it('uses LegacyInterpreterPage with exp=legacy', () => {
-    openInterpreter('?exp=legacy')
-    expect(screen.getByText('legacy')).toBeInTheDocument()
-    expect(rendered.current.every(r => r.name === 'LegacyInterpreterPage')).toBe(true)
-    expect(rendered.current[0].experiment?.effective).toEqual(['legacy'])
-  })
-
-  it('uses LegacyInterpreterPage with exp=legacykeep', () => {
-    openInterpreter('?exp=legacykeep')
-    expect(screen.getByText('legacy')).toBeInTheDocument()
-    expect(rendered.current.every(r => r.name === 'LegacyInterpreterPage')).toBe(true)
-    expect(rendered.current[0].experiment?.effective).toEqual(['legacykeep'])
-    expect(rendered.current[0].experiment?.legacyKeep).toBe(true)
-    expect(rendered.current[0].experiment?.legacy).toBe(false)
-  })
-
-  it('uses LegacyInterpreterPage with exp=legacy,legacykeep', () => {
-    openInterpreter('?exp=legacy,legacykeep')
-    expect(rendered.current.every(r => r.name === 'LegacyInterpreterPage')).toBe(true)
-    expect(rendered.current[0].experiment?.effective).toEqual(['legacykeep'])
-  })
-
-  it('uses LegacyInterpreterPage with exp=legacymute', () => {
-    openInterpreter('?exp=legacymute')
-    expect(screen.getByText('legacy')).toBeInTheDocument()
-    expect(rendered.current.every(r => r.name === 'LegacyInterpreterPage')).toBe(true)
-    expect(rendered.current[0].experiment?.effective).toEqual(['legacymute'])
-    expect(rendered.current[0].experiment?.legacyMute).toBe(true)
-    expect(rendered.current[0].experiment?.legacyKeep).toBe(true)
-    expect(rendered.current[0].experiment?.legacy).toBe(false)
-  })
-
-  it('uses LegacyInterpreterPage with exp=legacy,legacykeep,legacymute', () => {
-    openInterpreter('?exp=legacy,legacykeep,legacymute')
-    expect(rendered.current.every(r => r.name === 'LegacyInterpreterPage')).toBe(true)
-    expect(rendered.current[0].experiment?.effective).toEqual(['legacymute'])
-  })
-
-  it('uses LegacyInterpreterPage with exp=recogonly', () => {
-    openInterpreter('?exp=recogonly')
-    expect(screen.getByText('legacy')).toBeInTheDocument()
-    expect(rendered.current.every(r => r.name === 'LegacyInterpreterPage')).toBe(true)
-    expect(rendered.current[0].experiment?.effective).toEqual(['recogonly'])
-    expect(rendered.current[0].experiment?.recogOnly).toBe(true)
-    expect(rendered.current[0].experiment?.legacy).toBe(false)
-    expect(rendered.current[0].experiment?.legacyKeep).toBe(false)
-    expect(rendered.current[0].experiment?.legacyMute).toBe(false)
-  })
-
-  it('uses LegacyInterpreterPage with exp=legacymute,recogonly', () => {
-    openInterpreter('?exp=legacymute,recogonly')
-    expect(rendered.current.every(r => r.name === 'LegacyInterpreterPage')).toBe(true)
-    expect(rendered.current[0].experiment?.effective).toEqual(['recogonly'])
-  })
-
-  it('uses the current InterpreterPage with the other switches', () => {
-    openInterpreter('?exp=norecog')
-    expect(screen.getByText('current')).toBeInTheDocument()
-    expect(rendered.current[0].experiment?.noRecog).toBe(true)
-  })
-
-  it('reads exp only once when the screen loads', () => {
-    window.history.replaceState(null, '', '/?exp=legacy')
+  it('keeps the TtsTestPage for #tts-test, also with ?diag', () => {
+    window.history.replaceState(null, '', '/?diag#tts-test')
     render(<App />)
-    window.history.replaceState(null, '', '/')
+    expect(screen.getByText('tts-test')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'next' })).toBeNull()
+    expect(rendered.current).toEqual([])
+  })
+
+  it('shows the language selection for #mic-test (there is no microphone test page)', () => {
+    window.history.replaceState(null, '', '/#mic-test')
+    render(<App />)
+    expect(screen.getByRole('button', { name: 'next' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'next' }))
-    expect(screen.getByText('legacy')).toBeInTheDocument()
+    expect(lastShowDiagnostics()).toBe(false)
+  })
+
+  it.each([
+    ['/?diag', '/', true],
+    ['/', '/?diag', false],
+  ])('reads diag only once when the screen loads (%s, then %s), also after going back and opening again', (first, later, expected) => {
+    window.history.replaceState(null, '', first)
+    render(<App />)
+    window.history.replaceState(null, '', later)
+    fireEvent.click(screen.getByRole('button', { name: 'next' }))
+    expect(lastShowDiagnostics()).toBe(expected)
+    // 言語の選択に戻り、もう一度開いても、最初に読んだ値のまま
+    fireEvent.click(screen.getByRole('button', { name: 'back' }))
+    expect(screen.getByRole('button', { name: 'next' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'next' }))
+    expect(lastShowDiagnostics()).toBe(expected)
   })
 })

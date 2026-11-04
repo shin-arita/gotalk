@@ -3,15 +3,13 @@ import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import InterpreterPage from './InterpreterPage'
 import { MIN_INTERPRET_AUDIO_BYTES } from '../api'
 import { getUserMediaCalls, resetKeptMicForTest } from '../audio/keptMic'
-import { readExperimentConfig } from '../experiments'
-import type { ExperimentConfig } from '../experiments'
 import { LANGUAGES } from '../languages'
 import {
   AUDIO_GLOBALS, makeFakeStream, makeTtsOkResponse, removeAudioSessionType, saveGlobals, setupAudioContext, setupAudioSessionType,
   setupDeferredGetUserMedia, setupMediaRecorder, setupSpeechRecognition, ttsContextOf,
 } from '../test/audioMocks'
 import type { FakeAudioContext, FakeStream } from '../test/audioMocks'
-import type { AudioSession } from '../hooks/useAudioSession'
+import type { AudioSession } from '../hooks/useKeptAudioSession'
 
 // マナーモードでも読み上げが鳴るよう、読み上げのタップの処理の中で、AudioContext を作る前と resume() の前に、
 // 音の扱い（navigator.audioSession.type）を play-and-record と宣言する（GOTALK-17、docs/speech-flow.md の「9. TTS」）。
@@ -22,8 +20,8 @@ vi.mock('../hooks/useKeptAudioSession', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../hooks/useKeptAudioSession')>()
   return {
     ...actual,
-    useInterpreterAudioSession: (...args: Parameters<typeof actual.useInterpreterAudioSession>) => {
-      const session = actual.useInterpreterAudioSession(...args)
+    useKeptAudioSession: (...args: Parameters<typeof actual.useKeptAudioSession>) => {
+      const session = actual.useKeptAudioSession(...args)
       captured.session = session
       return session
     },
@@ -72,8 +70,8 @@ afterEach(() => {
   restoreGlobals()
 })
 
-function renderPage(experiment?: ExperimentConfig) {
-  return render(<InterpreterPage selectedLanguages={[ja, en]} onBack={vi.fn()} experiment={experiment} />)
+function renderPage() {
+  return render(<InterpreterPage selectedLanguages={[ja, en]} onBack={vi.fn()} />)
 }
 
 const speakButton = () => screen.queryByRole('button', { name: '発声する' })
@@ -257,16 +255,5 @@ describe('InterpreterPage audio session type: the microphone is not changed (GOT
       expect(track.enabled).toBe(true)
     })
     expect(eventTypes().filter(t => t === 'microphone_reused')).toHaveLength(1)
-  })
-})
-
-describe('InterpreterPage audio session type: the experiment switch path (GOTALK-17)', () => {
-  it('also sets play-and-record with a useAudioSession switch (exp=norecog), because reading goes through the same handleSpeak', async () => {
-    const audioSession = setupAudioSessionType()
-    renderPage(readExperimentConfig('?exp=norecog'))
-    await typeAndTranslate('駅はどこですか')
-    await speakToEnd()
-    expect(audioSession.setType).toHaveBeenCalledWith('play-and-record')
-    expect(audioSessionEvents()).toEqual(['audio_session_type:play-and-record'])
   })
 })

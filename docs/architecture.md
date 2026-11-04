@@ -6,7 +6,7 @@ GoTalk は、異なる言語を話す 2 人がブラウザ上で会話するた�
 
 現在の GoTalk は、国旗ボタンで開始した発話を `MediaRecorder` で録音し、録音終了時に音声を Backend の `/api/interpret` に送って確定翻訳とバックトランスレーションを取得します（認識テキストがなく、録音のデータがほとんどないときは送りません）。マイクはページ全体で1つ持ち、録音のたびに開き直しません。録音と並行してブラウザの `SpeechRecognition` も動かし、認識テキストが得られた場合はそのテキストを `transcript` として同じリクエストに添えます。Backend は `transcript` があればそれを翻訳し、なければ OpenAI の音声文字起こし API で言語判定と文字起こしを行ってから翻訳します。翻訳文は Frontend に表示され、必要に応じて `/api/tts` で音声合成して `AudioContext` で再生します。
 
-録音中は `SpeechRecognition` の認識テキストを表示するだけで、訳はしません（本番の通訳の画面（`InterpreterPage`）では、録音中のリアルタイム翻訳はしません。Legacy の実験の経路（`LegacyInterpreterPage`）では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残ります）。`/api/translate` は、文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳に使います。`/api/photo` は、カメラのボタンで選んだ写真の中の文字を読み取って、行ごとに訳します（写真の翻訳。写真は翻訳のために OpenAI に送り、サーバーには残しません）。
+録音中は `SpeechRecognition` の認識テキストを表示するだけで、訳はしません（本番の通訳の画面（`InterpreterPage`）では、録音中のリアルタイム翻訳はしません）。`/api/translate` は、文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳に使います。`/api/photo` は、カメラのボタンで選んだ写真の中の文字を読み取って、行ごとに訳します（写真の翻訳。写真は翻訳のために OpenAI に送り、サーバーには残しません）。
 
 Frontend は React / TypeScript / Vite で実装され、言語選択、録音、`SpeechRecognition`、文字の入力と原文の編集、写真の選択と前処理（縮めて JPEG にする）、翻訳結果表示、バックトランスレーション表示、TTS 再生、会話履歴表示を担当します。Backend は Go の `net/http` で実装され、OpenAI API キーをサーバー側で扱い、文字起こし、翻訳、バックトランスレーション、固有名詞保護、写真の文字の読み取りと翻訳、TTS を実行します。
 
@@ -198,7 +198,7 @@ sequenceDiagram
   FE->>FE: play audio with AudioContext (keep the decoded audio for the same text)
 ```
 
-マイクはページ全体で1つ持ちます（`frontend/src/audio/keptMic.ts`）。最初の録音と、track が `ended` になった後の録音のときだけ `getUserMedia({ audio: true })` でマイク入力を取得し、録音の後も中断のときも閉じずに、次の録音で使い回します。録音は `MediaRecorder` で行い、録音ごとに作る `AudioContext` / `AnalyserNode` で音量（RMS）を測ります。通訳の画面は音量を表示には使わず（`onLevel` は何もしません）、診断の `level` にだけ残します。録音中の画面の棒グラフは、音量ではなく音声認識の途中の文字の更新で動きます（[ui.md](ui.md) の「6.1 棒グラフ」）（録音の資源は `frontend/src/hooks/useKeptAudioSession.ts`。URL の `exp` に切り分けの実験のスイッチがあるときだけ、録音のたびにマイクを開いて閉じる前の版の `useAudioSession.ts` を使います）。録音と並行してブラウザの `SpeechRecognition` を動かし、認識テキストを表示と、`/api/interpret` に添える `transcript` に使います。録音終了時は、録音音声を `/api/interpret` に送ります。認識テキストがある場合は `transcript` として添え、ない場合は Backend が音声から文字起こしします。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは送りません（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。読み上げは `AudioContext` で鳴らします（[speech-flow.md](speech-flow.md) の「9. TTS」）。
+マイクはページ全体で1つ持ちます（`frontend/src/audio/keptMic.ts`）。最初の録音と、track が `ended` になった後の録音のときだけ `getUserMedia({ audio: true })` でマイク入力を取得し、録音の後も中断のときも閉じずに、次の録音で使い回します。録音は `MediaRecorder` で行い、録音ごとに作る `AudioContext` / `AnalyserNode` で音量（RMS）を測ります。通訳の画面は音量を表示には使わず（`onLevel` は何もしません）、診断の `level` にだけ残します。録音中の画面の棒グラフは、音量ではなく音声認識の途中の文字の更新で動きます（[ui.md](ui.md) の「6.1 棒グラフ」）（録音の資源は `frontend/src/hooks/useKeptAudioSession.ts`）。録音と並行してブラウザの `SpeechRecognition` を動かし、認識テキストを表示と、`/api/interpret` に添える `transcript` に使います。録音終了時は、録音音声を `/api/interpret` に送ります。認識テキストがある場合は `transcript` として添え、ない場合は Backend が音声から文字起こしします。ただし、認識テキストがなく、録音のデータが 1024 バイト未満のときは送りません（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。読み上げは `AudioContext` で鳴らします（[speech-flow.md](speech-flow.md) の「9. TTS」）。
 
 ## 9. 固有名詞保護の概要
 

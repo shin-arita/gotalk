@@ -9,7 +9,7 @@ import {
   setupSpeechRecognition, setVisibility, ttsContextOf,
 } from '../test/audioMocks'
 import type { FakeAudioContext, FakeBufferSource } from '../test/audioMocks'
-import type { AudioSession } from '../hooks/useAudioSession'
+import type { AudioSession } from '../hooks/useKeptAudioSession'
 
 // 読み上げの音声を取っておく（GOTALK-2、docs/speech-flow.md の「読み上げ」）。デコード済みの AudioBuffer と、その元の文字の組を
 // 1つだけ持ち、同じ文字の2回目からは /api/tts と decodeAudioData() を呼ばずに鳴らす。
@@ -21,8 +21,8 @@ vi.mock('../hooks/useKeptAudioSession', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../hooks/useKeptAudioSession')>()
   return {
     ...actual,
-    useInterpreterAudioSession: (...args: Parameters<typeof actual.useInterpreterAudioSession>) => {
-      const session = actual.useInterpreterAudioSession(...args)
+    useKeptAudioSession: (...args: Parameters<typeof actual.useKeptAudioSession>) => {
+      const session = actual.useKeptAudioSession(...args)
       captured.session = session
       return session
     },

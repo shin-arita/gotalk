@@ -2,13 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import InterpreterPage from './InterpreterPage'
 import { LANGUAGES } from '../languages'
-import type { AudioSession, AudioSessionCallbacks } from '../hooks/useAudioSession'
+import type { AudioSession, AudioSessionCallbacks } from '../hooks/useKeptAudioSession'
 import { MIN_INTERPRET_AUDIO_BYTES } from '../api'
 import { AUDIO_GLOBALS, makeTtsOkResponse, saveGlobals, setupAudioContext, ttsContextOf } from '../test/audioMocks'
 import type { FakeAudioContext } from '../test/audioMocks'
 
 // handleSpeak の守り（3.11-14）。ready で録音のセッションが残ることは正常な経路では起きないため、
-// 通訳の画面の録音のセッション（useInterpreterAudioSession）を差し替えて、セッションが残っている状態を作る
+// 通訳の画面の録音のセッション（useKeptAudioSession）を差し替えて、セッションが残っている状態を作る
 
 const fake = vi.hoisted(() => ({
   active: false,
@@ -21,7 +21,7 @@ vi.mock('../hooks/useKeptAudioSession', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../hooks/useKeptAudioSession')>()
   return {
     ...actual,
-    useInterpreterAudioSession: (callbacks: AudioSessionCallbacks) => {
+    useKeptAudioSession: (callbacks: AudioSessionCallbacks) => {
       fake.callbacks = callbacks
       if (!fake.session) {
         const real = actual.createKeptAudioSession(callbacks)

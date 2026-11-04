@@ -58,7 +58,7 @@ Backend は CORS のヘッダ（`Access-Control-Allow-*`）を付けません。
 
 `/api/interpret` は、フィールドの値を multipart の body からだけ読みます（`r.PostFormValue`）。URL の query の値（例：`/api/interpret?transcript=...`）は使いません。そのため、上限を確かめた値だけが使われます。
 
-第1段階では、本番の nginx の `client_max_body_size`（既定の 1m）が Backend の上限（body 全体 1.5 MiB）より先に効き、HTML の 413 を返します。費用の防御としては安全側ですが、Backend の構造化されたエラー（JSON の `code`）が返らないため、利用者への表示に問題があることが、本番の確認で分かりました。Frontend は `/api/interpret` の 413 を、本文の形式にかかわらず「録音が長すぎます」「短く区切って話してください」の2行として表示します。また、送る前に録音の Blob のサイズを確かめ、1,032,192 バイト（nginx の 1 MiB から、ほかのフィールドの分の余白として 16 KiB を引いた値。`frontend/src/api.ts` の `MAX_UPLOAD_BYTES`。前の名前の `MAX_INTERPRET_AUDIO_BYTES` は同じ値の別名で、`LegacyInterpreterPage` が使っています。GOTALK-3 で Legacy と一緒に消します）を超える場合は送らずに同じ文言を表示します。`/api/photo` に送る写真の JPEG も、同じ値で確かめます（[8. POST /api/photo](#8-post-apiphoto)）。この確認は使い勝手のための事前の確認で、nginx の 413 を完全に予測するものではありません（multipart の boundary や各 part の header、ほかのフィールドも body に含まれるため）。費用やセキュリティの境界でもありません。nginx の上限は第2段階で Backend の上限と合わせます。
+第1段階では、本番の nginx の `client_max_body_size`（既定の 1m）が Backend の上限（body 全体 1.5 MiB）より先に効き、HTML の 413 を返します。費用の防御としては安全側ですが、Backend の構造化されたエラー（JSON の `code`）が返らないため、利用者への表示に問題があることが、本番の確認で分かりました。Frontend は `/api/interpret` の 413 を、本文の形式にかかわらず「録音が長すぎます」「短く区切って話してください」の2行として表示します。また、送る前に録音の Blob のサイズを確かめ、1,032,192 バイト（nginx の 1 MiB から、ほかのフィールドの分の余白として 16 KiB を引いた値。`frontend/src/api.ts` の `MAX_UPLOAD_BYTES`）を超える場合は送らずに同じ文言を表示します。`/api/photo` に送る写真の JPEG も、同じ値で確かめます（[8. POST /api/photo](#8-post-apiphoto)）。この確認は使い勝手のための事前の確認で、nginx の 413 を完全に予測するものではありません（multipart の boundary や各 part の header、ほかのフィールドも body に含まれるため）。費用やセキュリティの境界でもありません。nginx の上限は第2段階で Backend の上限と合わせます。
 
 JSON の request body は、表にないフィールド（例：`/api/tts` の `speed` や `instructions`）があるとき、または 1つ目の JSON の値の後ろに別の値があるときに、400 `invalid_request` になります。`/api/interpret` の `myLanguage` と `theirLanguage` の JSON も同じです。
 
@@ -276,7 +276,7 @@ transcript 経路と Whisper 経路のどちらでも、翻訳元と翻訳先が
 | Request Content-Type | `application/json` |
 | Response Content-Type | `application/json` |
 
-Frontend は、文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳にこの API を使います。本番の通訳の画面（`InterpreterPage`）では、録音中の入力中の翻訳には使いません（Legacy の実験の経路（`LegacyInterpreterPage`）では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残ります）。
+Frontend は、文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳にこの API を使います。本番の通訳の画面（`InterpreterPage`）では、録音中の入力中の翻訳には使いません。
 
 Request body:
 
@@ -639,7 +639,7 @@ Frontend の API 呼び出しは `frontend/src/pages/InterpreterPage.tsx` に実
 
 確定翻訳は、録音を止めたときに `MediaRecorder` の `onstop` から `callInterpretApi(blob)` で実行されます。Frontend はタップされた国旗の言語を `myLanguage` と `speaker`、もう一方の言語を `theirLanguage` として送ります。録音中に `SpeechRecognition` の認識テキストが得られていれば `transcript` として添えます。認識テキストがなく、録音の Blob が 1024 バイト（`MIN_INTERPRET_AUDIO_BYTES`）未満のときは `/api/interpret` を呼ばず、録音が 1 秒以上なら「マイクの音を受け取れませんでした」「ブラウザを一度終了してから開き直してください」の2行（`microphone_no_audio`）を、1 秒未満なら「うまく録音できませんでした」「もう一度お願いします」の2行（`recording_failed`）を表示します（[speech-flow.md](speech-flow.md) の「8.1 マイクの音が来ないときの検出」）。成功レスポンスから `translatedText`、`backTranslation`、`ttsText` を state に保存します。録音中に `SpeechRecognition` の `onresult` が一度も呼ばれなかった場合（`hasLiveTranscriptRef.current` が `false`）は、`text` を原文として表示します。`onresult` は呼ばれたが認識テキストが空だった場合は、`transcript` を送らず、`text` も原文として表示しません。`ttsText` がない場合は `translatedText` を読み上げ用テキストとして使います。
 
-録音中は `/api/translate` を呼びません（録音中のリアルタイム翻訳はしません。[speech-flow.md](speech-flow.md) の「7. リアルタイム翻訳」）。Legacy の実験の経路（`LegacyInterpreterPage`）では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残ります。
+録音中は `/api/translate` を呼びません（録音中のリアルタイム翻訳はしません。[speech-flow.md](speech-flow.md) の「7. リアルタイム翻訳」）。
 
 読み上げは、デコード済みの音声と、その元の文字（`ttsText`）の組を1つだけ取っておき、同じ文字の2回目からは `/api/tts` を呼ばずに鳴らします（[speech-flow.md](speech-flow.md) の「9. TTS」）。
 

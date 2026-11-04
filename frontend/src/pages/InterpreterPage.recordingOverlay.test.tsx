@@ -3,9 +3,7 @@ import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import InterpreterPage from './InterpreterPage'
 import { MIN_INTERPRET_AUDIO_BYTES } from '../api'
 import { resetKeptMicForTest } from '../audio/keptMic'
-import { readExperimentConfig } from '../experiments'
-import type { ExperimentConfig } from '../experiments'
-import type { AudioSession } from '../hooks/useAudioSession'
+import type { AudioSession } from '../hooks/useKeptAudioSession'
 import { LANGUAGES } from '../languages'
 import type { Language } from '../languages'
 import {
@@ -26,8 +24,8 @@ vi.mock('../hooks/useKeptAudioSession', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../hooks/useKeptAudioSession')>()
   return {
     ...actual,
-    useInterpreterAudioSession: (...args: Parameters<typeof actual.useInterpreterAudioSession>) => {
-      const session = actual.useInterpreterAudioSession(...args)
+    useKeptAudioSession: (...args: Parameters<typeof actual.useKeptAudioSession>) => {
+      const session = actual.useKeptAudioSession(...args)
       captured.session = session
       return session
     },
@@ -81,9 +79,9 @@ afterEach(() => {
   restoreGlobals()
 })
 
-function renderPage(options: { languages?: Language[]; experiment?: ExperimentConfig; onBack?: () => void } = {}) {
+function renderPage(options: { languages?: Language[]; showDiagnostics?: boolean; onBack?: () => void } = {}) {
   const onBack = options.onBack ?? vi.fn()
-  const result = render(<InterpreterPage selectedLanguages={options.languages ?? [ja, en]} onBack={onBack} experiment={options.experiment} />)
+  const result = render(<InterpreterPage selectedLanguages={options.languages ?? [ja, en]} onBack={onBack} showDiagnostics={options.showDiagnostics} />)
   return { ...result, onBack }
 }
 
@@ -595,9 +593,9 @@ describe('InterpreterPage recording overlay: hides on interruption and failure (
 })
 
 describe('InterpreterPage recording overlay: inert and focus (5.7-11)', () => {
-  it('makes the header, the flags, the content and the experiment panel inert while shown and during the shield, and focuses the button', async () => {
+  it('makes the header, the flags, the content and the diagnostics panel inert while shown and during the shield, and focuses the button', async () => {
     vi.useFakeTimers()
-    renderPage({ experiment: readExperimentConfig('?exp=') })
+    renderPage({ showDiagnostics: true })
     const underlay = () => [
       document.querySelector('.interpreter-header')!,
       document.querySelector('.lang-flags-bar')!,
@@ -625,7 +623,7 @@ describe('InterpreterPage recording overlay: inert and focus (5.7-11)', () => {
 
 describe('InterpreterPage TTS timing records (5.7-12)', () => {
   it('records tts_tap, tts_response, tts_downloaded, tts_decoded and tts_started in this order', async () => {
-    renderPage({ experiment: readExperimentConfig('?exp=') })
+    renderPage({ showDiagnostics: true })
     await reachReady()
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '発声する' })) })
     await act(async () => { await Promise.resolve() })
@@ -636,7 +634,7 @@ describe('InterpreterPage TTS timing records (5.7-12)', () => {
 
   it('records only tts_tap and tts_response when /api/tts fails', async () => {
     ttsResponse = () => ({ ok: false, status: 503, json: () => Promise.resolve({ error: 'service_busy' }) } as unknown as Response)
-    renderPage({ experiment: readExperimentConfig('?exp=') })
+    renderPage({ showDiagnostics: true })
     await reachReady()
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '発声する' })) })
     await act(async () => { await Promise.resolve() })

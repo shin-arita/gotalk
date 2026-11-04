@@ -3,8 +3,6 @@ import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-libra
 import InterpreterPage from './InterpreterPage'
 import { MIN_INTERPRET_AUDIO_BYTES } from '../api'
 import { resetKeptMicForTest } from '../audio/keptMic'
-import { readExperimentConfig } from '../experiments'
-import type { ExperimentConfig } from '../experiments'
 import { LANGUAGES } from '../languages'
 import { getLocalizedMessage } from '../messages'
 import type { MessageKey } from '../messages'
@@ -15,7 +13,7 @@ import {
 import type { FakeAudioContext, FakeStream } from '../test/audioMocks'
 
 // マイクを開いたまま使い回すこと、読み上げを AudioContext で鳴らすこと、マイクの音が来ないときの検出
-// （docs/speech-flow.md）。実験のスイッチがないときは useKeptAudioSession、あるときは useAudioSession を使う
+// （docs/speech-flow.md）
 
 const [ja, en] = LANGUAGES
 const jaEn = (key: MessageKey) => getLocalizedMessage(key, 'ja', 'en')
@@ -68,8 +66,8 @@ afterEach(() => {
   restoreGlobals()
 })
 
-function renderPage(experiment?: ExperimentConfig) {
-  return render(<InterpreterPage selectedLanguages={[ja, en]} onBack={vi.fn()} experiment={experiment} />)
+function renderPage(showDiagnostics?: boolean) {
+  return render(<InterpreterPage selectedLanguages={[ja, en]} onBack={vi.fn()} showDiagnostics={showDiagnostics} />)
 }
 
 const jaTalk = () => screen.getByRole('button', { name: 'Japaneseで話す' })
@@ -169,8 +167,8 @@ describe('InterpreterPage kept microphone', () => {
     expect(jaStop()).toBeInTheDocument()
   })
 
-  it('uses the kept session with an empty exp, and puts the logEvent records into the copied JSON', async () => {
-    renderPage(readExperimentConfig('?exp='))
+  it('uses the kept session with ?diag, and puts the logEvent records into the copied JSON', async () => {
+    renderPage(true)
     await startRecording()
     await act(async () => { recognitions.instances[0].onresult?.({ results: [[{ transcript: '聞かれたくない本文' }]] }) })
     await stopRecording()
@@ -191,9 +189,9 @@ describe('InterpreterPage kept microphone', () => {
     expect(JSON.stringify(json)).not.toContain('聞かれたくない本文')
   })
 
-  it('puts keptMic into the copied JSON with an empty exp (the new session without an experiment switch)', async () => {
+  it('puts keptMic into the copied JSON with ?diag', async () => {
     vi.mocked(Date.now).mockImplementation(() => 7000)
-    renderPage(readExperimentConfig('?exp='))
+    renderPage(true)
     await recordAndTranslate()
     await recordAndTranslate()
     expect((await copyJson()).diagnostics.keptMic).toEqual({ getUserMediaCalls: 1, endedEvents: [] })
@@ -202,22 +200,6 @@ describe('InterpreterPage kept microphone', () => {
     // ended の後の録音で取り直すと、回数が増える
     await recordAndTranslate()
     expect((await copyJson()).diagnostics.keptMic?.getUserMediaCalls).toBe(2)
-  })
-
-  it('does not put keptMic into the copied JSON with a useAudioSession switch', async () => {
-    renderPage(readExperimentConfig('?exp=trace'))
-    await recordAndTranslate()
-    expect((await copyJson()).diagnostics.keptMic).toBeUndefined()
-  })
-
-  it('uses useAudioSession with an experiment switch (getUserMedia and track stop() for every recording)', async () => {
-    renderPage(readExperimentConfig('?exp=trace'))
-    await recordAndTranslate()
-    await recordAndTranslate()
-    expect(gum.getUserMedia).toHaveBeenCalledTimes(2)
-    expect(streams).toHaveLength(2)
-    expect(streams[0].tracks[0].stop).toHaveBeenCalledTimes(1)
-    expect(streams[1].tracks[0].stop).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -281,14 +263,14 @@ describe('InterpreterPage TTS with AudioContext', () => {
     expect(ttsContext().close).not.toHaveBeenCalled()
   })
 
-  // 出来事の名前を「コピー」の JSON で確かめるため、新しいセッションを使うとき（実験のスイッチがないとき）の ?exp= で描画する
+  // 出来事の名前を「コピー」の JSON で確かめるため、診断の表示（showDiagnostics）を付けて描画する
   it.each([
     ['resume() rejects', { resumeRejects: true }, 'tts_resume_rejected:NotAllowedError'],
     ['resume() throws', { resumeThrows: true }, 'tts_resume_rejected:InvalidStateError'],
     ['the state is not running after resume()', { stateAfterResume: 'suspended' }, 'tts_resume_not_running:suspended'],
   ])('does not play and returns to ready without a message when %s', async (_, options, event) => {
     audioContexts = setupAudioContext(options).instances
-    renderPage(readExperimentConfig('?exp='))
+    renderPage(true)
     await recordAndTranslate()
     await speak()
     expect(ttsContext().createBufferSource).not.toHaveBeenCalled()
@@ -307,7 +289,7 @@ describe('InterpreterPage TTS with AudioContext', () => {
     nodeProcess.on('unhandledRejection', unhandled)
     try {
       setupAudioContext({ throwOnCreate: true })
-      renderPage(readExperimentConfig('?exp='))
+      renderPage(true)
       await recordAndTranslate()
       await act(async () => { fireEvent.click(speakButton()!) })
       await flush()
@@ -365,7 +347,7 @@ describe('InterpreterPage TTS with AudioContext', () => {
   it('returns to ready with the watchdog when onended does not arrive, and logs tts_ended_timeout', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     audioContexts = setupAudioContext({ bufferDuration: 2 }).instances
-    renderPage(readExperimentConfig('?exp='))
+    renderPage(true)
     await recordAndTranslate()
     await speak()
     const source = lastSource()
@@ -382,7 +364,7 @@ describe('InterpreterPage TTS with AudioContext', () => {
 
   it('clears the watchdog when onended arrives (no tts_ended_timeout)', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    renderPage(readExperimentConfig('?exp='))
+    renderPage(true)
     await recordAndTranslate()
     // 録音中の画面が消えた後の盾（400ms）のタイマーを終わらせてから、見張りのタイマーだけを数える
     await act(async () => { vi.advanceTimersByTime(400) })
@@ -437,11 +419,8 @@ describe('InterpreterPage TTS with AudioContext', () => {
 })
 
 describe('InterpreterPage no audio detection', () => {
-  it.each([
-    ['without exp (useKeptAudioSession)', '?exp='],
-    ['with an experiment switch (useAudioSession)', '?exp=trace'],
-  ])('does not send and shows microphone_no_audio for 1 second or longer without data or transcript, %s', async (_, search) => {
-    renderPage(readExperimentConfig(search))
+  it('does not send and shows microphone_no_audio for 1 second or longer without data or transcript', async () => {
+    renderPage(true)
     await startRecording()
     await stopRecording('abcde', 1000)
     expect(interpretCalls()).toHaveLength(0)
@@ -451,11 +430,8 @@ describe('InterpreterPage no audio detection', () => {
     expect(await eventTypes()).toContain('no_audio_detected:bytes=5,ms=1000')
   })
 
-  it.each([
-    ['without exp (useKeptAudioSession)', undefined],
-    ['with an experiment switch (useAudioSession)', '?exp=trace'],
-  ])('does not send and shows recording_failed for less than 1 second, %s', async (_, search) => {
-    renderPage(search === undefined ? undefined : readExperimentConfig(search))
+  it('does not send and shows recording_failed for less than 1 second', async () => {
+    renderPage()
     await startRecording()
     await stopRecording('abcde', 999)
     expect(interpretCalls()).toHaveLength(0)
