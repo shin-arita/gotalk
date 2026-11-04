@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import InterpreterPage from './InterpreterPage'
-import { RECORDER_STOP_TIMEOUT_MS } from '../hooks/useAudioSession'
+import { RECORDER_STOP_TIMEOUT_MS } from '../hooks/useKeptAudioSession'
 import { MIN_INTERPRET_AUDIO_BYTES } from '../api'
 import { peekLive, resetKeptMicForTest } from '../audio/keptMic'
 import { LANGUAGES } from '../languages'
@@ -14,10 +14,8 @@ import {
 import type { FakeStream } from '../test/audioMocks'
 
 // 録音のライフサイクル（docs/speech-flow.md）のテスト。番号は、設計の 3.11 のテストの番号。
-// 実験のスイッチがないときの、マイクを閉じないセッション（useKeptAudioSession）の期待にしている。
-// マイクはページ全体で1つ持ち、録音の後も中断のときも track の stop() を呼ばない（ended のときだけ取り直す）。
-// 実験のスイッチがあるとき（useAudioSession）の、録音のたびの getUserMedia と track の stop() は、
-// InterpreterPage.experiments.test.tsx と useAudioSession の単体テストで確かめる
+// マイクを閉じないセッション（useKeptAudioSession）の期待にしている。
+// マイクはページ全体で1つ持ち、録音の後も中断のときも track の stop() を呼ばない（ended のときだけ取り直す）
 
 // 録音のデータ。マイクの音が来ていないかの判定（MIN_INTERPRET_AUDIO_BYTES 未満は送らない）に掛からない大きさにする
 const AUDIO_DATA = 'a'.repeat(MIN_INTERPRET_AUDIO_BYTES)

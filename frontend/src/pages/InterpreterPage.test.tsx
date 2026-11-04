@@ -9,7 +9,7 @@ import { MIN_INTERPRET_AUDIO_BYTES } from '../api'
 import { resetKeptMicForTest } from '../audio/keptMic'
 import { makeTtsOkResponse, setupAudioContext } from '../test/audioMocks'
 import type { FakeAudioContext } from '../test/audioMocks'
-import type { AudioSession } from '../hooks/useAudioSession'
+import type { AudioSession } from '../hooks/useKeptAudioSession'
 
 // 画面の状態（idle と ready など、画面の見た目では区別できないもの）を、録音のセッションの診断の出来事（status:…）で確かめる。
 // 録音のセッションは本物を使い、画面で使うものを取っておく（InterpreterPage.recordingOverlay.test.tsx と同じ）
@@ -19,8 +19,8 @@ vi.mock('../hooks/useKeptAudioSession', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../hooks/useKeptAudioSession')>()
   return {
     ...actual,
-    useInterpreterAudioSession: (...args: Parameters<typeof actual.useInterpreterAudioSession>) => {
-      const session = actual.useInterpreterAudioSession(...args)
+    useKeptAudioSession: (...args: Parameters<typeof actual.useKeptAudioSession>) => {
+      const session = actual.useKeptAudioSession(...args)
       captured.session = session
       return session
     },
@@ -196,8 +196,6 @@ beforeEach(() => {
   savedProperties = []
   saveProperty(globalThis, 'AudioContext')
   saveProperty(globalThis.navigator, 'mediaDevices')
-  saveProperty(globalThis.URL, 'createObjectURL')
-  saveProperty(globalThis.URL, 'revokeObjectURL')
   saveProperty(globalThis, 'Audio')
 })
 

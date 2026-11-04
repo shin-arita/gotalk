@@ -54,7 +54,7 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 
 表の `<br>` は改行です。日本語の文言のうち2つの文からなるもの（`input_too_large`、`upstream_busy`、`timeout`、`tts_too_long`、`recording_too_long`、`recording_start_failed`、`recording_failed`、`microphone_no_audio`、`generic_error`、`language_unclear`、`request_timeout` と、写真の翻訳の `photo_too_much_text`、`photo_load_failed`、`photo_too_large`）は、句点も読点も使わず、文と文の間を改行（`\n`）にしています。エラーの表示の位置（`error-text`）は `white-space: pre-line` なので、この改行と、2つの言語の間の空行は、そのまま表示されます。
 
-読み上げ（`/api/tts`）のエラーは、`tts_too_long`、`service_unavailable`、`upstream_busy`、`timeout` の場合だけ表示します。表示する文言がないエラー（502、ネットワークのエラー、timeout など）では何も表示せず、ログにだけ残します。本番の通訳の画面（`InterpreterPage`）では、録音中のリアルタイム翻訳はしません（Legacy の実験の経路では、録音中のリアルタイム翻訳が GOTALK-3 まで今のまま残り、その失敗は表示しません）。
+読み上げ（`/api/tts`）のエラーは、`tts_too_long`、`service_unavailable`、`upstream_busy`、`timeout` の場合だけ表示します。表示する文言がないエラー（502、ネットワークのエラー、timeout など）では何も表示せず、ログにだけ残します。本番の通訳の画面（`InterpreterPage`）では、録音中のリアルタイム翻訳はしません。
 
 ## 4. まだ共通の関数に寄せていない文言
 
@@ -82,7 +82,7 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 | `frontend/src/pages/InterpreterPage.tsx:1129` | `写真から翻訳` | カメラのボタン（[写真の翻訳](#8-写真の翻訳)） |
 | `frontend/index.html` | `<html lang="ja">` | ページの言語（スクリーンリーダーの読み上げの言語の判定に使われます） |
 
-開発用の確認のページ（URL の末尾に `#tts-test` を付けたときの `frontend/src/pages/TtsTestPage.tsx` と、`#mic-test` を付けたときの `frontend/src/pages/MicTestPage.tsx`）は、開発者が実機で動作を確かめるためのもので、通常の画面からはリンクしていません。これらのページの文言は日本語だけで、[1. 利用者向けの文言の言語](#1-利用者向けの文言の言語) の決まりの対象外です。
+開発用の確認のページ（URL の末尾に `#tts-test` を付けたときの `frontend/src/pages/TtsTestPage.tsx`）は、開発者が実機で動作を確かめるためのもので、通常の画面からはリンクしていません。このページの文言は日本語だけで、[1. 利用者向けの文言の言語](#1-利用者向けの文言の言語) の決まりの対象外です。URL の query に `diag` を付けたときに通訳の画面の下に出す診断の表示（「更新」「コピー」。[testing.md](testing.md) の「診断の表示（?diag）」）も開発用で、文言は日本語だけで、この決まりの対象外です。
 
 ## 6. 録音中の画面
 
@@ -119,7 +119,7 @@ API のエラーは、日本語の文字列ではなく `ApiError`（`frontend/s
 - タップの扱い
   - `recording` のとき：録音中の画面のどこをタップしても（下のボタン、案内の文言、文字の領域、透けて見える国旗や題名の上を含む）、録音を止めます（今までの、同じ国旗の2回目のタップと同じ `stopRecording()`）。`stopRecording()` は `recording` のときだけ止めるので、2回目以降のタップは何もしません
   - `starting` のとき：録音中の画面の本体のタップは何もしません（マイクの許可のダイアログの操作の間の誤タップで、取り消さないためです）。下のボタン（×）だけが、取り消し（`abort('cancel')` で録音のセッションを片付けて `idle` に戻す。文言は出さない。[speech-flow.md](speech-flow.md) の「5. 音声入力状態」）をします
-- 録音中は、録音中の画面のほかに動くものを出しません。国旗の波紋、国旗の下の横に流れる文字、入力中の翻訳のカード（`live-translation-card`）は出しません。録音中の国旗は、赤い縁取り（`lang-flags-bar__btn--recording-static`）だけで、赤い影の脈打ちはしません（`LegacyInterpreterPage` の `lang-flags-bar__btn--recording` は今までどおりです）
+- 録音中は、録音中の画面のほかに動くものを出しません。国旗の波紋、国旗の下の横に流れる文字、入力中の翻訳のカード（`live-translation-card`）は出しません。録音中の国旗は、赤い縁取り（`lang-flags-bar__btn--recording-static`）だけで、赤い影の脈打ちはしません
 - 下の要素を操作できないようにする：録音中の画面と、下の click shield を出している間は、題名の `header`、国旗の帯（`lang-flags-bar`）、本文（`page-content`）、実験の表示に `inert` を付けます（キーボードやスクリーンリーダーでも操作できません）。録音中の画面は `role="dialog"`、`aria-modal="true"` で、`aria-label` は案内の文言と同じ文字です。録音中の画面が出たら、下のボタンにフォーカスを移します（`preventScroll`）
 
 ### 6.1 棒グラフ

@@ -5,11 +5,9 @@ import { API_TIMEOUT_MS, ApiError, MAX_UPLOAD_BYTES, MIN_INTERPRET_AUDIO_BYTES, 
 import { getLocalizedMessage } from '../messages'
 import type { MessageKey } from '../messages'
 import { declarePlayAndRecord } from '../audio/audioSessionType'
-import { useInterpreterAudioSession } from '../hooks/useKeptAudioSession'
-import type { AudioSessionAbortReason, AudioSessionStartFailure } from '../hooks/useAudioSession'
-import { DEFAULT_EXPERIMENT_CONFIG } from '../experiments'
-import type { ExperimentConfig } from '../experiments'
-import ExperimentPanel from './ExperimentPanel'
+import { useKeptAudioSession } from '../hooks/useKeptAudioSession'
+import type { AudioSessionAbortReason, AudioSessionStartFailure } from '../hooks/useKeptAudioSession'
+import DiagnosticsPanel from './DiagnosticsPanel'
 import './InterpreterPage.css'
 
 // 画面全体の状態（docs/speech-flow.md）。状態は画面だけが持つ
@@ -21,9 +19,8 @@ type InterpreterStatus = 'idle' | 'starting' | 'recording' | 'stopping' | 'proce
 interface InterpreterPageProps {
   selectedLanguages: Language[]
   onBack: () => void
-  // 切り分けの実験のスイッチ（docs/testing.md）。省略したときは、すべてのスイッチが false で、今の本番と同じ動き。
-  // 最初の描画のときの値だけを使う
-  experiment?: ExperimentConfig
+  // 診断の表示（docs/testing.md の「診断の表示（?diag）」）を出すか。省略したときは出さない
+  showDiagnostics?: boolean
 }
 
 interface HistoryEntry {
@@ -166,7 +163,7 @@ function errorName(e: unknown): string {
   return e instanceof Error || e instanceof DOMException ? e.name : typeof e
 }
 
-export default function InterpreterPage({ selectedLanguages, onBack, experiment = DEFAULT_EXPERIMENT_CONFIG }: InterpreterPageProps) {
+export default function InterpreterPage({ selectedLanguages, onBack, showDiagnostics = false }: InterpreterPageProps) {
   const [status, setStatus] = useState<InterpreterStatus>('idle')
   const [recordingFlagIndex, setRecordingFlagIndex] = useState<0 | 1 | null>(null)
   const [recognizedText, setRecognizedText] = useState('')
@@ -228,12 +225,9 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   const overlayButtonRef = useRef<HTMLButtonElement>(null)
   const prevOverlayVisibleRef = useRef(false)
   const shieldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // 切り分けの実験のスイッチ。最初の描画のときの値だけを使う
-  const experimentRef = useRef(experiment)
 
-  // 録音のセッション。状態は持たず、録音の成立、最後のデータ、失敗を callback で知らせる。
-  // useAudioSession の実験のスイッチがあるときは今の useAudioSession を、ないときはマイクを閉じないセッションを使う
-  const audioSession = useInterpreterAudioSession({
+  // 録音のセッション（マイクを閉じない）。状態は持たず、録音の成立、最後のデータ、失敗を callback で知らせる
+  const audioSession = useKeptAudioSession({
     onRecordingStarted: () => handleRecordingStarted(),
     onStartFailed: (failure, reason) => handleStartFailed(failure, reason),
     onTranscript: (transcript) => {
@@ -257,7 +251,7 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
     onRecordingStopped: (blob) => handleRecordingStopped(blob),
     onRecorderError: () => handleRecorderError(),
     isRecordingStatus: () => statusRef.current === 'recording',
-  }, experiment)
+  })
 
   // 原文の入力と編集の状態を変える（isEditingRef は、非同期の listener から最新の値を読むため）
   const changeEditing = (next: boolean) => {
@@ -887,8 +881,6 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
   // listener は一度だけ登録し、最新の処理を ref から呼ぶ
   const interruptRef = useRef(interrupt)
   const pageShowRef = useRef(handlePageShow)
-  // 切り分けの実験（trace）の記録。AudioSession は画面が外れるまで同じもの
-  const audioSessionRef = useRef(audioSession)
   useEffect(() => {
     interruptRef.current = interrupt
     pageShowRef.current = handlePageShow
@@ -896,47 +888,18 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
 
   useEffect(() => {
     const handlers = { interruptRef, pageShowRef }
-    const exp = experimentRef.current
-    const session = audioSessionRef.current
     const onVisibilityChange = () => {
-      // 実験の trace：もともとある handler の中で記録する
-      if (exp.trace) session.recordPageEvent('visibilitychange')
       if (document.visibilityState === 'hidden') handlers.interruptRef.current('hidden')
     }
-    const onPageHide = (e: PageTransitionEvent) => {
-      if (exp.trace) session.recordPageEvent('pagehide', e.persisted)
-      handlers.interruptRef.current('pagehide')
-    }
-    const onPageShow = (e: PageTransitionEvent) => {
-      if (exp.trace) session.recordPageEvent('pageshow', e.persisted)
-      handlers.pageShowRef.current(e.persisted)
-    }
-    // 実験の nolifecycle と trace：本来の handler を付けないので、記録のためだけの listener を付ける。
-    // 時刻、出来事の名前、visibilityState の記録だけをし、中断の片付けや状態の変更などの処理は一切しない
-    const recordOnlyVisibilityChange = () => session.recordPageEvent('visibilitychange')
-    const recordOnlyPageHide = (e: PageTransitionEvent) => session.recordPageEvent('pagehide', e.persisted)
-    const recordOnlyPageShow = (e: PageTransitionEvent) => session.recordPageEvent('pageshow', e.persisted)
-    // 実験の nolifecycle：visibilitychange、pagehide、pageshow の listener を付けない
-    if (!exp.noLifecycle) {
-      document.addEventListener('visibilitychange', onVisibilityChange)
-      window.addEventListener('pagehide', onPageHide)
-      window.addEventListener('pageshow', onPageShow)
-    } else if (exp.trace) {
-      document.addEventListener('visibilitychange', recordOnlyVisibilityChange)
-      window.addEventListener('pagehide', recordOnlyPageHide)
-      window.addEventListener('pageshow', recordOnlyPageShow)
-      session.markTraceListenerOnly()
-    }
+    const onPageHide = () => handlers.interruptRef.current('pagehide')
+    const onPageShow = (e: PageTransitionEvent) => handlers.pageShowRef.current(e.persisted)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('pagehide', onPageHide)
+    window.addEventListener('pageshow', onPageShow)
     return () => {
-      if (!exp.noLifecycle) {
-        document.removeEventListener('visibilitychange', onVisibilityChange)
-        window.removeEventListener('pagehide', onPageHide)
-        window.removeEventListener('pageshow', onPageShow)
-      } else if (exp.trace) {
-        document.removeEventListener('visibilitychange', recordOnlyVisibilityChange)
-        window.removeEventListener('pagehide', recordOnlyPageHide)
-        window.removeEventListener('pageshow', recordOnlyPageShow)
-      }
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('pagehide', onPageHide)
+      window.removeEventListener('pageshow', onPageShow)
       handlers.interruptRef.current('unmount')
     }
   }, [])
@@ -1255,14 +1218,12 @@ export default function InterpreterPage({ selectedLanguages, onBack, experiment 
         )}
       </div>
 
-      {experiment.enabled && <div className="experiment-panel-wrap" inert={underlayInert}>
-        <ExperimentPanel
-          config={experiment}
+      {showDiagnostics && <div className="diagnostics-panel-wrap" inert={underlayInert}>
+        <DiagnosticsPanel
           busy={status === 'starting' || status === 'recording' || status === 'stopping'}
           read={() => ({
             kind: 'audioSession',
             takenAt: new Date().toISOString(),
-            effective: [...experiment.effective],
             // 表示が、押した後の診断の変化で変わらないように複製する
             diagnostics: JSON.parse(JSON.stringify(audioSession.getDiagnostics())),
           })}

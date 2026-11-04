@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { API_TIMEOUT_MS, ApiError, MAX_INTERPRET_AUDIO_BYTES, MAX_UPLOAD_BYTES, TTS_MAX_CHARS, apiErrorFromResponse, isTooLongForTts, messageKeyForError } from './api'
+import { API_TIMEOUT_MS, ApiError, MAX_UPLOAD_BYTES, TTS_MAX_CHARS, apiErrorFromResponse, isTooLongForTts, messageKeyForError } from './api'
 
 function res(body: unknown, json = true, status = 500): Response {
   return {
@@ -127,10 +127,5 @@ describe('isTooLongForTts', () => {
 describe('MAX_UPLOAD_BYTES', () => {
   it('is the nginx limit (1 MiB) minus a 16 KiB margin for the other multipart fields', () => {
     expect(MAX_UPLOAD_BYTES).toBe(1_032_192)
-  })
-
-  // MAX_INTERPRET_AUDIO_BYTES は LegacyInterpreterPage が使う前の名前（GOTALK-3 で消す）
-  it('has the same value as the old name MAX_INTERPRET_AUDIO_BYTES', () => {
-    expect(MAX_INTERPRET_AUDIO_BYTES).toBe(MAX_UPLOAD_BYTES)
   })
 })

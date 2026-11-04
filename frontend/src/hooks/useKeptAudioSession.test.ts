@@ -1,21 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
-import { RECORDER_STOP_TIMEOUT_MS } from './useAudioSession'
-import type { AudioSession, AudioSessionAbortReason, AudioSessionCallbacks } from './useAudioSession'
-import {
-  AUDIO_SESSION_EXPERIMENTS, createKeptAudioSession, useInterpreterAudioSession, useKeptAudioSession, usesAudioSessionExperiment,
+import { RECORDER_STOP_TIMEOUT_MS, createKeptAudioSession, useKeptAudioSession } from './useKeptAudioSession'
+import type {
+  AudioSession, AudioSessionAbortReason, AudioSessionCallbacks, KeptAudioDiagnostics, KeptAudioSessionDiagnostics,
 } from './useKeptAudioSession'
-import type { KeptAudioDiagnostics, KeptAudioSessionDiagnostics } from './useKeptAudioSession'
 import { peekLive, resetKeptMicForTest } from '../audio/keptMic'
-import { DEFAULT_EXPERIMENT_CONFIG, EXPERIMENT_NAMES, readExperimentConfig } from '../experiments'
 import {
   AUDIO_GLOBALS, endTrack, makeFakeStream, saveGlobals, setupAnimationFrame, setupAudioContext, setupDeferredGetUserMedia,
   setupMediaRecorder, setupSpeechRecognition,
 } from '../test/audioMocks'
 import type { FakeStream } from '../test/audioMocks'
 
-// マイクを閉じない録音のセッション（docs/speech-flow.md）。安全策は useAudioSession と同じ意味で働き、
-// どの経路でも track の stop() を呼ばない
+// マイクを閉じない録音のセッション（docs/speech-flow.md）。録音の資源の安全策を確かめ、
+// どの経路でも track の stop() を呼ばないことを確かめる
 
 let restoreGlobals: () => void
 let gum: ReturnType<typeof setupDeferredGetUserMedia>
@@ -312,6 +309,32 @@ describe('useKeptAudioSession: start', () => {
     expect(contexts.instances).toHaveLength(0)
     expect(recognitions.Ctor).not.toHaveBeenCalled()
   })
+
+  it('does not start the level meter and the recognition after a user stop in onRecordingStarted (KK4, KK5)', async () => {
+    // 今の画面からは起きない経路。onRecordingStarted の中で利用者の停止を呼ぶと、abort と違ってセッションは有効のまま
+    // 止める指示が出た状態で、start が音量の取得と音声認識を始めようとする
+    let session: AudioSession | null = null
+    const callbacks = makeCallbacks({ onRecordingStarted: vi.fn(() => session!.stop()) })
+    session = createKeptAudioSession(callbacks)
+    const started = session.start('ja-JP')
+    const stream = await gum.calls[0].resolve()
+    await started
+    expect(callbacks.onRecordingStarted).toHaveBeenCalledTimes(1)
+    expect(session.hasActiveSession()).toBe(true)
+    expect(recorders.instances[0].stop).toHaveBeenCalledTimes(1)
+    // KK4：AudioContext を作らず、requestAnimationFrame も頼まない
+    expect(contexts.Ctor).not.toHaveBeenCalled()
+    expect(frames.request).not.toHaveBeenCalled()
+    // KK5：音声認識の constructor も start() も呼ばない
+    expect(recognitions.Ctor).not.toHaveBeenCalled()
+    expect(recognitions.instances).toEqual([])
+    expect(eventTypes(session)).not.toContain('recognition_unavailable')
+    // onstop の後は送り、track は止めない
+    recorders.instances[0].onstop?.()
+    expect(callbacks.onRecordingStopped).toHaveBeenCalledTimes(1)
+    expect(session.hasActiveSession()).toBe(false)
+    expect(stream.tracks[0].stop).not.toHaveBeenCalled()
+  })
 })
 
 describe('useKeptAudioSession: user stop', () => {
@@ -388,6 +411,82 @@ describe('useKeptAudioSession: user stop', () => {
     expect(callbacks.onRecordingStopped).toHaveBeenCalledTimes(1)
     expect(callbacks.onRecorderError).not.toHaveBeenCalled()
     expect(sessionDiag(session, 0).recorder.stopLatencyMs).toBe(RECORDER_STOP_TIMEOUT_MS - 1)
+    expect(sessionDiag(session, 0).recorder.stopTimedOut).toBe(false)
+    expect(sessionDiag(session, 0).recorder.stopWaitedMs).toBeNull()
+  })
+
+  it('records the time it waited on the watchdog, and the latency of a late onstop', async () => {
+    vi.useFakeTimers()
+    const { session, callbacks } = await startFirst()
+    session.stop()
+    vi.advanceTimersByTime(RECORDER_STOP_TIMEOUT_MS)
+    expect(callbacks.onRecorderError).toHaveBeenCalledTimes(1)
+    const recorderDiag = sessionDiag(session, 0).recorder
+    expect(recorderDiag.stopTimedOut).toBe(true)
+    expect(recorderDiag.stopWaitedMs).toBe(RECORDER_STOP_TIMEOUT_MS)
+    expect(recorderDiag.stopLatencyMs).toBeNull()
+    // 後から onstop が届いても送らない。届くまでの時間は残す
+    vi.advanceTimersByTime(250)
+    recorders.instances[0].onstop?.()
+    expect(callbacks.onRecordingStopped).not.toHaveBeenCalled()
+    expect(sessionDiag(session, 0).recorder.stopLatencyMs).toBe(RECORDER_STOP_TIMEOUT_MS + 250)
+  })
+
+  it('measures the time from the stop instruction when the recorder had become inactive by itself (JJ7)', async () => {
+    vi.useFakeTimers()
+    const { session, callbacks } = await startFirst()
+    recorders.instances[0].state = 'inactive'
+    session.stop()
+    vi.advanceTimersByTime(120)
+    recorders.instances[0].onstop?.()
+    expect(callbacks.onRecordingStopped).toHaveBeenCalledTimes(1)
+    expect(sessionDiag(session, 0).recorder.stopLatencyMs).toBe(120)
+  })
+
+  it('waits for the close() started by the user stop when aborted while stopping (KK1)', async () => {
+    const { session } = await startFirst()
+    const ctx = contexts.instances[0]
+    let finishClose!: () => void
+    ctx.close.mockImplementation(() => new Promise<void>(resolve => { finishClose = () => { ctx.state = 'closed'; resolve() } }))
+    session.stop()
+    expect(ctx.close).toHaveBeenCalledTimes(1)
+    let settled = false
+    const aborted = session.abort('pagehide').then(() => { settled = true })
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(settled).toBe(false)
+    finishClose()
+    await aborted
+    expect(settled).toBe(true)
+    // close() と disconnect() は、利用者の停止で1回だけ
+    expect(ctx.close).toHaveBeenCalledTimes(1)
+    expect(ctx.source.disconnect).toHaveBeenCalledTimes(1)
+    expect(sessionDiag(session, 0).audioContext.state).toBe('closed')
+  })
+
+  it('resolves the abort while stopping without an unhandled rejection when close() rejects (KK1)', async () => {
+    // 未処理の拒否は Node の process に届く（frontend の型には Node がないので、必要なところだけ型を書く）
+    type UnhandledListener = (reason: unknown) => void
+    const proc = (globalThis as unknown as {
+      process: { on: (e: string, l: UnhandledListener) => void; off: (e: string, l: UnhandledListener) => void }
+    }).process
+    const unhandled = vi.fn()
+    proc.on('unhandledRejection', unhandled)
+    try {
+      const { session } = await startFirst()
+      const ctx = contexts.instances[0]
+      let failClose!: () => void
+      ctx.close.mockImplementation(() => new Promise<void>((_, reject) => { failClose = () => reject(new Error('close failed')) }))
+      session.stop()
+      const aborted = session.abort('hidden')
+      failClose()
+      await expect(aborted).resolves.toBeUndefined()
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(unhandled).not.toHaveBeenCalled()
+      expect(ctx.close).toHaveBeenCalledTimes(1)
+      expect(ctx.source.disconnect).toHaveBeenCalledTimes(1)
+    } finally {
+      proc.off('unhandledRejection', unhandled)
+    }
   })
 
   it('does not let the watchdog of session 1 act on session 2', async () => {
@@ -527,14 +626,7 @@ describe('useKeptAudioSession: stale callbacks and cleanup', () => {
     expect(diagnostics.sessions).toHaveLength(10)
     expect(diagnostics.sessions.at(-1)!.id).toBe(13)
     expect(diagnostics.events).toHaveLength(200)
-    expect(diagnostics.experiment).toBeUndefined()
-  })
-
-  it('does nothing for recordPageEvent and markTraceListenerOnly', () => {
-    const session = createKeptAudioSession(makeCallbacks())
-    session.recordPageEvent('pagehide', true)
-    session.markTraceListenerOnly()
-    expect(session.getDiagnostics()).toEqual({ sessions: [], events: [], keptMic: { getUserMediaCalls: 0, endedEvents: [] } })
+    expect(diagnostics).not.toHaveProperty('experiment')
   })
 })
 
@@ -553,12 +645,9 @@ describe('useKeptAudioSession hooks', () => {
     expect(first.onRecordingStarted).not.toHaveBeenCalled()
   })
 
-  it.each([
-    ['without exp', DEFAULT_EXPERIMENT_CONFIG],
-    ['with an empty exp', readExperimentConfig('?exp=')],
-  ])('puts the keptMic diagnostics into getDiagnostics() %s', async (_, config) => {
+  it('puts the keptMic diagnostics into getDiagnostics()', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(5000)
-    const { result } = renderHook(() => useInterpreterAudioSession(makeCallbacks(), config))
+    const { result } = renderHook(() => useKeptAudioSession(makeCallbacks()))
     const session = result.current
     const started = session.start('ja-JP')
     const stream = await gum.calls[0].resolve()
@@ -566,50 +655,5 @@ describe('useKeptAudioSession hooks', () => {
     expect((session.getDiagnostics() as KeptAudioDiagnostics).keptMic).toEqual({ getUserMediaCalls: 1, endedEvents: [] })
     endTrack(stream.tracks[0])
     expect((session.getDiagnostics() as KeptAudioDiagnostics).keptMic).toEqual({ getUserMediaCalls: 1, endedEvents: [{ at: 5000, track: 0 }] })
-  })
-
-  it('does not put the keptMic diagnostics with a useAudioSession switch', async () => {
-    const { result } = renderHook(() => useInterpreterAudioSession(makeCallbacks(), readExperimentConfig('?exp=trace')))
-    const started = result.current.start('ja-JP')
-    await gum.calls[0].resolve()
-    await started
-    expect('keptMic' in result.current.getDiagnostics()).toBe(false)
-  })
-
-  it('lists every useAudioSession switch, and only those', () => {
-    const legacy = ['legacy', 'legacykeep', 'legacymute', 'recogonly']
-    expect([...AUDIO_SESSION_EXPERIMENTS].sort()).toEqual(EXPERIMENT_NAMES.filter(n => !legacy.includes(n)).sort())
-    expect(usesAudioSessionExperiment(DEFAULT_EXPERIMENT_CONFIG)).toBe(false)
-    expect(usesAudioSessionExperiment(readExperimentConfig('?exp='))).toBe(false)
-    expect(usesAudioSessionExperiment(readExperimentConfig('?exp=typo'))).toBe(false)
-    // recogdelay は recogfirst と一緒のときだけ効く
-    for (const name of AUDIO_SESSION_EXPERIMENTS) {
-      const config = readExperimentConfig(name === 'recogdelay' ? '?exp=recogfirst,recogdelay' : `?exp=${name}`)
-      expect(config.effective, name).toContain(name)
-      expect(usesAudioSessionExperiment(config), name).toBe(true)
-    }
-  })
-
-  it.each([
-    ['without exp', DEFAULT_EXPERIMENT_CONFIG, 1, 0],
-    ['with an empty exp', readExperimentConfig('?exp='), 1, 0],
-    ['with an experiment switch', readExperimentConfig('?exp=nodisconnect'), 2, 1],
-  ])('useInterpreterAudioSession %s', async (_, config, getUserMediaCalls, trackStops) => {
-    const callbacks = makeCallbacks()
-    const { result, rerender } = renderHook(({ c }) => useInterpreterAudioSession(callbacks, c), { initialProps: { c: config } })
-    const session = result.current
-    // スイッチは最初の描画のときの値だけを使う
-    rerender({ c: readExperimentConfig(config === DEFAULT_EXPERIMENT_CONFIG ? '?exp=trace' : '') })
-    expect(result.current).toBe(session)
-    const first = session.start('ja-JP')
-    const stream = await gum.calls[0].resolve()
-    await first
-    stopAndFinish(session, 0)
-    await Promise.resolve()
-    const second = session.start('ja-JP')
-    if (gum.calls[1]) await gum.calls[1].resolve()
-    await second
-    expect(gum.getUserMedia).toHaveBeenCalledTimes(getUserMediaCalls)
-    expect(stream.tracks[0].stop).toHaveBeenCalledTimes(trackStops)
   })
 })

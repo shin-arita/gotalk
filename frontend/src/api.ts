@@ -100,9 +100,6 @@ export function messageKeyForError(endpoint: string, e: unknown): MessageKey {
 // 境界ではない（境界は Backend と nginx の上限）。第2段階で nginx の上限を Backend と合わせるときに見直すこと
 export const MAX_UPLOAD_BYTES = 1_048_576 - 16_384
 
-// MAX_UPLOAD_BYTES の前の名前（同じ値）。LegacyInterpreterPage が使う。GOTALK-3 で Legacy と一緒に消す
-export const MAX_INTERPRET_AUDIO_BYTES = MAX_UPLOAD_BYTES
-
 // 録音のデータがこれより小さく、音声認識の文字がないときは、/api/interpret に送らない（1,024 バイト。docs/speech-flow.md）。
 // 実機の記録で、成功した録音は 74KB 以上、マイクの音が来ていない壊れた録音は 5 バイトだった。1 秒以上の正常な録音は、
 // webm でも mp4 でも数 KB 以上になるので、その間で、正常な録音を誤って止めない余裕を取った値

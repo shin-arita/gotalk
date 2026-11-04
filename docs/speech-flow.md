@@ -70,13 +70,11 @@ Frontend の音声処理は、画面の `frontend/src/pages/InterpreterPage.tsx`
 | `keptMic` | ページ全体で1つのマイク（stream）と、`getUserMedia` を待っている Promise | `getUserMedia` と、`ended` の track があるときの取り直し。track の `ended` の見張り（[6.1](#61-マイクの持ち方と用語)） |
 | `useKeptAudioSession` | 録音の資源（`MediaRecorder`、音声認識、`AudioContext` と node、`requestAnimationFrame` の番号）と、録音のセッションの番号。状態は持ちません。stream は `keptMic` が持つものを使い、閉じません | `MediaRecorder`、音声認識、音量の取得。「録音が成立した」「録音の最後のデータがそろった」「失敗した」を callback で画面に知らせます |
 
-画面は、最初の描画のときに、URL の `exp` に `useAudioSession` の実験のスイッチ（[testing.md](testing.md) の「切り分けの実験のスイッチ」）が1つでもあれば、前の版の `frontend/src/hooks/useAudioSession.ts`（録音のたびに `getUserMedia` を呼び、録音の後に track を `stop()` する）を、なければ `useKeptAudioSession` を使います（`useInterpreterAudioSession`。画面が外れるまで変えません）。この文書は、スイッチがないとき（`useKeptAudioSession`）の動きを書きます。`useAudioSession` とスイッチは PR C で外します。
-
 画面から hook を呼ぶのは、`start(言語)`、`stop()`（利用者の停止）、`abort(理由)`（中断と、`starting` の間の取り消し）だけです。
 
 国旗ボタンは、2 つの選択言語それぞれに表示されます。`handleFlagTap` は、`idle` または `ready` のときに表示中の原文、翻訳文、`ttsText`、バックトランスレーション、エラーメッセージを空にし、状態を `starting` にしてから、タップされた国旗の言語で `start` を呼びます。`starting` と `recording` の間は、画面全体を録音中の画面（オーバーレイ。[ui.md](ui.md) の「録音中の画面」）が覆います。`recording` の間は、録音中の画面のどこをタップしても `stopRecording` を実行します（今までの、同じ国旗の2回目のタップと同じ処理です。`stopRecording` は `recording` のときだけ止めるので、2回目以降のタップは何もしません）。`starting` の間は、録音中の画面の下のボタン（×）だけが取り消し（`handleCancelStarting`）を実行します。`recording` 中に同じ国旗がタップされた場合に `stopRecording` を実行する分岐も、守りとして残しています（録音中の画面が覆っているので、ふつうは届きません）。`recording` 中は反対側の国旗を、`starting`、`stopping`、`processing`、`speaking`、`error` の間は両方の国旗を操作できません。タップの判定には、React の状態ではなく `statusRef` の最新の値を使います。
 
-`start` は、`keptMic` が持っているマイクが使えれば（track が1本以上あり、どれも `ended` でなければ）、`getUserMedia` を呼ばずに、`await` を挟まずにその stream で録音を始めます（利用者の操作の中で同期的に録音を始めます。実機で確かめた実験の `legacykeep` と同じです）。使えなければ `keptMic` で `navigator.mediaDevices.getUserMedia({ audio: true })` を呼んでマイク入力を取得します。stream に audio track が1本以上あり、すべての track の `readyState` が `live` であることを確かめてから、`getSupportedMimeType` で選んだ MIME type で `MediaRecorder` を作成して `start()` します。`MediaRecorder.isTypeSupported` で `audio/webm;codecs=opus`、`audio/webm`、`audio/mp4`、`audio/ogg;codecs=opus` の順に確認し、最初に対応しているものを使います。どれにも対応していない場合は MIME type を指定せずに `MediaRecorder` を作成します。ここまで成功したときが録音の成立（マイク ON）で、hook は `onRecordingStarted` で画面に知らせ、画面は状態を `recording` にします。
+`start` は、`keptMic` が持っているマイクが使えれば（track が1本以上あり、どれも `ended` でなければ）、`getUserMedia` を呼ばずに、`await` を挟まずにその stream で録音を始めます（利用者の操作の中で同期的に録音を始めます。切り分けの実験（マイクを開いたまま使い回す方式）で、実機で確かめた形です）。使えなければ `keptMic` で `navigator.mediaDevices.getUserMedia({ audio: true })` を呼んでマイク入力を取得します。stream に audio track が1本以上あり、すべての track の `readyState` が `live` であることを確かめてから、`getSupportedMimeType` で選んだ MIME type で `MediaRecorder` を作成して `start()` します。`MediaRecorder.isTypeSupported` で `audio/webm;codecs=opus`、`audio/webm`、`audio/mp4`、`audio/ogg;codecs=opus` の順に確認し、最初に対応しているものを使います。どれにも対応していない場合は MIME type を指定せずに `MediaRecorder` を作成します。ここまで成功したときが録音の成立（マイク ON）で、hook は `onRecordingStarted` で画面に知らせ、画面は状態を `recording` にします。
 
 録音の成立の後に、補助の機能（音量の取得と音声認識）の開始を試みます。補助の機能が失敗しても、メッセージは出さずに録音を続け、診断のログにだけ残します。
 
@@ -176,7 +174,7 @@ iPhone は、マイクを開いていないときの `AudioContext` を効果音
 - track の `ended` の見張りは `keptMic` だけが持ちます。新しい stream を持ったときに、各 track に `ended` の listener を1回だけ付け、`ended` が来たら診断の記録（`endedEvents`。時刻と track の番号、最大 20 件）を残すだけにします（track は止めません。次の録音の開始で取り直します）。録音のセッションなど、ほかからは stream と track に listener を付けません
 - `MediaRecorder`、音量の取得の `AudioContext`、音声認識は、録音ごとに作って片付けます
 
-iPhone の Chrome などで、タップのたびに「マイクへのアクセスが許可されています」のお知らせが出ないよう、また録音のたびにマイクを開き直すと2回目からの録音が空になる不具合（実機の記録）を避けるため、この方式にしています（実験の `legacykeep` で、実機で 10 回とも成功した方式です）。
+iPhone の Chrome などで、タップのたびに「マイクへのアクセスが許可されています」のお知らせが出ないよう、また録音のたびにマイクを開き直すと2回目からの録音が空になる不具合（実機の記録）を避けるため、この方式にしています（切り分けの実験（マイクを開いたまま使い回す方式）で、実機で 10 回とも成功した方式です）。
 
 - **録音の資源の片付け**：`MediaRecorder` と音声認識が止まり、`MediaStreamAudioSourceNode` を `disconnect()` し、音量の取得用の `AudioContext` を `close()` し、`requestAnimationFrame` を取り消して、参照を捨てた状態です。track は止めません
 - **録音の成立（マイク ON）**：今回の録音で使う stream に audio track が1本以上あり、使う track がすべて `readyState === "live"` で、`MediaRecorder` の作成と `start()` に成功した状態です
@@ -244,7 +242,7 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 
 中断の片付け（失敗の片付けと、`starting` の間の取り消しを含みます）では、理由（`hidden`、`pagehide`、`back`、`unmount`、`error`、`cancel`）によらず、今有効なセッションを先に無効にしてから、音声認識と音量の取得を止め、`MediaStreamAudioSourceNode` を `disconnect()` して `AudioContext` を閉じ、その後に `MediaRecorder` が止まっていなければ `stop()` し、参照を捨てます。録音の資源だけを片付け、track は `stop()` しません。
 
-片付けの順番：利用者の停止でも中断の片付けでも、「音声認識の停止 → `requestAnimationFrame` の取り消し → `disconnect()` → 音量の取得の `AudioContext` の `close()` の開始 → `MediaRecorder` の `stop()`」の順にします（track は止めません）。前の版（`useAudioSession`）と同じ順番で、実験の `legacykeep` とも同じです。
+片付けの順番：利用者の停止でも中断の片付けでも、「音声認識の停止 → `requestAnimationFrame` の取り消し → `disconnect()` → 音量の取得の `AudioContext` の `close()` の開始 → `MediaRecorder` の `stop()`」の順にします（track は止めません）。
 
 ### 6.5 録音の途中で止まったとき
 
@@ -314,7 +312,7 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 
 ### 6.9 診断の情報
 
-`useKeptAudioSession` は、録音ごとに次をメモリの上に残します（最新の 10 回の録音と、200 件の出来事）。Backend には送らず、録音した音声と会話の本文は残しません。URL に `exp` があるとき（`?exp=` のように空でも）は、診断の表示の「コピー」の JSON に入ります（[testing.md](testing.md)）。
+`useKeptAudioSession` は、録音ごとに次をメモリの上に残します（最新の 10 回の録音と、200 件の出来事）。Backend には送らず、録音した音声と会話の本文は残しません。URL に `diag` があるとき（`?diag`）は、診断の表示の「コピー」の JSON に入ります（[testing.md](testing.md) の「診断の表示（?diag）」）。
 
 - セッションの番号、止める理由
 - 状態の遷移とその時刻（`status:recording` などの出来事として残します）
@@ -325,17 +323,15 @@ iPhone の Chrome などで、タップのたびに「マイクへのアクセ�
 - 音声認識の結果があったかと、その文字数（本文は残しません）
 - 画面が残す出来事：マイクの音が来ないと判断した録音（`no_audio_detected:bytes=<大きさ>,ms=<長さ>`）、読み上げの見張りのタイマーで `ready` に戻したこと（`tts_ended_timeout`）、読み上げの `resume()` の失敗（拒否されたとき（同期の例外を含む）は `tts_resume_rejected:<例外の name>`、解決したが `running` でないときは `tts_resume_not_running:<state>`）、読み上げ用の `AudioContext` を作れなかったこと（`tts_context_create_failed:<例外の name>`）、読み上げの前の音の扱いの宣言（設定の後の値は `audio_session_type:<値>`、`navigator.audioSession` がないときは `audio_session_unsupported`、例外のときは `audio_session_set_failed:<例外の name>`。[9. TTS](#9-tts)）、読み上げの時間の記録（`tts_tap`、`tts_response:status=<HTTP の状態>`、`tts_downloaded:bytes=<大きさ>`、`tts_decoded:ms=<音声の長さ>`、`tts_started`。[9. TTS](#9-tts) の「読み上げの時間の記録」）
 
-`keptMic` は、`getUserMedia` を呼んだ回数（`getUserMediaCalls()`）と、track の `ended` の記録（`endedEvents()`）を持ちます。`useKeptAudioSession` の `getDiagnostics()` の結果に `keptMic: { getUserMediaCalls, endedEvents }` として入り、「コピー」の JSON にも入ります（診断の表示の画面には出しません。実験のスイッチのとき（`useAudioSession`）は入りません）。iPhone が track を止めたか（`ended` が来たか）を確かめ、`microphone_no_audio` が出たときの原因の切り分けに使います。
+`keptMic` は、`getUserMedia` を呼んだ回数（`getUserMediaCalls()`）と、track の `ended` の記録（`endedEvents()`）を持ちます。`useKeptAudioSession` の `getDiagnostics()` の結果に `keptMic: { getUserMediaCalls, endedEvents }` として入り、「コピー」の JSON にも入ります（診断の表示の画面には出しません）。iPhone が track を止めたか（`ended` が来たか）を確かめ、`microphone_no_audio` が出たときの原因の切り分けに使います。`sessions` と `events` は通訳の画面ごとに持ち（言語の選択に戻って開き直すと空から始まります）、`keptMic` はページ全体で持ちます（言語の選択に戻っても続きの値です）。
 
-2回目から録音が空になる不具合の切り分けのため、URL の query の `exp` で指定する実験のスイッチと、その診断の表示を入れています（詳しくは [testing.md](testing.md) の「切り分けの実験のスイッチ」）。`useAudioSession` の実験のスイッチがあるときは、前の版の `useAudioSession` を使います。スイッチと `useAudioSession` は PR C で外します。
+診断の表示は、URL の query に `diag` があるときだけ出します（値は見ません。[testing.md](testing.md) の「診断の表示（?diag）」）。
 
 ## 7. リアルタイム翻訳
 
 本番の通訳の画面（`InterpreterPage`）では、録音中のリアルタイム翻訳（話している途中の文字を `/api/translate` で訳して出すこと）は行いません。録音中は、話した文字（`recognizedText`）だけを録音中の画面に出し（[ui.md](ui.md) の「録音中の画面」）、翻訳は録音を止めた後の確定翻訳（`/api/interpret`）だけで行います。`/api/translate` は、文字の入力（原文が空の状態からの入力と、原文の編集）を確定したときの翻訳に使います（[ui.md](ui.md) の「原文の入力と編集」）。
 
 `recognizedText` は `SpeechRecognition.onresult` から更新される表示用の認識テキストです。`recognizedTextRef` は、録音終了時に最新の認識テキストを同期的に参照するために使われます（`/api/interpret` に添える `transcript`）。
-
-URL の `exp` の実験のスイッチのときに使う `LegacyInterpreterPage` の実験の経路では、録音中のリアルタイム翻訳（`recording` 中に `recognizedText` の変更に対して 800ms のデバウンスで `/api/translate` を呼び、結果を `liveTranslatedText` として `live-translation-card` に出す）が GOTALK-3 まで今のまま残ります。
 
 ## 8. 録音終了後
 
@@ -378,9 +374,7 @@ URL の `exp` の実験のスイッチのときに使う `LegacyInterpreterPage`
 | 文字がなく、`blob.size` が 1024 バイト未満で、録音の長さが 1000 ミリ秒未満（押してすぐ止めた） | 送らず、「うまく録音できませんでした」「もう一度お願いします」の2行（`recording_failed`）を表示して `idle` にします |
 | それ以外 | 今のまま送ります |
 
-閾値の理由：実機の記録で、成功した録音は 74KB 以上（`legacykeep`）、壊れた録音は 5 バイトでした。1 秒以上の正常な録音は、webm でも mp4 でも数 KB 以上になります。1024 バイトは、その間で、正常な録音を誤って止めない余裕を取った値です。
-
-この判定は、`useKeptAudioSession` と、実験のスイッチのときの `useAudioSession` の両方に効きます。
+閾値の理由：実機の記録で、成功した録音は 74KB 以上（切り分けの実験の、マイクを開いたまま使い回す方式）、壊れた録音は 5 バイトでした。1 秒以上の正常な録音は、webm でも mp4 でも数 KB 以上になります。1024 バイトは、その間で、正常な録音を誤って止めない余裕を取った値です。
 
 `/api/interpret` が `422` で `language_mismatch` を返した場合は、言語不明メッセージを表示し、翻訳文とバックトランスレーションを空にして `idle` に戻します。それ以外の失敗ではタイムアウトまたはエラー内容に応じたメッセージを表示し、`idle` に戻します。結果や失敗は、問い合わせの番号が今有効な番号と同じときだけ画面に反映します（[6.3 翻訳の問い合わせの番号](#63-翻訳の問い合わせの番号)）。
 
@@ -404,7 +398,7 @@ TTS model は `OPENAI_TTS_MODEL` を使い、未設定時は `gpt-4o-mini-tts` �
 
 Frontend は、読み上げを `AudioContext` で鳴らします。マイクを開いたまま `<audio>` で鳴らすと、次の録音が壊れるためです。`<audio>`（`new Audio()`、オブジェクト URL）は使わず、失敗しても `<audio>` に切り替えて鳴らし直すことはしません。マナーモードで鳴らない問題（[5. 音声入力状態](#5-音声入力状態) の最後の段落）は、`<audio>` ではなく、音の扱いの宣言（下の 1）で解決します。
 
-1. マナーモードでも鳴るよう、タップの処理の中（`await` の前）で、`AudioContext` を作る前と `resume()` の前に、音の扱いを宣言します（`declarePlayAndRecord()`）。`navigator.audioSession` があれば、その `type` を `play-and-record` にします（すでに `play-and-record` なら設定し直しません）。診断の出来事に、設定の後の値（`audio_session_type:<値>`）を残します。`navigator.audioSession` がないブラウザ（Android、PC、古い iPhone など）では何もせず、`audio_session_unsupported` を残します。設定が例外を出したときは、例外を捨てて `audio_session_set_failed:<例外の name>` を残します。どちらのときも、そのまま今までどおり鳴らします（文言は出しません）。宣言するのは通訳の画面（`InterpreterPage`）の読み上げのときだけで、録音の部品（`keptMic`、`useKeptAudioSession`、`useAudioSession`）は触りません。読み上げは実験のスイッチのとき（`useAudioSession`）も同じ `handleSpeak` を通るので、そのときも宣言します。実験の画面（`LegacyInterpreterPage`）と開発用のマイクの確認のページ（`MicTestPage`）では宣言しません（実験の条件を変えないため）。500 文字を超えて読み上げないときは、宣言しません
+1. マナーモードでも鳴るよう、タップの処理の中（`await` の前）で、`AudioContext` を作る前と `resume()` の前に、音の扱いを宣言します（`declarePlayAndRecord()`）。`navigator.audioSession` があれば、その `type` を `play-and-record` にします（すでに `play-and-record` なら設定し直しません）。診断の出来事に、設定の後の値（`audio_session_type:<値>`）を残します。`navigator.audioSession` がないブラウザ（Android、PC、古い iPhone など）では何もせず、`audio_session_unsupported` を残します。設定が例外を出したときは、例外を捨てて `audio_session_set_failed:<例外の name>` を残します。どちらのときも、そのまま今までどおり鳴らします（文言は出しません）。宣言するのは通訳の画面（`InterpreterPage`）の読み上げのときだけで、録音の部品（`keptMic`、`useKeptAudioSession`）は触りません。500 文字を超えて読み上げないときは、宣言しません
 2. 読み上げ用の `AudioContext` を、画面で1つ持ちます（`ttsContextRef`）。最初の読み上げのタップのときに作り、画面が外れるまで使い回します。作れないとき（`new AudioContext()` の例外。`AudioContext` がない、作れる数の上限など）は、読み上げの失敗として、ログ（`logApiError` と診断の出来事 `tts_context_create_failed:<例外の name>`）を残し、文言は出さず、`ready` のまま戻ります。鳴らせないので `/api/tts` は呼ばず、`speaking` にもしません。`ttsContextRef` は空のままにし、次の読み上げのタップでもう一度作るのを試します。戻る前に、録音のセッションが残っていれば、`unexpected_active_audio_session_before_tts` を残して片付けます（[6.8](#68-冪等な片付け) の守りと同じ処理）
 3. タップの処理の中（`await` の前）で `resume()` を呼び、Promise を持っておきます（ここでは待ちません。iPhone では、利用者の操作の中でないと鳴らせないためです）。`resume()` が同期の例外を出したときは、拒否された Promise と同じに扱います
 4. `/api/tts` の結果を `arrayBuffer()` で受け取り、`decodeAudioData` で `AudioBuffer` にします。読み上げる文字が取っておいた音声の文字と同じときは、`/api/tts` と `decodeAudioData` を呼ばずに、取っておいた `AudioBuffer` を使います（下の「読み上げの音声を取っておく」）

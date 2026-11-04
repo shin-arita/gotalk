@@ -13,7 +13,7 @@ import {
   AUDIO_GLOBALS, firePageTransition, makeTtsOkResponse, saveGlobals, setupAudioContext, setupDeferredGetUserMedia, setupMediaRecorder,
   setupAudioSessionType, setupSpeechRecognition, setVisibility,
 } from '../test/audioMocks'
-import type { AudioSession } from '../hooks/useAudioSession'
+import type { AudioSession } from '../hooks/useKeptAudioSession'
 
 // 通訳の画面で、カメラで撮った文字を翻訳する（GOTALK-7、docs/ui.md）。
 // createImageBitmap、canvas の getContext と toBlob は偽物にし、/api/photo の fetch も偽物にする。
@@ -24,8 +24,8 @@ vi.mock('../hooks/useKeptAudioSession', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../hooks/useKeptAudioSession')>()
   return {
     ...actual,
-    useInterpreterAudioSession: (...args: Parameters<typeof actual.useInterpreterAudioSession>) => {
-      const session = actual.useInterpreterAudioSession(...args)
+    useKeptAudioSession: (...args: Parameters<typeof actual.useKeptAudioSession>) => {
+      const session = actual.useKeptAudioSession(...args)
       captured.session = session
       return session
     },

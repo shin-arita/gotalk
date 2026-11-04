@@ -1,15 +1,94 @@
 import { useLayoutEffect, useState } from 'react'
 import * as keptMic from '../audio/keptMic'
-import { createAudioSession, RECORDER_STOP_TIMEOUT_MS } from './useAudioSession'
-import type {
-  AudioDiagnostics, AudioSession, AudioSessionAbortReason, AudioSessionCallbacks, AudioSessionDiagnostics, AudioSessionStopReason,
-} from './useAudioSession'
-import type { ExperimentConfig, ExperimentName } from '../experiments'
 
-// 通訳の画面の録音のセッションのうち、マイクを閉じないもの（docs/speech-flow.md）。マイク（stream）は keptMic が
+// 通訳の画面の録音のセッション。マイクを閉じない（docs/speech-flow.md）。マイク（stream）は keptMic が
 // ページ全体で1つ持ち、このセッションは track の stop() を呼ばず、track に listener も付けない。
 // MediaRecorder、音声認識、音量の取得（AudioContext と analyser、requestAnimationFrame）は録音ごとに作って片付ける。
-// 録音の資源の扱いと安全策は useAudioSession と同じ意味にし、違うのはマイクの扱いだけ
+// 画面の状態（InterpreterStatus）は持たない。持つのは、録音の資源とセッションの番号だけで、
+// 「録音が成立した」「録音の最後のデータがそろった」「失敗した」などを callback で画面に知らせる
+
+// 中断の理由。利用者の停止（user）とは別に、セッションを先に無効にして、録音のデータを送らずに片付ける
+export type AudioSessionAbortReason = 'hidden' | 'pagehide' | 'back' | 'unmount' | 'error' | 'cancel'
+export type AudioSessionStopReason = 'user' | AudioSessionAbortReason
+
+// 録音の成立までの失敗。getUserMedia の失敗は microphone_denied、getUserMedia の成功の後の失敗
+// （track がない、live でない、MediaRecorder の作成や start() の例外）は recording_start_failed
+export type AudioSessionStartFailure = 'microphone_denied' | 'recording_start_failed'
+
+export interface AudioSessionCallbacks {
+  // 録音の成立（マイク ON）
+  onRecordingStarted: () => void
+  // 録音の成立までの失敗。資源は片付けた後に呼ぶ。reason はエラーの name（ログ用）
+  onStartFailed: (failure: AudioSessionStartFailure, reason: string) => void
+  // 音声認識の途中の文字
+  onTranscript: (transcript: string) => void
+  // 音量（0 から 1）と、音量の取得を始めてからの時間（ミリ秒）。波紋の表示に使う
+  onLevel: (amplitude: number, elapsedMs: number) => void
+  // 利用者の停止で、録音の最後のデータがそろい、マイク OFF が成立した後に呼ぶ
+  onRecordingStopped: (blob: Blob) => void
+  // 録音の成立の後の失敗（録音の途中の MediaRecorder の onerror、利用者の停止での stop() の例外など）。
+  // 中断の片付け（理由 error）の後に呼ぶ。録音のデータは送らない
+  onRecorderError: () => void
+  // 画面の状態が recording か（音声認識の onend で始め直してよいかの判断に使う）
+  isRecordingStatus: () => boolean
+}
+
+export interface AudioDiagnosticEvent {
+  type: string
+  at: number
+  sessionId: number | null
+}
+
+// 録音ごとの診断の情報。録音した音声と会話の本文は残さない（音声認識は、結果があったかと文字数だけ）
+export interface AudioSessionDiagnostics {
+  id: number
+  stopReason: AudioSessionStopReason | null
+  getUserMedia: { startedAt: number | null; succeededAt: number | null; errorName: string | null }
+  tracks: { readyState: string; enabled: boolean; muted: boolean }[]
+  recorder: {
+    state: string | null
+    mimeType: string | null
+    startedAt: number | null
+    stoppedAt: number | null
+    durationMs: number | null
+    // 利用者の停止で stop() を呼んだ時刻（MediaRecorder がすでに inactive のときは、止める指示を記録した時刻）
+    stopRequestedAt: number | null
+    // stopRequestedAt から onstop が届くまでの時間（ミリ秒）。見張りのタイマーで片付けた後に届いた場合も残す
+    stopLatencyMs: number | null
+    // 見張りのタイマーで片付けたか。片付けたときは、それまでに待った時間を stopWaitedMs に残す
+    stopTimedOut: boolean
+    stopWaitedMs: number | null
+    bytes: number
+    errorName: string | null
+  }
+  audioContext: { state: string | null }
+  level: { rms: number; rmsMax: number; peak: number; samples: number }
+  recognition: { hadResult: boolean; chars: number }
+}
+
+export interface AudioDiagnostics {
+  sessions: AudioSessionDiagnostics[]
+  events: AudioDiagnosticEvent[]
+}
+
+export interface AudioSession {
+  start: (speechCode: string) => Promise<void>
+  stop: () => void
+  abort: (reason: AudioSessionAbortReason) => Promise<void>
+  hasActiveSession: () => boolean
+  logEvent: (type: string) => void
+  getDiagnostics: () => AudioDiagnostics
+  // 最新の callback に入れ替える（画面の再描画のたびに呼ぶ）
+  setCallbacks: (callbacks: AudioSessionCallbacks) => void
+}
+
+// 利用者の停止で、MediaRecorder の onstop を待つ最長の時間（ミリ秒）。届かないままだと stopping のままマイクが
+// 開き続けるので、この時間で見切りを付けて録音の失敗として片付ける。
+// 実機で確かめていない仮の値。短すぎると正常な長い録音（古い端末の audio/mp4 で上限に近い録音など）を捨て、
+// 長すぎるとブラウザの不具合で onstop が届かないときに track が長く開いているだけなので、損失の小さい長めの値にしている。
+// PR 2 の診断の表示で stop() から onstop までの時間（AudioSessionDiagnostics の recorder.stopLatencyMs）を測り、
+// 実測の値に余裕を足した値に見直す
+export const RECORDER_STOP_TIMEOUT_MS = 10_000
 
 interface SpeechRecognitionEvent {
   readonly results: { readonly length: number; readonly [i: number]: { readonly [j: number]: { readonly transcript: string } } }
@@ -46,7 +125,7 @@ function errorName(e: unknown): string {
   return e instanceof Error || e instanceof DOMException ? e.name : typeof e
 }
 
-// 診断の情報をメモリの上に残す数（useAudioSession と同じ）
+// 診断の情報をメモリの上に残す数
 const MAX_DIAGNOSTIC_SESSIONS = 10
 const MAX_DIAGNOSTIC_EVENTS = 200
 
@@ -147,7 +226,7 @@ export function createKeptAudioSession(initialCallbacks: AudioSessionCallbacks):
 
   // 音量の取得の資源（MediaStreamAudioSourceNode と AudioContext）を片付ける（冪等）。source node を disconnect() し、
   // AudioContext の close() を始める。2回目以降は、1回目に始めた close() の完了の Promise を返す。
-  // MediaRecorder の stop() より前に呼ぶ（順番は useAudioSession と同じ）
+  // MediaRecorder の stop() より前に呼ぶ
   const releaseLevelMeter = (s: Session): Promise<void> => {
     if (s.levelMeterClosed) return s.levelMeterClosed
     if (s.sourceNode) {
@@ -174,8 +253,7 @@ export function createKeptAudioSession(initialCallbacks: AudioSessionCallbacks):
   }
 
   // 録音の資源を止めて参照を捨てる（冪等）。AudioContext の close() が終わるまでの Promise を返す。
-  // useAudioSession の release() から、track の stop() と stream の参照を捨てる部分だけを除いたもの
-  // （マイクは keptMic が持ち、閉じない）
+  // track の stop() は呼ばず、stream の参照も捨てない（マイクは keptMic が持ち、閉じない）
   const release = (s: Session): Promise<void> => {
     s.stopRequested = true
     clearStopTimer(s)
@@ -220,9 +298,9 @@ export function createKeptAudioSession(initialCallbacks: AudioSessionCallbacks):
     callbacks().onRecordingStopped(blob)
   }
 
-  // 音量の取得（録音ごとに AudioContext を作る。useAudioSession の startLevelMeter と同じ）
+  // 音量の取得（録音ごとに AudioContext を作る）
   const startLevelMeter = (s: Session, stream: MediaStream) => {
-    // 止める指示の後や、音量の取得の片付けの後は始めない（useAudioSession と同じ守り）
+    // 止める指示の後や、音量の取得の片付けの後は始めない
     if (s.stopRequested || s.levelMeterClosed) return
     try {
       const audioContext = new AudioContext()
@@ -266,7 +344,7 @@ export function createKeptAudioSession(initialCallbacks: AudioSessionCallbacks):
     }
   }
 
-  // 音声認識（録音ごとに作る。onend での始め直しの条件は useAudioSession と同じ）
+  // 音声認識（録音ごとに作る。onend での始め直しの条件は、下の onend のとおり）
   const startRecognition = (s: Session, speechCode: string) => {
     if (s.stopRequested) return
     const RecognitionCtor = getSpeechRecognitionCtor()
@@ -339,7 +417,7 @@ export function createKeptAudioSession(initialCallbacks: AudioSessionCallbacks):
     if (diagnostics.sessions.length > MAX_DIAGNOSTIC_SESSIONS) diagnostics.sessions.shift()
 
     // 持っているマイクが使えれば、await を挟まずに録音を始める（利用者の操作の中で同期的に録音を始める。
-    // 実機で確かめた legacykeep と同じ）。使えなければ keptMic で取得する
+    // 切り分けの実験（マイクを開いたまま使い回す方式）で、実機で確かめた形）。使えなければ keptMic で取得する
     let stream = keptMic.peekLive()
     if (stream) {
       s.diag.getUserMedia.reused = true
@@ -431,7 +509,7 @@ export function createKeptAudioSession(initialCallbacks: AudioSessionCallbacks):
   }
 
   // 利用者の停止。止める指示を先に記録してから、音声認識と音量の取得を止め、MediaRecorder の onstop を待つ
-  // （順番は useAudioSession と同じ）。track の stop() は呼ばない
+  // （片付けの順番は release と同じ）。track の stop() は呼ばない
   const stop = () => {
     const s = current
     if (!s || s.stopRequested || !s.recorder) return
@@ -493,37 +571,12 @@ export function createKeptAudioSession(initialCallbacks: AudioSessionCallbacks):
       keptMic: { getUserMediaCalls: keptMic.getUserMediaCalls(), endedEvents: keptMic.endedEvents() },
     }),
     setCallbacks: (next: AudioSessionCallbacks) => { latestCallbacks = next },
-    // 実験のスイッチがあるときは useAudioSession を使うので、呼ばれない
-    recordPageEvent: () => {},
-    markTraceListenerOnly: () => {},
   }
 }
 
 // マイクを閉じないセッションを使う hook。返す AudioSession は、画面が外れるまで同じもの
 export function useKeptAudioSession(callbacks: AudioSessionCallbacks): AudioSession {
   const [session] = useState(() => createKeptAudioSession(callbacks))
-  useLayoutEffect(() => {
-    session.setCallbacks(callbacks)
-  })
-  return session
-}
-
-// useAudioSession の実験のスイッチ。1つでも効いていれば、通訳の画面は今の useAudioSession を使う（PR C で外す）
-export const AUDIO_SESSION_EXPERIMENTS: readonly ExperimentName[] = [
-  'norecog', 'nometer', 'nodisconnect', 'awaitclose', 'notrackread', 'noendedlistener', 'nolifecycle', 'trace',
-  'recogfirst', 'recogabort', 'recogdelay', 'recogearly', 'recogonce', 'legacyrecog',
-]
-
-export function usesAudioSessionExperiment(config: ExperimentConfig): boolean {
-  return config.effective.some(name => AUDIO_SESSION_EXPERIMENTS.includes(name))
-}
-
-// 通訳の画面から使う hook。最初の描画のときに、useAudioSession の実験のスイッチが1つでもあれば今の useAudioSession の
-// セッションを、なければマイクを閉じないセッションを作り、画面が外れるまで変えない（hook を条件で呼び分けない）
-export function useInterpreterAudioSession(callbacks: AudioSessionCallbacks, config: ExperimentConfig): AudioSession {
-  const [session] = useState(() => (usesAudioSessionExperiment(config)
-    ? createAudioSession(callbacks, config)
-    : createKeptAudioSession(callbacks)))
   useLayoutEffect(() => {
     session.setCallbacks(callbacks)
   })
